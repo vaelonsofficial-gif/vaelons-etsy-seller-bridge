@@ -1,0 +1,123 @@
+openapi: 3.1.0
+info:
+  title: VAELONS Etsy Seller Bridge
+  version: 1.0.0
+  description: Read and safely update the VAELONS Etsy shop. Deletion is intentionally not exposed.
+servers:
+  - url: https://YOUR-DEPLOYED-DOMAIN
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    ListingPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        title: { type: string }
+        description: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        materials:
+          type: array
+          items: { type: string }
+        section_id: { type: integer }
+        shop_section_id: { type: integer }
+        state: { type: string }
+    ShopPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        title: { type: string }
+        announcement: { type: string }
+        sale_message: { type: string }
+        digital_sale_message: { type: string }
+security:
+  - bearerAuth: []
+paths:
+  /api/token-status:
+    get:
+      operationId: getEtsyConnectionStatus
+      summary: Check whether the Etsy Seller OAuth connection is ready.
+      responses:
+        '200': { description: OK }
+  /api/shop:
+    get:
+      operationId: getVaelonsShop
+      summary: Read the VAELONS Etsy shop settings.
+      responses:
+        '200': { description: Shop data }
+    patch:
+      operationId: updateVaelonsShop
+      summary: Update safe shop text fields such as title and announcement.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ShopPatch' }
+      responses:
+        '200': { description: Updated shop }
+  /api/listings:
+    get:
+      operationId: listVaelonsListings
+      summary: Read VAELONS listings in batches.
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 100 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+        - in: query
+          name: state
+          schema: { type: string }
+      responses:
+        '200': { description: Listings }
+  /api/listings/{listingId}:
+    get:
+      operationId: getVaelonsListing
+      summary: Read a single VAELONS listing.
+      parameters:
+        - in: path
+          name: listingId
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: Listing }
+    patch:
+      operationId: updateVaelonsListing
+      summary: Update a listing's title, description, tags, materials, section, or state. Do not change state unless the user explicitly asks.
+      parameters:
+        - in: path
+          name: listingId
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ListingPatch' }
+      responses:
+        '200': { description: Updated listing }
+  /api/sections:
+    get:
+      operationId: listVaelonsShopSections
+      summary: List VAELONS shop sections.
+      responses:
+        '200': { description: Sections }
+    post:
+      operationId: createVaelonsShopSection
+      summary: Create a shop section.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string }
+      responses:
+        '200': { description: Created section }
