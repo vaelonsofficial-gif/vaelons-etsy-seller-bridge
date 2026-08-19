@@ -52,3 +52,7 @@ npm start
 
 ## Vercel v2 token storage
 This Vercel-safe build does not write OAuth tokens to local disk. After OAuth, copy the encrypted capsule shown in the browser into `ETSY_TOKEN_CAPSULE` in Vercel, then redeploy.
+
+
+## v3 fix
+Adds the OAuth Bearer header when resolving the authorized seller's shop from the Etsy user ID.

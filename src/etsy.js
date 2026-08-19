@@ -106,7 +106,13 @@ export async function getShopId() {
   const sourceToken = t?.access_token || t?.refresh_token || process.env.ETSY_REFRESH_TOKEN;
   const userId = sourceToken?.split('.')?.[0];
   if (!userId || !/^\d+$/.test(userId)) throw new Error('Unable to infer Etsy user/shop ID. Set ETSY_SHOP_ID or complete OAuth.');
-  const res = await fetch(`${API}/application/users/${userId}/shops`, { headers: { 'x-api-key': apiKeyHeader() } });
+  const accessToken = await getAccessToken();
+  const res = await fetch(`${API}/application/users/${userId}/shops`, {
+    headers: {
+      'x-api-key': apiKeyHeader(),
+      'authorization': `Bearer ${accessToken}`
+    }
+  });
   const data = await res.json();
   if (!res.ok) throw new Error(`Unable to resolve Etsy shop (${res.status}): ${JSON.stringify(data)}`);
   const expected = (process.env.ETSY_EXPECTED_SHOP_NAME || 'VAELONS').toLowerCase();
