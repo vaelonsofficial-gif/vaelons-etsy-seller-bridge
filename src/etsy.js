@@ -128,9 +128,18 @@ export function etsySharedSecret() { return required('ETSY_SHARED_SECRET'); }
 // ---- Listing image helpers ----
 
 export async function getListingImages(listingId) {
-  return etsyRequest(
-    `/listings/${encodeURIComponent(listingId)}/images`
+  const data = await etsyRequest(
+    `/listings/${encodeURIComponent(listingId)}`,
+    {
+      params: {
+        includes: 'Images'
+      }
+    }
   );
+
+  return {
+    results: data?.images || data?.Images || []
+  };
 }
 
 export async function uploadListingImage({
