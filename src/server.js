@@ -123,16 +123,7 @@ app.patch('/api/listings/:listingId', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-app.post('/api/listings/:listingId/images', upload.single('image'), async (req, res, next) => {
-  try {
-    if (!req.file) return res.status(400).json({ error: 'image file is required' });
-    const form = new FormData();
-    form.append('image', new Blob([req.file.buffer], { type: req.file.mimetype || 'image/jpeg' }), req.file.originalname || 'image.jpg');
-    if (req.body.rank) form.append('rank', String(req.body.rank));
-    if (req.body.overwrite) form.append('overwrite', String(req.body.overwrite));
-    res.json(await etsyRequest(`/application/shops/${await sid()}/listings/${req.params.listingId}/images`, { method: 'POST', multipart: form }));
-  } catch (e) { next(e); }
-});
+
 app.get('/api/listings/:listingId/images', bridgeAuth, async (req, res, next) => {
   try {
     const data = await getListingImages(req.params.listingId);
