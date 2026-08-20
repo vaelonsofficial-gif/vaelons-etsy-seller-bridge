@@ -4,7 +4,7 @@ info:
   version: 1.0.0
   description: Read and safely update the VAELONS Etsy shop. Deletion is intentionally not exposed.
 servers:
-  - url: https://YOUR-DEPLOYED-DOMAIN
+  - url: url: https://vaelons-etsy-seller-bridge-3dql.vercel.app
 components:
   securitySchemes:
     bearerAuth:
