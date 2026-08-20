@@ -101,6 +101,44 @@ paths:
             schema: { $ref: '#/components/schemas/ListingPatch' }
       responses:
         '200': { description: Updated listing }
+   /api/listings/{listingId}/images:
+    get:
+      operationId: listVaelonsListingImages
+      summary: Read the images attached to a VAELONS Etsy listing.
+      parameters:
+        - in: path
+          name: listingId
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Listing images
+
+    post:
+      operationId: uploadVaelonsListingImage
+      summary: Upload a new image to a VAELONS Etsy listing. Do not delete existing images.
+      parameters:
+        - in: path
+          name: listingId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - image
+              properties:
+                image:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Uploaded listing image
   /api/sections:
     get:
       operationId: listVaelonsShopSections
