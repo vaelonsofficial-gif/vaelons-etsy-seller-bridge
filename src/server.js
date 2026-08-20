@@ -142,10 +142,57 @@ app.get('/api/listings/:listingId/images', bridgeAuth, async (req, res, next) =>
   }
 });
 
-app.post('/api/listings/:listingId/images', bridgeAuth, upload.single('image'), async (req, res, next) => {
+app.post('/api/listings/:listingId/images', bridgeAuth, async (req, res, next) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'image file is required' });
+    const refs = req.body?.openaiFileIdRefs;
+
+    if (!Array.isArray(refs) || refs.length !== 1) {
+      return res.status(400).json({
+        error: 'Exactly one image file is required'
+      });
+    }
+
+    const fileRef = refs[0];
+
+    if (
+      !fileRef ||
+      typeof fileRef !== 'object' ||
+      !fileRef.download_link
+    ) {
+      return res.status(400).json({
+        error: 'Valid OpenAI file reference with download_link is required'
+      });
+    }
+
+    const fileUrl = new URL(fileRef.download_link);
+
+    if (fileUrl.protocol !== 'https:') {
+      return res.status(400).json({
+        error: 'Image download link must use HTTPS'
+      });
+    }
+
+    const imageResponse = await fetch(fileRef.download_link);
+
+    if (!imageResponse.ok) {
+      return res.status(400).json({
+        error: `Could not download image (${imageResponse.status})`
+      });
+    }
+
+    const imageBuffer = Buffer.from(
+      await imageResponse.arrayBuffer()
+    );
+
+    const contentType =
+      fileRef.mime_type ||
+      imageResponse.headers.get('content-type') ||
+      'image/jpeg';
+
+    if (!contentType.startsWith('image/')) {
+      return res.status(400).json({
+        error: 'Uploaded file must be an image'
+      });
     }
 
     const shopId = await getShopId();
@@ -153,9 +200,9 @@ app.post('/api/listings/:listingId/images', bridgeAuth, upload.single('image'), 
     const data = await uploadListingImage({
       shopId,
       listingId: req.params.listingId,
-      imageBuffer: req.file.buffer,
-      filename: req.file.originalname || 'image.jpg',
-      contentType: req.file.mimetype || 'image/jpeg'
+      imageBuffer,
+      filename: fileRef.name || 'image.jpg',
+      contentType
     });
 
     res.json(data);
@@ -163,10 +210,6 @@ app.post('/api/listings/:listingId/images', bridgeAuth, upload.single('image'), 
     next(err);
   }
 });
-app.get('/api/sections', async (_req, res, next) => {
-  try { res.json(await etsyRequest(`/application/shops/${await sid()}/sections`)); } catch (e) { next(e); }
-});
-
 app.post('/api/sections', async (req, res, next) => {
   try {
     if (!req.body?.title) return res.status(400).json({ error: 'title is required' });
