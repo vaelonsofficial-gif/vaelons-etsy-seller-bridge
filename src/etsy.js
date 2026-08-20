@@ -1,6 +1,6 @@
 import { openJson } from './crypto.js';
 
-const API = 'https://api.etsy.com/v3';
+const API = 'https://api.etsy.com/v3/application';
 
 function required(name) {
   const v = process.env[name];
