@@ -1,7 +1,7 @@
 import express from 'express';
 import multer from 'multer';
 import { randomBase64Url, pkceChallenge, sealJson, openJson } from './crypto.js';
-import { etsyRequest, getShopId, etsyApiKeyForOAuth, setInitialToken, getTokenStatus } from './etsy.js';
+import { etsyRequest, getShopId, etsyApiKeyForOAuth, setInitialToken, getTokenStatus, getListingImages, uploadListingImage } from './etsy.js';
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -133,7 +133,36 @@ app.post('/api/listings/:listingId/images', upload.single('image'), async (req, 
     res.json(await etsyRequest(`/application/shops/${await sid()}/listings/${req.params.listingId}/images`, { method: 'POST', multipart: form }));
   } catch (e) { next(e); }
 });
+app.get('/api/listings/:listingId/images', bridgeAuth, async (req, res, next) => {
+  try {
+    const data = await getListingImages(req.params.listingId);
+    res.json(data);
+  } catch (err) {
+    next(err);
+  }
+});
 
+app.post('/api/listings/:listingId/images', bridgeAuth, upload.single('image'), async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'image file is required' });
+    }
+
+    const shopId = await getShopId();
+
+    const data = await uploadListingImage({
+      shopId,
+      listingId: req.params.listingId,
+      imageBuffer: req.file.buffer,
+      filename: req.file.originalname || 'image.jpg',
+      contentType: req.file.mimetype || 'image/jpeg'
+    });
+
+    res.json(data);
+  } catch (err) {
+    next(err);
+  }
+});
 app.get('/api/sections', async (_req, res, next) => {
   try { res.json(await etsyRequest(`/application/shops/${await sid()}/sections`)); } catch (e) { next(e); }
 });
