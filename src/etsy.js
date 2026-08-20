@@ -107,7 +107,7 @@ export async function getShopId() {
   const userId = sourceToken?.split('.')?.[0];
   if (!userId || !/^\d+$/.test(userId)) throw new Error('Unable to infer Etsy user/shop ID. Set ETSY_SHOP_ID or complete OAuth.');
   const accessToken = await getAccessToken();
-  const res = await fetch(`${API}/application/users/${userId}/shops`, {
+  const res = await fetch(`${API}/users/${userId}/shops`,  {
     headers: {
       'x-api-key': apiKeyHeader(),
       'authorization': `Bearer ${accessToken}`
