@@ -125,3 +125,43 @@ export async function getShopId() {
 }
 export function etsyApiKeyForOAuth() { return required('ETSY_KEYSTRING'); }
 export function etsySharedSecret() { return required('ETSY_SHARED_SECRET'); }
+// ---- Listing image helpers ----
+
+export async function getListingImages(listingId) {
+  return etsyRequest(
+    `/listings/${encodeURIComponent(listingId)}/images`
+  );
+}
+
+export async function uploadListingImage({
+  shopId,
+  listingId,
+  imageBuffer,
+  filename = "image.jpg",
+  contentType = "image/jpeg"
+}) {
+  if (!shopId) throw new Error("shopId is required");
+  if (!listingId) throw new Error("listingId is required");
+  if (!imageBuffer) throw new Error("imageBuffer is required");
+
+  const form = new FormData();
+
+  const bytes =
+    imageBuffer instanceof Uint8Array
+      ? imageBuffer
+      : new Uint8Array(imageBuffer);
+
+  const blob = new Blob([bytes], {
+    type: contentType
+  });
+
+  form.append("image", blob, filename);
+
+  return etsyRequest(
+    `/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(listingId)}/images`,
+    {
+      method: "POST",
+      multipart: form
+    }
+  );
+}
