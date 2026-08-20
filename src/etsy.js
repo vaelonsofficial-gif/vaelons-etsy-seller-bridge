@@ -26,7 +26,7 @@ async function refreshAccessToken(refreshToken) {
     client_id: required('ETSY_KEYSTRING'),
     refresh_token: refreshToken
   });
-  const res = await fetch(https://api.etsy.com/v3/public/oauth/token`, {
+  const res = await fetch('https://api.etsy.com/v3/public/oauth/token', {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded; charset=utf-8' },
     body
