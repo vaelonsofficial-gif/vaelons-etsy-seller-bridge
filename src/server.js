@@ -106,7 +106,7 @@ app.patch('/api/shop', async (req, res, next) => {
 app.get('/api/listings', async (req, res, next) => {
   try {
     const params = { limit: Math.min(Number(req.query.limit || 100), 100), offset: Number(req.query.offset || 0), state: req.query.state || undefined };
-    res.json(await etsyRequest(`/application/shops/${await sid()}/listings`, { params }));
+  res.json(await etsyRequest(`/shops/${await sid()}/listings`, { params }));
   } catch (e) { next(e); }
 });
 
