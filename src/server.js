@@ -227,6 +227,7 @@ app.post('/api/listings/:listingId/images', bridgeAuth, async (req, res, next) =
   } catch (err) {
     next(err);
   }
+  });
   app.get('/api/listings/:listingId/thumbnail-analysis', bridgeAuth, async (req, res, next) => {
   try {
     const imagesData = await getListingImages(req.params.listingId);
