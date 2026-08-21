@@ -138,7 +138,7 @@ app.get('/api/listings', async (req, res, next) => {
 });
   
 app.get('/api/listings/:listingId', async (req, res, next) => {
-  try { res.json(await etsyRequest(`/application/listings/${req.params.listingId}`)); } catch (e) { next(e); }
+  try { res.json(await etsyRequest(`/listings/${req.params.listingId}`)); } catch (e) { next(e); }
 });
 
 app.patch('/api/listings/:listingId', async (req, res, next) => {
