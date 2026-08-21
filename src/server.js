@@ -1,7 +1,14 @@
 import express from 'express';
 import sharp from 'sharp';
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { randomBase64Url, pkceChallenge, sealJson, openJson } from './crypto.js';
+
+import {
+  randomBase64Url,
+  pkceChallenge,
+  sealJson,
+  openJson
+} from './crypto.js';
+
 import {
   etsyRequest,
   getShopId,
@@ -12,43 +19,69 @@ import {
   uploadListingImage
 } from './etsy.js';
 
+
 const app = express();
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: false }));
 
+
 const PREVIEW_TTL_MS = 20 * 60 * 1000;
 const CLEANUP_TTL_MS = 24 * 60 * 60 * 1000;
 const SCAN_MAX_LIMIT = 10;
 
+
+/* =========================================================
+   BASIC HELPERS
+========================================================= */
+
 function required(name) {
   const value = process.env[name];
-  if (!value) throw new Error(`Missing environment variable: ${name}`);
+
+  if (!value) {
+    throw new Error(
+      `Missing environment variable: ${name}`
+    );
+  }
+
   return value;
 }
+
 
 function publicBase() {
   return required('PUBLIC_BASE_URL').replace(/\/$/, '');
 }
 
+
 function bridgeAuth(req, res, next) {
   const auth = req.get('authorization') || '';
 
-  if (auth !== `Bearer ${required('BRIDGE_API_KEY')}`) {
-    return res.status(401).json({ error: 'unauthorized' });
+  if (
+    auth !==
+    `Bearer ${required('BRIDGE_API_KEY')}`
+  ) {
+    return res.status(401).json({
+      error: 'unauthorized'
+    });
   }
 
   next();
 }
 
+
 function parseCookies(req) {
   const result = {};
 
-  for (const part of (req.headers.cookie || '').split(';')) {
+  for (
+    const part of
+    (req.headers.cookie || '').split(';')
+  ) {
     const idx = part.indexOf('=');
 
     if (idx > -1) {
-      result[part.slice(0, idx).trim()] = decodeURIComponent(
+      result[
+        part.slice(0, idx).trim()
+      ] = decodeURIComponent(
         part.slice(idx + 1).trim()
       );
     }
@@ -57,27 +90,38 @@ function parseCookies(req) {
   return result;
 }
 
+
 async function sid() {
-  return String(await getShopId());
+  return String(
+    await getShopId()
+  );
 }
+
 
 function asListingId(value) {
   const id = String(value || '').trim();
 
   if (!/^\d+$/.test(id)) {
-    const err = new Error('Invalid listingId');
+    const err = new Error(
+      'Invalid listingId'
+    );
+
     err.status = 400;
     throw err;
   }
 
   return id;
 }
+
 
 function asSectionId(value) {
   const id = String(value || '').trim();
 
   if (!/^\d+$/.test(id)) {
-    const err = new Error('Invalid sectionId');
+    const err = new Error(
+      'Invalid sectionId'
+    );
+
     err.status = 400;
     throw err;
   }
@@ -85,17 +129,46 @@ function asSectionId(value) {
   return id;
 }
 
+
 function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
+  return Math.max(
+    min,
+    Math.min(max, value)
+  );
 }
+
 
 function round1(value) {
-  return Math.round(Number(value) * 10) / 10;
+  return Math.round(
+    Number(value) * 10
+  ) / 10;
 }
 
-function getImageId(image) {
-  return image?.listing_image_id ?? image?.image_id ?? null;
+
+function smoothstep(edge0, edge1, value) {
+  const t = clamp(
+    (value - edge0) /
+    (edge1 - edge0),
+    0,
+    1
+  );
+
+  return (
+    t *
+    t *
+    (3 - 2 * t)
+  );
 }
+
+
+function getImageId(image) {
+  return (
+    image?.listing_image_id ??
+    image?.image_id ??
+    null
+  );
+}
+
 
 function getImageUrl(image) {
   return (
@@ -108,384 +181,1127 @@ function getImageUrl(image) {
   );
 }
 
+
 function extractUploadedImage(uploadResult) {
-  if (!uploadResult) return null;
-  if (Array.isArray(uploadResult?.results)) return uploadResult.results[0] || null;
+  if (!uploadResult) {
+    return null;
+  }
+
+  if (
+    Array.isArray(
+      uploadResult?.results
+    )
+  ) {
+    return (
+      uploadResult.results[0] ||
+      null
+    );
+  }
+
   return uploadResult;
 }
 
+
+/* =========================================================
+   LISTING IMAGE HELPERS
+========================================================= */
+
 async function getListingImageSet(listingId) {
-  const data = await getListingImages(listingId);
-  const images = Array.isArray(data?.results) ? data.results : [];
+  const data =
+    await getListingImages(
+      listingId
+    );
+
+  const images =
+    Array.isArray(data?.results)
+      ? data.results
+      : [];
 
   if (!images.length) {
-    const err = new Error('No listing images found');
+    const err = new Error(
+      'No listing images found'
+    );
+
     err.status = 404;
     throw err;
   }
 
-  const ordered = [...images].sort(
-    (a, b) => Number(a.rank ?? 9999) - Number(b.rank ?? 9999)
-  );
+  const ordered =
+    [...images].sort(
+      (a, b) =>
+        Number(
+          a.rank ?? 9999
+        ) -
+        Number(
+          b.rank ?? 9999
+        )
+    );
 
-  const rank1 = images.find((img) => Number(img.rank) === 1) || ordered[0];
-  const rank2 = images.find((img) => Number(img.rank) === 2) || ordered[1] || null;
+  const rank1 =
+    images.find(
+      (img) =>
+        Number(img.rank) === 1
+    ) ||
+    ordered[0];
 
-  const rank1Url = getImageUrl(rank1);
-  const rank2Url = rank2 ? getImageUrl(rank2) : null;
+  const rank2 =
+    images.find(
+      (img) =>
+        Number(img.rank) === 2
+    ) ||
+    ordered[1] ||
+    null;
+
+  const rank1Url =
+    getImageUrl(rank1);
 
   if (!rank1Url) {
-    const err = new Error('No usable rank 1 image URL found');
+    const err = new Error(
+      'No usable rank 1 image URL found'
+    );
+
     err.status = 404;
     throw err;
   }
+
+  const rank2Url =
+    rank2
+      ? getImageUrl(rank2)
+      : null;
 
   return {
     images,
+
     rank1: {
       image: rank1,
-      imageId: getImageId(rank1),
-      imageUrl: rank1Url
+      imageId:
+        getImageId(rank1),
+      imageUrl:
+        rank1Url
     },
-    rank2: rank2 && rank2Url
-      ? {
-          image: rank2,
-          imageId: getImageId(rank2),
-          imageUrl: rank2Url
-        }
-      : null
+
+    rank2:
+      rank2 && rank2Url
+        ? {
+            image: rank2,
+            imageId:
+              getImageId(rank2),
+            imageUrl:
+              rank2Url
+          }
+        : null
   };
 }
 
-async function getRank1Image(listingId) {
-  const set = await getListingImageSet(listingId);
-  return {
-    ...set.rank1,
-    images: set.images
-  };
-}
 
 async function downloadImage(url) {
-  const parsed = new URL(url);
+  const parsed =
+    new URL(url);
 
-  if (parsed.protocol !== 'https:') {
-    const err = new Error('Image URL must use HTTPS');
+  if (
+    parsed.protocol !== 'https:'
+  ) {
+    const err = new Error(
+      'Image URL must use HTTPS'
+    );
+
     err.status = 400;
     throw err;
   }
 
-  const response = await fetch(url);
+  const response =
+    await fetch(url);
 
   if (!response.ok) {
-    const err = new Error(`Could not download image (${response.status})`);
+    const err = new Error(
+      `Could not download image (${response.status})`
+    );
+
     err.status = 502;
     throw err;
   }
 
-  const buffer = Buffer.from(await response.arrayBuffer());
+  const buffer =
+    Buffer.from(
+      await response.arrayBuffer()
+    );
 
-  if (buffer.length > 20 * 1024 * 1024) {
-    const err = new Error('Image is larger than 20 MB');
+  if (
+    buffer.length >
+    20 * 1024 * 1024
+  ) {
+    const err = new Error(
+      'Image is larger than 20 MB'
+    );
+
     err.status = 413;
     throw err;
   }
 
   return {
     buffer,
-    contentType: response.headers.get('content-type') || 'image/jpeg'
+
+    contentType:
+      response.headers.get(
+        'content-type'
+      ) ||
+      'image/jpeg'
   };
 }
 
-function percentileFromSorted(values, fraction) {
-  if (!values.length) return 0;
 
-  const index = clamp(
-    Math.round((values.length - 1) * fraction),
-    0,
-    values.length - 1
-  );
+/* =========================================================
+   IMAGE ANALYSIS
+========================================================= */
+
+function percentileFromSorted(
+  values,
+  fraction
+) {
+  if (!values.length) {
+    return 0;
+  }
+
+  const index =
+    clamp(
+      Math.round(
+        (values.length - 1) *
+        fraction
+      ),
+      0,
+      values.length - 1
+    );
 
   return values[index];
 }
 
+
 async function analyzeImage(buffer) {
-  const metadata = await sharp(buffer).metadata();
+  const metadata =
+    await sharp(buffer)
+      .metadata();
 
-  const { data, info } = await sharp(buffer)
-    .rotate()
-    .removeAlpha()
-    .toColourspace('srgb')
-    .resize({
-      width: 420,
-      height: 420,
-      fit: 'inside',
-      withoutEnlargement: true
-    })
-    .raw()
-    .toBuffer({ resolveWithObject: true });
+  const {
+    data,
+    info
+  } =
+    await sharp(buffer)
+      .rotate()
+      .removeAlpha()
+      .toColourspace('srgb')
+      .resize({
+        width: 420,
+        height: 420,
+        fit: 'inside',
+        withoutEnlargement: true
+      })
+      .raw()
+      .toBuffer({
+        resolveWithObject: true
+      });
 
-  const channels = info.channels;
+  const channels =
+    info.channels;
+
   const luminanceValues = [];
 
   let sumL = 0;
   let sumR = 0;
   let sumG = 0;
   let sumB = 0;
+
   let sumChroma = 0;
+
   let shadowCount = 0;
   let deepShadowCount = 0;
   let highlightCount = 0;
+
   let pixelCount = 0;
 
-  for (let i = 0; i < data.length; i += channels) {
+  for (
+    let i = 0;
+    i < data.length;
+    i += channels
+  ) {
     const r = data[i];
     const g = data[i + 1];
     const b = data[i + 2];
 
-    const luminance = Math.round(
-      0.2126 * r +
-      0.7152 * g +
-      0.0722 * b
+    const luminance =
+      Math.round(
+        0.2126 * r +
+        0.7152 * g +
+        0.0722 * b
+      );
+
+    const maxRgb =
+      Math.max(r, g, b);
+
+    const minRgb =
+      Math.min(r, g, b);
+
+    luminanceValues.push(
+      luminance
     );
-
-    const maxRgb = Math.max(r, g, b);
-    const minRgb = Math.min(r, g, b);
-
-    luminanceValues.push(luminance);
 
     sumL += luminance;
     sumR += r;
     sumG += g;
     sumB += b;
-    sumChroma += maxRgb - minRgb;
 
-    if (luminance < 55) shadowCount += 1;
-    if (luminance < 28) deepShadowCount += 1;
-    if (luminance > 230) highlightCount += 1;
+    sumChroma +=
+      maxRgb - minRgb;
+
+    if (luminance < 55) {
+      shadowCount += 1;
+    }
+
+    if (luminance < 28) {
+      deepShadowCount += 1;
+    }
+
+    if (luminance > 230) {
+      highlightCount += 1;
+    }
 
     pixelCount += 1;
   }
 
-  luminanceValues.sort((a, b) => a - b);
+  luminanceValues.sort(
+    (a, b) => a - b
+  );
 
-  const count = pixelCount || 1;
-  const brightness = Math.round(sumL / count);
+  const count =
+    pixelCount || 1;
+
+  const brightness =
+    Math.round(
+      sumL / count
+    );
 
   let varianceSum = 0;
 
-  for (const value of luminanceValues) {
-    const delta = value - brightness;
-    varianceSum += delta * delta;
+  for (
+    const value of
+    luminanceValues
+  ) {
+    const delta =
+      value - brightness;
+
+    varianceSum +=
+      delta * delta;
   }
 
-  const contrast = Math.round(Math.sqrt(varianceSum / count));
-  const p10 = percentileFromSorted(luminanceValues, 0.10);
-  const p50 = percentileFromSorted(luminanceValues, 0.50);
-  const p90 = percentileFromSorted(luminanceValues, 0.90);
-  const tonalRange = p90 - p10;
+  const contrast =
+    Math.round(
+      Math.sqrt(
+        varianceSum / count
+      )
+    );
 
-  let darknessLabel = 'good';
+  const p10 =
+    percentileFromSorted(
+      luminanceValues,
+      0.10
+    );
+
+  const p50 =
+    percentileFromSorted(
+      luminanceValues,
+      0.50
+    );
+
+  const p90 =
+    percentileFromSorted(
+      luminanceValues,
+      0.90
+    );
+
+  const tonalRange =
+    p90 - p10;
+
+  let darknessLabel =
+    'good';
 
   if (brightness < 60) {
-    darknessLabel = 'very_dark';
-  } else if (brightness < 75) {
-    darknessLabel = 'dark';
-  } else if (brightness < 90) {
-    darknessLabel = 'slightly_dark';
+    darknessLabel =
+      'very_dark';
+  } else if (
+    brightness < 75
+  ) {
+    darknessLabel =
+      'dark';
+  } else if (
+    brightness < 90
+  ) {
+    darknessLabel =
+      'slightly_dark';
   }
 
   return {
-    width: metadata.width ?? info.width ?? null,
-    height: metadata.height ?? info.height ?? null,
-    brightness_0_255: brightness,
-    contrast_stdev: contrast,
-    darkness_label: darknessLabel,
+    width:
+      metadata.width ??
+      info.width ??
+      null,
+
+    height:
+      metadata.height ??
+      info.height ??
+      null,
+
+    brightness_0_255:
+      brightness,
+
+    contrast_stdev:
+      contrast,
+
+    darkness_label:
+      darknessLabel,
+
     p10,
     p50,
     p90,
-    tonal_range_p10_p90: tonalRange,
-    shadow_percent: round1((shadowCount / count) * 100),
-    deep_shadow_percent: round1((deepShadowCount / count) * 100),
-    highlight_percent: round1((highlightCount / count) * 100),
+
+    tonal_range_p10_p90:
+      tonalRange,
+
+    shadow_percent:
+      round1(
+        (
+          shadowCount /
+          count
+        ) *
+        100
+      ),
+
+    deep_shadow_percent:
+      round1(
+        (
+          deepShadowCount /
+          count
+        ) *
+        100
+      ),
+
+    highlight_percent:
+      round1(
+        (
+          highlightCount /
+          count
+        ) *
+        100
+      ),
+
     mean_rgb: {
-      r: round1(sumR / count),
-      g: round1(sumG / count),
-      b: round1(sumB / count)
+      r:
+        round1(
+          sumR / count
+        ),
+
+      g:
+        round1(
+          sumG / count
+        ),
+
+      b:
+        round1(
+          sumB / count
+        )
     },
-    mean_chroma: round1(sumChroma / count)
+
+    mean_chroma:
+      round1(
+        sumChroma / count
+      )
   };
 }
 
-function assessThumbnail(analysis) {
+
+/* =========================================================
+   THUMBNAIL SCORING
+========================================================= */
+
+function assessThumbnail(
+  analysis
+) {
   let score = 100;
 
-  const b = analysis.brightness_0_255;
-  const shadows = analysis.shadow_percent;
-  const deep = analysis.deep_shadow_percent;
-  const highlights = analysis.highlight_percent;
-  const tonalRange = analysis.tonal_range_p10_p90;
+  const b =
+    analysis.brightness_0_255;
 
-  if (b < 50) score -= 34;
-  else if (b < 60) score -= 27;
-  else if (b < 70) score -= 19;
-  else if (b < 80) score -= 11;
-  else if (b < 90) score -= 5;
+  const shadows =
+    analysis.shadow_percent;
 
-  if (shadows > 60) score -= 24;
-  else if (shadows > 50) score -= 17;
-  else if (shadows > 40) score -= 10;
-  else if (shadows > 32) score -= 5;
+  const deep =
+    analysis.deep_shadow_percent;
 
-  if (deep > 38) score -= 14;
-  else if (deep > 28) score -= 9;
-  else if (deep > 20) score -= 4;
+  const highlights =
+    analysis.highlight_percent;
 
-  if (highlights > 14) score -= 8;
-  else if (highlights > 8) score -= 4;
+  const tonalRange =
+    analysis
+      .tonal_range_p10_p90;
 
-  if (tonalRange < 55) score -= 12;
-  else if (tonalRange < 70) score -= 6;
+  if (b < 50) {
+    score -= 34;
+  } else if (b < 60) {
+    score -= 27;
+  } else if (b < 70) {
+    score -= 19;
+  } else if (b < 80) {
+    score -= 11;
+  } else if (b < 90) {
+    score -= 5;
+  }
 
-  score = clamp(Math.round(score), 0, 100);
+  if (shadows > 60) {
+    score -= 24;
+  } else if (
+    shadows > 50
+  ) {
+    score -= 17;
+  } else if (
+    shadows > 40
+  ) {
+    score -= 10;
+  } else if (
+    shadows > 32
+  ) {
+    score -= 5;
+  }
 
-  let priority = 'none';
-  let recommendedAction = 'keep';
+  if (deep > 38) {
+    score -= 14;
+  } else if (
+    deep > 28
+  ) {
+    score -= 9;
+  } else if (
+    deep > 20
+  ) {
+    score -= 4;
+  }
+
+  if (highlights > 14) {
+    score -= 8;
+  } else if (
+    highlights > 8
+  ) {
+    score -= 4;
+  }
+
+  if (tonalRange < 55) {
+    score -= 12;
+  } else if (
+    tonalRange < 70
+  ) {
+    score -= 6;
+  }
+
+  score =
+    clamp(
+      Math.round(score),
+      0,
+      100
+    );
+
+  let priority =
+    'none';
+
+  let recommendedAction =
+    'keep';
 
   if (score < 45) {
-    priority = 'urgent';
-    recommendedAction = 'prepare_reference_preserving_preview';
-  } else if (score < 60) {
-    priority = 'high';
-    recommendedAction = 'prepare_reference_preserving_preview';
-  } else if (score < 75) {
-    priority = 'review';
-    recommendedAction = 'review_before_repair';
+    priority =
+      'urgent';
+
+    recommendedAction =
+      'prepare_reference_preserving_preview';
+
+  } else if (
+    score < 60
+  ) {
+    priority =
+      'high';
+
+    recommendedAction =
+      'prepare_reference_preserving_preview';
+
+  } else if (
+    score < 75
+  ) {
+    priority =
+      'review';
+
+    recommendedAction =
+      'review_before_repair';
   }
 
   return {
-    readability_score_0_100: score,
+    readability_score_0_100:
+      score,
+
     priority,
-    recommended_action: recommendedAction,
-    auto_publish_allowed: false,
+
+    recommended_action:
+      recommendedAction,
+
+    auto_publish_allowed:
+      false,
+
     reason:
-      recommendedAction === 'keep'
+      recommendedAction ===
+      'keep'
         ? 'Thumbnail readability is within the conservative safe range.'
-        : 'Readability may be weak on small screens. A reference-preserving preview and visual approval are required.'
+        : 'Thumbnail may be too dark on small screens. A reference-preserving preview and visual approval are required.'
   };
 }
 
-function chooseShadowLiftStrength(analysis, mode = 'auto') {
-  if (mode === 'gentle') return 0.32;
-  if (mode === 'balanced') return 0.46;
 
-  const brightness = analysis.brightness_0_255;
-  const shadowPercent = analysis.shadow_percent;
+/* =========================================================
+   V4 REPAIR TARGET
+========================================================= */
 
-  let strength = 0.28;
+function normalizeRepairMode(
+  value
+) {
+  const mode =
+    String(
+      value ||
+      'auto'
+    )
+      .trim()
+      .toLowerCase();
 
-  if (brightness < 40) strength = 0.54;
-  else if (brightness < 50) strength = 0.48;
-  else if (brightness < 60) strength = 0.42;
-  else if (brightness < 70) strength = 0.36;
-  else if (brightness < 80) strength = 0.30;
-
-  if (shadowPercent > 70) strength += 0.04;
-  else if (shadowPercent < 35) strength -= 0.04;
-
-  return round1(clamp(strength, 0.22, 0.58));
-}
-
-function normalizeRepairMode(value) {
-  const mode = String(value || 'auto').trim().toLowerCase();
-
-  if (['auto', 'gentle', 'balanced'].includes(mode)) {
+  if (
+    [
+      'auto',
+      'gentle',
+      'balanced'
+    ].includes(mode)
+  ) {
     return mode;
   }
 
   return 'auto';
 }
 
-async function createReferencePreservingLift(buffer, strength) {
-  const { data, info } = await sharp(buffer)
-    .rotate()
-    .removeAlpha()
-    .toColourspace('srgb')
-    .raw()
-    .toBuffer({ resolveWithObject: true });
 
-  if (info.channels < 3) {
-    const err = new Error('Unsupported image channel layout');
+function chooseTargetBrightness(
+  beforeBrightness,
+  mode
+) {
+  let target;
+
+  if (
+    beforeBrightness < 40
+  ) {
+    target = 58;
+
+  } else if (
+    beforeBrightness < 50
+  ) {
+    target = 64;
+
+  } else if (
+    beforeBrightness < 60
+  ) {
+    target = 70;
+
+  } else if (
+    beforeBrightness < 70
+  ) {
+    target = 76;
+
+  } else if (
+    beforeBrightness < 80
+  ) {
+    target = 82;
+
+  } else {
+    target =
+      beforeBrightness;
+  }
+
+  if (
+    mode === 'gentle'
+  ) {
+    target -= 6;
+  }
+
+  if (
+    mode === 'balanced'
+  ) {
+    target += 5;
+  }
+
+  return clamp(
+    Math.round(target),
+    beforeBrightness,
+    88
+  );
+}
+
+
+/* =========================================================
+   V4 REFERENCE-PRESERVING PIXEL LIFT
+========================================================= */
+
+function liftPixelV4(
+  r,
+  g,
+  b,
+  strength
+) {
+  const y =
+    (
+      0.2126 * r +
+      0.7152 * g +
+      0.0722 * b
+    ) /
+    255;
+
+  /*
+    Black protection:
+    Pixels very close to true black
+    should remain dark.
+  */
+  const blackProtect =
+    smoothstep(
+      0.018,
+      0.085,
+      y
+    );
+
+  /*
+    Highlight protection:
+    Above ~70% luminance,
+    adjustment fades rapidly.
+  */
+  const highlightProtect =
+    1 -
+    smoothstep(
+      0.68,
+      0.90,
+      y
+    );
+
+  /*
+    Main shadow mask.
+    Maximum effect in shadow /
+    mid-shadow range.
+  */
+  const shadowMask =
+    Math.pow(
+      1 - y,
+      2.0
+    );
+
+  /*
+    Mid-shadow support.
+    Helps reveal artwork detail
+    without flattening highlights.
+  */
+  const midMask =
+    smoothstep(
+      0.08,
+      0.24,
+      y
+    ) *
+    (
+      1 -
+      smoothstep(
+        0.50,
+        0.72,
+        y
+      )
+    );
+
+  let weight =
+    (
+      shadowMask *
+      0.78
+    ) +
+    (
+      midMask *
+      0.36
+    );
+
+  weight *=
+    blackProtect;
+
+  weight *=
+    highlightProtect;
+
+  weight =
+    clamp(
+      weight,
+      0,
+      1
+    );
+
+  /*
+    Add luminance,
+    but keep RGB proportions.
+
+    This avoids global grey wash
+    from adding the same offset
+    to every RGB channel.
+  */
+  const lift =
+    strength *
+    weight *
+    (
+      0.42 -
+      0.18 * y
+    );
+
+  const newY =
+    clamp(
+      y + lift,
+      0,
+      1
+    );
+
+  let scale =
+    y > 0.001
+      ? newY / y
+      : 1;
+
+  /*
+    Prevent dark pixels
+    from exploding unnaturally.
+  */
+  scale =
+    clamp(
+      scale,
+      1,
+      1.90
+    );
+
+  let nr =
+    r * scale;
+
+  let ng =
+    g * scale;
+
+  let nb =
+    b * scale;
+
+  /*
+    Tiny neutral guard only.
+    This is NOT desaturation.
+    It prevents exaggerated warm cast.
+  */
+  const avg =
+    (
+      nr +
+      ng +
+      nb
+    ) /
+    3;
+
+  nr =
+    nr * 0.992 +
+    avg * 0.008;
+
+  ng =
+    ng * 0.995 +
+    avg * 0.005;
+
+  nb =
+    nb * 0.993 +
+    avg * 0.007;
+
+  return [
+    clamp(
+      Math.round(nr),
+      0,
+      255
+    ),
+
+    clamp(
+      Math.round(ng),
+      0,
+      255
+    ),
+
+    clamp(
+      Math.round(nb),
+      0,
+      255
+    )
+  ];
+}
+
+
+async function renderLiftV4(
+  sourceBuffer,
+  strength
+) {
+  const {
+    data,
+    info
+  } =
+    await sharp(
+      sourceBuffer
+    )
+      .rotate()
+      .removeAlpha()
+      .toColourspace(
+        'srgb'
+      )
+      .raw()
+      .toBuffer({
+        resolveWithObject:
+          true
+      });
+
+  if (
+    info.channels < 3
+  ) {
+    const err =
+      new Error(
+        'Unsupported image channel layout'
+      );
+
     err.status = 422;
     throw err;
   }
 
-  const output = Buffer.allocUnsafe(data.length);
-  const channels = info.channels;
+  const output =
+    Buffer.allocUnsafe(
+      data.length
+    );
 
-  for (let i = 0; i < data.length; i += channels) {
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
+  const channels =
+    info.channels;
 
-    const luminance = (
-      0.2126 * r +
-      0.7152 * g +
-      0.0722 * b
-    ) / 255;
+  for (
+    let i = 0;
+    i < data.length;
+    i += channels
+  ) {
+    const r =
+      data[i];
 
-    const blackProtect = clamp((luminance - 0.018) / 0.11, 0, 1);
-    const highlightProtect = clamp((0.82 - luminance) / 0.35, 0, 1);
-    const shadowWeight = Math.pow(1 - luminance, 2.55);
+    const g =
+      data[i + 1];
 
-    const factor =
-      1 +
-      strength *
-      shadowWeight *
-      blackProtect *
-      highlightProtect;
+    const b =
+      data[i + 2];
 
-    output[i] = clamp(Math.round(r * factor), 0, 255);
-    output[i + 1] = clamp(Math.round(g * factor), 0, 255);
-    output[i + 2] = clamp(Math.round(b * factor), 0, 255);
+    const [
+      nr,
+      ng,
+      nb
+    ] =
+      liftPixelV4(
+        r,
+        g,
+        b,
+        strength
+      );
 
-    for (let c = 3; c < channels; c += 1) {
-      output[i + c] = data[i + c];
+    output[i] =
+      nr;
+
+    output[i + 1] =
+      ng;
+
+    output[i + 2] =
+      nb;
+
+    for (
+      let c = 3;
+      c < channels;
+      c += 1
+    ) {
+      output[i + c] =
+        data[i + c];
     }
   }
 
-  return sharp(output, {
-    raw: {
-      width: info.width,
-      height: info.height,
-      channels: info.channels
+  return sharp(
+    output,
+    {
+      raw: {
+        width:
+          info.width,
+
+        height:
+          info.height,
+
+        channels:
+          info.channels
+      }
     }
-  })
+  )
     .jpeg({
       quality: 96,
-      chromaSubsampling: '4:4:4',
+      chromaSubsampling:
+        '4:4:4',
       mozjpeg: true
     })
     .toBuffer();
 }
 
+
+/* =========================================================
+   V4 AUTOMATIC STRENGTH SEARCH
+
+   Finds the weakest strength that gets
+   close to the conservative target.
+========================================================= */
+
+async function findV4Repair(
+  sourceBuffer,
+  before,
+  mode
+) {
+  const target =
+    chooseTargetBrightness(
+      before.brightness_0_255,
+      mode
+    );
+
+  if (
+    target <=
+    before.brightness_0_255
+  ) {
+    return {
+      target,
+      strength: 0,
+      repaired:
+        sourceBuffer,
+      after:
+        before
+    };
+  }
+
+  let low = 0.08;
+  let high = 0.95;
+
+  let best = null;
+
+  for (
+    let attempt = 0;
+    attempt < 7;
+    attempt += 1
+  ) {
+    const strength =
+      (
+        low +
+        high
+      ) /
+      2;
+
+    const candidate =
+      await renderLiftV4(
+        sourceBuffer,
+        strength
+      );
+
+    const analysis =
+      await analyzeImage(
+        candidate
+      );
+
+    const distance =
+      Math.abs(
+        target -
+        analysis
+          .brightness_0_255
+      );
+
+    if (
+      !best ||
+      distance <
+      best.distance
+    ) {
+      best = {
+        strength,
+        repaired:
+          candidate,
+        after:
+          analysis,
+        distance
+      };
+    }
+
+    if (
+      analysis
+        .brightness_0_255 <
+      target
+    ) {
+      low =
+        strength;
+    } else {
+      high =
+        strength;
+    }
+  }
+
+  return {
+    target,
+
+    strength:
+      round1(
+        best.strength
+      ),
+
+    repaired:
+      best.repaired,
+
+    after:
+      best.after
+  };
+}
+
+
+/* =========================================================
+   COLOR / CONSISTENCY
+========================================================= */
+
 function rgbDistance(a, b) {
-  if (!a || !b) return null;
+  if (!a || !b) {
+    return null;
+  }
 
   return Math.sqrt(
-    Math.pow(Number(a.r) - Number(b.r), 2) +
-    Math.pow(Number(a.g) - Number(b.g), 2) +
-    Math.pow(Number(a.b) - Number(b.b), 2)
+    Math.pow(
+      Number(a.r) -
+      Number(b.r),
+      2
+    ) +
+    Math.pow(
+      Number(a.g) -
+      Number(b.g),
+      2
+    ) +
+    Math.pow(
+      Number(a.b) -
+      Number(b.b),
+      2
+    )
   );
 }
 
-function validateRepairResult(before, after) {
+
+function validateRepairResult(
+  before,
+  after
+) {
   const brightnessGain =
     after.brightness_0_255 -
     before.brightness_0_255;
 
   const contrastRatio =
     before.contrast_stdev > 0
-      ? after.contrast_stdev / before.contrast_stdev
+      ? (
+          after.contrast_stdev /
+          before.contrast_stdev
+        )
       : 1;
 
   const highlightIncrease =
@@ -506,35 +1322,106 @@ function validateRepairResult(before, after) {
 
   const warnings = [];
 
-  if (brightnessGain < 2) warnings.push('repair_too_weak');
-  if (brightnessGain > 22) warnings.push('brightness_increase_too_large');
-  if (contrastRatio < 0.92) warnings.push('contrast_loss_detected');
-  if (highlightIncrease > 4) warnings.push('highlight_clipping_risk');
-  if (chromaDelta > 12) warnings.push('color_intensity_shift_detected');
-  if (meanRgbDelta > 24) warnings.push('color_grade_shift_detected');
+  if (
+    brightnessGain < 4 &&
+    before.brightness_0_255 < 70
+  ) {
+    warnings.push(
+      'repair_too_weak'
+    );
+  }
+
+  /*
+    We deliberately do not want
+    the old 31 -> 110 behaviour.
+  */
+  if (
+    brightnessGain > 36
+  ) {
+    warnings.push(
+      'brightness_increase_too_large'
+    );
+  }
+
+  if (
+    contrastRatio < 0.90
+  ) {
+    warnings.push(
+      'contrast_loss_detected'
+    );
+  }
+
+  if (
+    contrastRatio > 1.28
+  ) {
+    warnings.push(
+      'contrast_increase_too_large'
+    );
+  }
+
+  if (
+    highlightIncrease > 4
+  ) {
+    warnings.push(
+      'highlight_clipping_risk'
+    );
+  }
+
+  if (
+    chromaDelta > 14
+  ) {
+    warnings.push(
+      'color_intensity_shift_detected'
+    );
+  }
+
+  if (
+    meanRgbDelta > 32
+  ) {
+    warnings.push(
+      'color_grade_shift_detected'
+    );
+  }
+
+  const hardWarnings =
+    warnings.filter(
+      (warning) =>
+        warning !==
+        'repair_too_weak'
+    );
 
   return {
     safe_for_visual_review:
-      warnings.length === 0,
+      hardWarnings.length ===
+      0,
 
     brightness_gain:
       brightnessGain,
 
     contrast_ratio:
-      round1(contrastRatio),
+      round1(
+        contrastRatio
+      ),
 
     highlight_increase_percent:
-      round1(highlightIncrease),
+      round1(
+        highlightIncrease
+      ),
 
     chroma_delta:
-      round1(chromaDelta),
+      round1(
+        chromaDelta
+      ),
 
     mean_rgb_delta:
-      round1(meanRgbDelta),
+      round1(
+        meanRgbDelta
+      ),
 
     warnings
   };
 }
+
 
 function assessGalleryConsistency(
   source,
@@ -555,25 +1442,54 @@ function assessGalleryConsistency(
 
   const contrastRatio =
     source.contrast_stdev > 0
-      ? preview.contrast_stdev /
-        source.contrast_stdev
+      ? (
+          preview.contrast_stdev /
+          source.contrast_stdev
+        )
       : 1;
 
   const warnings = [];
 
-  if (sourceToPreviewRgb > 24) {
-    warnings.push('preview_color_drift');
+  /*
+    Source rank-1 is the hard reference.
+    Because image 2 may use a different
+    mockup/crop, image 2 is only a soft
+    gallery reference.
+  */
+  if (
+    sourceToPreviewRgb > 32
+  ) {
+    warnings.push(
+      'preview_color_drift'
+    );
   }
 
-  if (chromaDelta > 12) {
-    warnings.push('preview_chroma_drift');
+  if (
+    chromaDelta > 14
+  ) {
+    warnings.push(
+      'preview_chroma_drift'
+    );
   }
 
-  if (contrastRatio < 0.92) {
-    warnings.push('preview_contrast_drift');
+  if (
+    contrastRatio < 0.90
+  ) {
+    warnings.push(
+      'preview_contrast_loss'
+    );
   }
 
-  let rank2Reference = null;
+  if (
+    contrastRatio > 1.28
+  ) {
+    warnings.push(
+      'preview_contrast_increase'
+    );
+  }
+
+  let rank2Reference =
+    null;
 
   if (rank2Analysis) {
     const sourceToRank2Rgb =
@@ -588,54 +1504,77 @@ function assessGalleryConsistency(
         rank2Analysis.mean_rgb
       ) ?? 0;
 
-    const relativeMoveAway =
-      sourceToRank2Rgb > 0
-        ? (
-            previewToRank2Rgb -
-            sourceToRank2Rgb
-          ) /
-          sourceToRank2Rgb
-        : 0;
+    const moveAway =
+      previewToRank2Rgb -
+      sourceToRank2Rgb;
 
     rank2Reference = {
       source_to_rank2_rgb_distance:
-        round1(sourceToRank2Rgb),
+        round1(
+          sourceToRank2Rgb
+        ),
 
       preview_to_rank2_rgb_distance:
-        round1(previewToRank2Rgb),
+        round1(
+          previewToRank2Rgb
+        ),
 
-      relative_move_away_from_rank2:
-        round1(relativeMoveAway)
+      absolute_move_away:
+        round1(
+          moveAway
+        )
     };
 
+    /*
+      Soft warning only.
+      Different mockups can naturally
+      have different global averages.
+    */
     if (
-      relativeMoveAway > 0.35 &&
-      sourceToPreviewRgb > 10
+      moveAway > 45 &&
+      sourceToPreviewRgb > 20
     ) {
       warnings.push(
-        'preview_moves_too_far_from_gallery_reference'
+        'preview_moves_away_from_gallery_reference'
       );
     }
   }
 
+  const hardWarnings =
+    warnings.filter(
+      (warning) =>
+        warning !==
+        'preview_moves_away_from_gallery_reference'
+    );
+
   return {
     passed:
-      warnings.length === 0,
+      hardWarnings.length ===
+      0,
 
     hard_block_upload:
-      warnings.length > 0,
+      hardWarnings.length >
+      0,
 
     source_to_preview_rgb_distance:
-      round1(sourceToPreviewRgb),
+      round1(
+        sourceToPreviewRgb
+      ),
 
     source_to_preview_chroma_delta:
-      round1(chromaDelta),
+      round1(
+        chromaDelta
+      ),
 
     source_to_preview_contrast_ratio:
-      round1(contrastRatio),
+      round1(
+        contrastRatio
+      ),
 
     rank2_reference_available:
-      Boolean(rank2Analysis),
+      Boolean(
+        rank2Analysis
+      ),
 
     rank2_reference:
       rank2Reference,
@@ -644,29 +1583,45 @@ function assessGalleryConsistency(
 
     note:
       rank2Analysis
-        ? 'Image 2 is used as a soft gallery color/tonal reference. Geometry is not pixel-compared because gallery images may use different mockups or crops.'
-        : 'Image 2 was not available. Consistency is checked against the original rank 1 image only.'
+        ? 'Image 2 is used as a soft gallery reference. The original rank 1 image remains the hard identity reference.'
+        : 'Image 2 was unavailable. Consistency is checked against original rank 1 only.'
   };
 }
+
+
+/* =========================================================
+   SIGNED TOKENS
+========================================================= */
 
 function signToken(payload) {
   const encoded =
     Buffer
       .from(
-        JSON.stringify(payload)
+        JSON.stringify(
+          payload
+        )
       )
-      .toString('base64url');
+      .toString(
+        'base64url'
+      );
 
   const signature =
     createHmac(
       'sha256',
-      required('BRIDGE_API_KEY')
+      required(
+        'BRIDGE_API_KEY'
+      )
     )
       .update(encoded)
-      .digest('base64url');
+      .digest(
+        'base64url'
+      );
 
-  return `${encoded}.${signature}`;
+  return (
+    `${encoded}.${signature}`
+  );
 }
+
 
 function verifyToken(
   token,
@@ -676,9 +1631,14 @@ function verifyToken(
     encoded,
     signature
   ] =
-    String(token || '').split('.');
+    String(
+      token || ''
+    ).split('.');
 
-  if (!encoded || !signature) {
+  if (
+    !encoded ||
+    !signature
+  ) {
     const err =
       new Error(
         'Invalid signed token'
@@ -691,20 +1651,32 @@ function verifyToken(
   const expected =
     createHmac(
       'sha256',
-      required('BRIDGE_API_KEY')
+      required(
+        'BRIDGE_API_KEY'
+      )
     )
       .update(encoded)
-      .digest('base64url');
+      .digest(
+        'base64url'
+      );
 
   const a =
-    Buffer.from(signature);
+    Buffer.from(
+      signature
+    );
 
   const b =
-    Buffer.from(expected);
+    Buffer.from(
+      expected
+    );
 
   if (
-    a.length !== b.length ||
-    !timingSafeEqual(a, b)
+    a.length !==
+      b.length ||
+    !timingSafeEqual(
+      a,
+      b
+    )
   ) {
     const err =
       new Error(
@@ -725,8 +1697,11 @@ function verifyToken(
             encoded,
             'base64url'
           )
-          .toString('utf8')
+          .toString(
+            'utf8'
+          )
       );
+
   } catch {
     const err =
       new Error(
@@ -739,7 +1714,8 @@ function verifyToken(
 
   if (
     !payload?.exp ||
-    Date.now() > payload.exp
+    Date.now() >
+      payload.exp
   ) {
     const err =
       new Error(
@@ -752,7 +1728,8 @@ function verifyToken(
 
   if (
     expectedType &&
-    payload.type !== expectedType
+    payload.type !==
+      expectedType
   ) {
     const err =
       new Error(
@@ -765,6 +1742,11 @@ function verifyToken(
 
   return payload;
 }
+
+
+/* =========================================================
+   BUILD V4 PREVIEW
+========================================================= */
 
 async function buildRepairPreview(
   listingId,
@@ -781,7 +1763,8 @@ async function buildRepairPreview(
     );
 
   const {
-    buffer: sourceBuffer
+    buffer:
+      sourceBuffer
   } =
     await downloadImage(
       imageSet.rank1.imageUrl
@@ -797,14 +1780,16 @@ async function buildRepairPreview(
       before
     );
 
-  let rank2Analysis = null;
+  let rank2Analysis =
+    null;
 
   if (
     imageSet.rank2?.imageUrl
   ) {
     try {
       const {
-        buffer: rank2Buffer
+        buffer:
+          rank2Buffer
       } =
         await downloadImage(
           imageSet.rank2.imageUrl
@@ -814,48 +1799,39 @@ async function buildRepairPreview(
         await analyzeImage(
           rank2Buffer
         );
+
     } catch (err) {
       console.warn(
-        'Rank 2 reference could not be analyzed:',
+        'Image 2 reference could not be analyzed:',
         err.message
       );
     }
   }
 
-  const strength =
-    chooseShadowLiftStrength(
+  const repair =
+    await findV4Repair(
+      sourceBuffer,
       before,
       mode
-    );
-
-  const repaired =
-    await createReferencePreservingLift(
-      sourceBuffer,
-      strength
-    );
-
-  const after =
-    await analyzeImage(
-      repaired
     );
 
   const validation =
     validateRepairResult(
       before,
-      after
+      repair.after
     );
 
   const galleryConsistency =
     assessGalleryConsistency(
       before,
-      after,
+      repair.after,
       rank2Analysis
     );
 
   const token =
     signToken({
       type:
-        'thumbnail_preview_v3',
+        'thumbnail_preview_v4',
 
       listingId,
 
@@ -872,13 +1848,15 @@ async function buildRepairPreview(
           : null,
 
       method:
-        'reference_preserving_shadow_lift_v3',
+        'reference_preserving_shadow_lift_v4',
 
-      strength,
+      strength:
+        repair.strength,
+
+      target:
+        repair.target,
+
       mode,
-
-      consistencyPassed:
-        galleryConsistency.passed,
 
       exp:
         Date.now() +
@@ -888,17 +1866,41 @@ async function buildRepairPreview(
   return {
     listing,
     imageSet,
+
+    sourceBuffer,
+
     before,
-    after,
-    rank2Analysis,
+
+    after:
+      repair.after,
+
+    repaired:
+      repair.repaired,
+
     assessment,
-    strength,
+
+    rank2Analysis,
+
+    strength:
+      repair.strength,
+
+    target:
+      repair.target,
+
     mode,
+
     validation,
+
     galleryConsistency,
+
     token
   };
 }
+
+
+/* =========================================================
+   WORKER HELPERS
+========================================================= */
 
 async function mapLimit(
   items,
@@ -906,13 +1908,17 @@ async function mapLimit(
   mapper
 ) {
   const results =
-    new Array(items.length);
+    new Array(
+      items.length
+    );
 
   let cursor = 0;
 
   async function worker() {
     while (true) {
-      const index = cursor;
+      const index =
+        cursor;
+
       cursor += 1;
 
       if (
@@ -946,6 +1952,7 @@ async function mapLimit(
   return results;
 }
 
+
 function listingAgeDays(
   listing
 ) {
@@ -973,9 +1980,13 @@ function listingAgeDays(
     );
 
   return Number.isFinite(age)
-    ? Math.max(0, age)
+    ? Math.max(
+        0,
+        age
+      )
     : null;
 }
+
 
 function performanceSignal(
   listing
@@ -1012,12 +2023,14 @@ function performanceSignal(
   ) {
     signal =
       'weak_favorite_signal';
+
   } else if (
     ageDays >= 60 &&
     favorites <= 1
   ) {
     signal =
       'low_favorite_signal';
+
   } else if (
     favorites >= 5
   ) {
@@ -1035,6 +2048,7 @@ function performanceSignal(
     signal
   };
 }
+
 
 function compactImageList(
   data
@@ -1057,6 +2071,11 @@ function compactImageList(
   );
 }
 
+
+/* =========================================================
+   HEALTH
+========================================================= */
+
 app.get(
   '/health',
   (_req, res) => {
@@ -1067,17 +2086,24 @@ app.get(
         'vaelons-etsy-seller-bridge',
 
       thumbnail_engine:
-        'reference_preserving_shadow_lift_v3'
+        'reference_preserving_shadow_lift_v4'
     });
   }
 );
+
+
+/* =========================================================
+   ETSY OAUTH
+========================================================= */
 
 app.get(
   '/oauth/etsy/start',
   (req, res) => {
     if (
       req.query.setup_secret !==
-      required('SETUP_SECRET')
+      required(
+        'SETUP_SECRET'
+      )
     ) {
       return res
         .status(401)
@@ -1093,7 +2119,9 @@ app.get(
       randomBase64Url(48);
 
     const challenge =
-      pkceChallenge(verifier);
+      pkceChallenge(
+        verifier
+      );
 
     const redirectUri =
       `${publicBase()}/oauth/etsy/callback`;
@@ -1112,7 +2140,9 @@ app.get(
       {
         httpOnly: true,
         secure: true,
-        sameSite: 'lax',
+        sameSite:
+          'lax',
+
         maxAge:
           10 *
           60 *
@@ -1166,6 +2196,7 @@ app.get(
   }
 );
 
+
 app.get(
   '/oauth/etsy/callback',
   async (
@@ -1180,7 +2211,8 @@ app.get(
           .status(400)
           .send(
             `Etsy authorization failed: ${
-              req.query.error_description ||
+              req.query
+                .error_description ||
               req.query.error
             }`
           );
@@ -1283,7 +2315,8 @@ app.get(
         {
           params: {
             limit: 1,
-            state: 'active'
+            state:
+              'active'
           }
         }
       );
@@ -1291,7 +2324,8 @@ app.get(
       const encryptedCapsule =
         sealJson({
           refresh_token:
-            token.refresh_token,
+            token
+              .refresh_token,
 
           shop_id:
             shopId
@@ -1306,7 +2340,10 @@ app.get(
         .send(`
 <!doctype html>
 <meta charset="utf-8">
-<title>VAELONS Etsy Connected</title>
+
+<title>
+VAELONS Etsy Connected
+</title>
 
 <style>
 body {
@@ -1343,7 +2380,7 @@ adıyla ekleyin.
 Production + Preview seçin, kaydedin ve redeploy yapın.
 Bu değeri gizli tutun.
 </p>
-      `);
+        `);
 
     } catch (err) {
       console.error(err);
@@ -1365,6 +2402,11 @@ Bu değeri gizli tutun.
   }
 );
 
+
+/* =========================================================
+   PUBLIC PREVIEW IMAGE
+========================================================= */
+
 app.get(
   '/preview/thumbnail-repair/:token',
   async (
@@ -1375,7 +2417,7 @@ app.get(
       const payload =
         verifyToken(
           req.params.token,
-          'thumbnail_preview_v3'
+          'thumbnail_preview_v4'
         );
 
       const listingId =
@@ -1405,19 +2447,24 @@ app.get(
       }
 
       const {
-        buffer
+        buffer:
+          sourceBuffer
       } =
         await downloadImage(
           imageSet.rank1.imageUrl
         );
 
       const repaired =
-        await createReferencePreservingLift(
-          buffer,
-          Number(
-            payload.strength
-          )
-        );
+        Number(
+          payload.strength
+        ) > 0
+          ? await renderLiftV4(
+              sourceBuffer,
+              Number(
+                payload.strength
+              )
+            )
+          : sourceBuffer;
 
       res.setHeader(
         'content-type',
@@ -1426,7 +2473,7 @@ app.get(
 
       res.setHeader(
         'content-disposition',
-        'inline; filename="thumbnail-reference-preserving-preview.jpg"'
+        'inline; filename="thumbnail-reference-preserving-v4.jpg"'
       );
 
       res.setHeader(
@@ -1454,6 +2501,11 @@ app.get(
   }
 );
 
+
+/* =========================================================
+   PUBLIC 3-WAY COMPARE
+========================================================= */
+
 app.get(
   '/preview/thumbnail-repair/:token/compare',
   async (
@@ -1464,7 +2516,7 @@ app.get(
       const payload =
         verifyToken(
           req.params.token,
-          'thumbnail_preview_v3'
+          'thumbnail_preview_v4'
         );
 
       const listingId =
@@ -1540,7 +2592,7 @@ app.get(
           ? `
 <div class="card">
   <div class="label">
-  REFERANS — Listing image 2
+    IMAGE 2 — müşteri tutarlılık referansı
   </div>
 
   <img
@@ -1572,7 +2624,6 @@ VAELONS Thumbnail Compare
 </title>
 
 <style>
-
 body {
   font-family:
     system-ui,
@@ -1607,7 +2658,6 @@ p {
       3,
       minmax(0, 1fr)
     );
-
   gap: 18px;
 }
 
@@ -1646,7 +2696,6 @@ img {
       1fr;
   }
 }
-
 </style>
 
 </head>
@@ -1675,40 +2724,37 @@ ${esc(
 <div class="grid">
 
 <div class="card">
+  <div class="label">
+    ÖNCE — mevcut Etsy rank 1
+  </div>
 
-<div class="label">
-ÖNCE — Etsy rank 1
-</div>
-
-<img
-  src="${esc(beforeUrl)}"
-  alt="Before"
->
-
+  <img
+    src="${esc(beforeUrl)}"
+    alt="Before"
+  >
 </div>
 
 ${rank2Card}
 
 <div class="card">
+  <div class="label">
+    SONRA — reference-preserving v4 preview
+  </div>
 
-<div class="label">
-SONRA — reference-preserving preview
-</div>
-
-<img
-  src="${esc(afterUrl)}"
-  alt="After"
->
-
+  <img
+    src="${esc(afterUrl)}"
+    alt="After"
+  >
 </div>
 
 </div>
 
 <div class="note">
-Bu sayfa Etsy'de değişiklik yapmaz.
-Image 2 yalnızca görsel tutarlılık referansıdır.
-Preview; kompozisyonu, crop'u veya sahneyi yeniden üretmez.
-Sadece mevcut rank 1 piksellerinde kontrollü gölge açma uygular.
+Amaç müşteriye başka bir ürün göstermek değildir.
+Yeni thumbnail mevcut rank-1 görselinden üretilir.
+Crop, perspektif, sahne ve artwork içeriği değiştirilmez.
+Image 2 yalnızca galeri tutarlılığı referansıdır.
+Bu sayfa Etsy'de hiçbir değişiklik yapmaz.
 </div>
 
 </main>
@@ -1716,7 +2762,7 @@ Sadece mevcut rank 1 piksellerinde kontrollü gölge açma uygular.
 </body>
 
 </html>
-      `);
+        `);
 
     } catch (err) {
       console.error(err);
@@ -1733,10 +2779,20 @@ Sadece mevcut rank 1 piksellerinde kontrollü gölge açma uygular.
   }
 );
 
+
+/* =========================================================
+   API AUTH
+========================================================= */
+
 app.use(
   '/api',
   bridgeAuth
 );
+
+
+/* =========================================================
+   TOKEN
+========================================================= */
 
 app.get(
   '/api/token-status',
@@ -1749,11 +2805,17 @@ app.get(
       res.json(
         await getTokenStatus()
       );
+
     } catch (err) {
       next(err);
     }
   }
 );
+
+
+/* =========================================================
+   SHOP
+========================================================= */
 
 app.get(
   '/api/shop',
@@ -1768,11 +2830,13 @@ app.get(
           `/shops/${await sid()}`
         )
       );
+
     } catch (err) {
       next(err);
     }
   }
 );
+
 
 app.patch(
   '/api/shop',
@@ -1834,6 +2898,11 @@ app.patch(
   }
 );
 
+
+/* =========================================================
+   LISTINGS
+========================================================= */
+
 app.get(
   '/api/listings',
   async (
@@ -1892,9 +2961,7 @@ app.get(
             data?.results ||
             []
           ).map(
-            (
-              listing
-            ) => ({
+            (listing) => ({
               listing_id:
                 listing.listing_id,
 
@@ -1933,6 +3000,7 @@ app.get(
   }
 );
 
+
 app.get(
   '/api/listings/:listingId',
   async (
@@ -1957,6 +3025,7 @@ app.get(
     }
   }
 );
+
 
 app.patch(
   '/api/listings/:listingId',
@@ -2030,6 +3099,11 @@ app.patch(
   }
 );
 
+
+/* =========================================================
+   LISTING IMAGES
+========================================================= */
+
 app.get(
   '/api/listings/:listingId/images',
   async (
@@ -2055,6 +3129,7 @@ app.get(
   }
 );
 
+
 app.post(
   '/api/listings/:listingId/images',
   async (
@@ -2073,11 +3148,8 @@ app.post(
           ?.openaiFileIdRefs;
 
       if (
-        !Array.isArray(
-          refs
-        ) ||
-        refs.length !==
-          1
+        !Array.isArray(refs) ||
+        refs.length !== 1
       ) {
         return res
           .status(400)
@@ -2139,8 +3211,7 @@ app.post(
 
       const imageBuffer =
         Buffer.from(
-          await response
-            .arrayBuffer()
+          await response.arrayBuffer()
         );
 
       const contentType =
@@ -2151,10 +3222,9 @@ app.post(
         'image/jpeg';
 
       if (
-        !contentType
-          .startsWith(
-            'image/'
-          )
+        !contentType.startsWith(
+          'image/'
+        )
       ) {
         return res
           .status(400)
@@ -2180,15 +3250,18 @@ app.post(
           contentType
         });
 
-      res.json(
-        data
-      );
+      res.json(data);
 
     } catch (err) {
       next(err);
     }
   }
 );
+
+
+/* =========================================================
+   SINGLE THUMBNAIL ANALYSIS
+========================================================= */
 
 app.get(
   '/api/listings/:listingId/thumbnail-analysis',
@@ -2232,9 +3305,7 @@ app.get(
 
       res.json({
         listing_id:
-          Number(
-            listingId
-          ),
+          Number(listingId),
 
         exact_title:
           listing?.title ??
@@ -2270,6 +3341,12 @@ app.get(
     }
   }
 );
+
+
+/* =========================================================
+   WORKER SCAN
+   READ ONLY
+========================================================= */
 
 app.get(
   '/api/worker/scan',
@@ -2441,7 +3518,9 @@ app.get(
           if (
             pa !== pb
           ) {
-            return pa - pb;
+            return (
+              pa - pb
+            );
           }
 
           const sa =
@@ -2454,7 +3533,9 @@ app.get(
               ?.readability_score_0_100 ??
             100;
 
-          return sa - sb;
+          return (
+            sa - sb
+          );
         }
       );
 
@@ -2504,6 +3585,12 @@ app.get(
   }
 );
 
+
+/* =========================================================
+   V4 PREVIEW
+   READ ONLY
+========================================================= */
+
 app.post(
   '/api/listings/:listingId/thumbnail-repair/preview',
   async (
@@ -2530,9 +3617,7 @@ app.post(
 
       res.json({
         listing_id:
-          Number(
-            listingId
-          ),
+          Number(listingId),
 
         exact_title:
           preview.listing?.title ??
@@ -2553,7 +3638,7 @@ app.post(
           null,
 
         preview_file_name:
-          `etsy-${listingId}-reference-preserving-preview.jpg`,
+          `etsy-${listingId}-reference-preserving-v4.jpg`,
 
         preview_url:
           `${publicBase()}/preview/thumbnail-repair/${preview.token}`,
@@ -2581,10 +3666,13 @@ app.post(
 
         repair: {
           type:
-            'reference_preserving_shadow_lift_v3',
+            'reference_preserving_shadow_lift_v4',
 
           mode:
             preview.mode,
+
+          target_brightness:
+            preview.target,
 
           strength:
             preview.strength,
@@ -2604,8 +3692,14 @@ app.post(
           artwork_content_changed:
             false,
 
+          color_identity_preservation:
+            true,
+
+          mockup_structure_changed:
+            false,
+
           note:
-            'The same rank 1 pixels are used. Only a conservative luminance-dependent shadow lift is applied.'
+            'The current Etsy rank 1 image remains the visual source. Only luminance-dependent shadow and mid-shadow recovery is applied.'
         },
 
         preview_token:
@@ -2621,9 +3715,12 @@ app.post(
           'ONAYLIYORUM',
 
         upload_blocked_by_consistency:
-          !preview
-            .galleryConsistency
-            .passed,
+          (
+            !preview.validation
+              .safe_for_visual_review ||
+            !preview.galleryConsistency
+              .passed
+          ),
 
         etsy_modified:
           false
@@ -2634,6 +3731,12 @@ app.post(
     }
   }
 );
+
+
+/* =========================================================
+   APPLY V4
+   EXACT ONAYLIYORUM REQUIRED
+========================================================= */
 
 app.post(
   '/api/listings/:listingId/thumbnail-repair/apply',
@@ -2675,7 +3778,7 @@ app.post(
       const payload =
         verifyToken(
           previewToken,
-          'thumbnail_preview_v3'
+          'thumbnail_preview_v4'
         );
 
       if (
@@ -2778,19 +3881,23 @@ app.post(
 
         } catch (err) {
           console.warn(
-            'Rank 2 reference could not be re-analyzed:',
+            'Image 2 reference could not be re-analyzed:',
             err.message
           );
         }
       }
 
       const repaired =
-        await createReferencePreservingLift(
-          sourceBuffer,
-          Number(
-            payload.strength
-          )
-        );
+        Number(
+          payload.strength
+        ) > 0
+          ? await renderLiftV4(
+              sourceBuffer,
+              Number(
+                payload.strength
+              )
+            )
+          : sourceBuffer;
 
       const after =
         await analyzeImage(
@@ -2824,6 +3931,7 @@ app.post(
 
             before,
             after,
+
             validation,
 
             visual_consistency:
@@ -2845,7 +3953,7 @@ app.post(
             repaired,
 
           filename:
-            `etsy-${listingId}-reference-preserving.jpg`,
+            `etsy-${listingId}-reference-preserving-v4.jpg`,
 
           contentType:
             'image/jpeg'
@@ -2904,9 +4012,7 @@ app.post(
           ? postImages.some(
               (img) =>
                 String(
-                  getImageId(
-                    img
-                  )
+                  getImageId(img)
                 ) ===
                 String(
                   uploadedImageId
@@ -2915,12 +4021,14 @@ app.post(
           : false;
 
       const newImageIsRank1 =
-        uploadedImageId &&
-        String(
-          currentRank1Id
-        ) ===
-        String(
-          uploadedImageId
+        Boolean(
+          uploadedImageId &&
+          String(
+            currentRank1Id
+          ) ===
+          String(
+            uploadedImageId
+          )
         );
 
       let cleanupToken =
@@ -2965,9 +4073,7 @@ app.post(
           null,
 
         listing_id:
-          Number(
-            listingId
-          ),
+          Number(listingId),
 
         source_image_id:
           imageSet.rank1.imageId,
@@ -2986,12 +4092,11 @@ app.post(
           currentRank1Id,
 
         replacement_verified_as_rank1:
-          Boolean(
-            newImageIsRank1
-          ),
+          newImageIsRank1,
 
         before,
         after,
+
         validation,
 
         visual_consistency:
@@ -3032,6 +4137,12 @@ app.post(
     }
   }
 );
+
+
+/* =========================================================
+   OLD THUMBNAIL CLEANUP
+   SEPARATE APPROVAL REQUIRED
+========================================================= */
 
 app.post(
   '/api/listings/:listingId/thumbnail-repair/cleanup',
@@ -3100,8 +4211,7 @@ app.post(
         [];
 
       if (
-        images.length <
-        2
+        images.length < 2
       ) {
         return res
           .status(409)
@@ -3115,9 +4225,7 @@ app.post(
         images.find(
           (img) =>
             String(
-              getImageId(
-                img
-              )
+              getImageId(img)
             ) ===
             String(
               payload.sourceImageId
@@ -3128,13 +4236,10 @@ app.post(
         images.find(
           (img) =>
             String(
-              getImageId(
-                img
-              )
+              getImageId(img)
             ) ===
             String(
-              payload
-                .replacementImageId
+              payload.replacementImageId
             )
         );
 
@@ -3167,13 +4272,10 @@ app.post(
 
       if (
         String(
-          getImageId(
-            rank1
-          )
+          getImageId(rank1)
         ) !==
         String(
-          payload
-            .replacementImageId
+          payload.replacementImageId
         )
       ) {
         return res
@@ -3186,14 +4288,10 @@ app.post(
 
       if (
         String(
-          getImageId(
-            source
-          )
+          getImageId(source)
         ) ===
         String(
-          getImageId(
-            rank1
-          )
+          getImageId(rank1)
         )
       ) {
         return res
@@ -3248,6 +4346,12 @@ app.post(
         );
 
       } catch (deleteErr) {
+        /*
+          Etsy can return 204 No Content.
+          Some wrappers may dislike an empty body.
+          Re-read images before declaring failure.
+        */
+
         const probe =
           await getListingImages(
             listingId
@@ -3255,16 +4359,14 @@ app.post(
             () => null
           );
 
-        const probeStillHasSource =
+        const stillExists =
           (
             probe?.results ||
             []
           ).some(
             (img) =>
               String(
-                getImageId(
-                  img
-                )
+                getImageId(img)
               ) ===
               String(
                 payload.sourceImageId
@@ -3273,7 +4375,7 @@ app.post(
 
         if (
           !probe ||
-          probeStillHasSource
+          stillExists
         ) {
           throw deleteErr;
         }
@@ -3292,9 +4394,7 @@ app.post(
         afterImages.some(
           (img) =>
             String(
-              getImageId(
-                img
-              )
+              getImageId(img)
             ) ===
             String(
               payload.sourceImageId
@@ -3305,34 +4405,30 @@ app.post(
         afterImages.find(
           (img) =>
             String(
-              getImageId(
-                img
-              )
+              getImageId(img)
             ) ===
             String(
-              payload
-                .replacementImageId
+              payload.replacementImageId
             )
         );
 
       res.json({
         success:
-          !sourceStillExists &&
-          Number(
-            replacementAfter?.rank
-          ) === 1,
+          Boolean(
+            !sourceStillExists &&
+            Number(
+              replacementAfter?.rank
+            ) === 1
+          ),
 
         listing_id:
-          Number(
-            listingId
-          ),
+          Number(listingId),
 
         deleted_old_source_image_id:
           payload.sourceImageId,
 
         replacement_image_id:
-          payload
-            .replacementImageId,
+          payload.replacementImageId,
 
         replacement_rank_after_cleanup:
           replacementAfter?.rank ??
@@ -3356,6 +4452,11 @@ app.post(
   }
 );
 
+
+/* =========================================================
+   SECTIONS
+========================================================= */
+
 app.get(
   '/api/sections',
   async (
@@ -3375,6 +4476,7 @@ app.get(
     }
   }
 );
+
 
 app.post(
   '/api/sections',
@@ -3418,6 +4520,7 @@ app.post(
     }
   }
 );
+
 
 app.put(
   '/api/sections/:sectionId',
@@ -3467,6 +4570,11 @@ app.put(
   }
 );
 
+
+/* =========================================================
+   ERROR HANDLER
+========================================================= */
+
 app.use(
   (
     err,
@@ -3493,7 +4601,9 @@ app.use(
   }
 );
 
+
 export default app;
+
 
 if (
   !process.env.VERCEL
