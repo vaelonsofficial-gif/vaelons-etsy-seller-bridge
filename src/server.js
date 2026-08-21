@@ -114,7 +114,7 @@ function extractUploadedImage(uploadResult) {
   return uploadResult;
 }
 
-async function getRank1Image(listingId) {
+async function getListingImageSet(listingId) {
   const data = await getListingImages(listingId);
   const images = Array.isArray(data?.results) ? data.results : [];
 
@@ -124,25 +124,44 @@ async function getRank1Image(listingId) {
     throw err;
   }
 
-  const rank1 =
-    images.find((img) => Number(img.rank) === 1) ||
-    [...images].sort(
-      (a, b) => Number(a.rank ?? 9999) - Number(b.rank ?? 9999)
-    )[0];
+  const ordered = [...images].sort(
+    (a, b) => Number(a.rank ?? 9999) - Number(b.rank ?? 9999)
+  );
 
-  const imageUrl = getImageUrl(rank1);
+  const rank1 = images.find((img) => Number(img.rank) === 1) || ordered[0];
+  const rank2 = images.find((img) => Number(img.rank) === 2) || ordered[1] || null;
 
-  if (!imageUrl) {
+  const rank1Url = getImageUrl(rank1);
+  const rank2Url = rank2 ? getImageUrl(rank2) : null;
+
+  if (!rank1Url) {
     const err = new Error('No usable rank 1 image URL found');
     err.status = 404;
     throw err;
   }
 
   return {
-    image: rank1,
-    imageId: getImageId(rank1),
-    imageUrl,
-    images
+    images,
+    rank1: {
+      image: rank1,
+      imageId: getImageId(rank1),
+      imageUrl: rank1Url
+    },
+    rank2: rank2 && rank2Url
+      ? {
+          image: rank2,
+          imageId: getImageId(rank2),
+          imageUrl: rank2Url
+        }
+      : null
+  };
+}
+
+async function getRank1Image(listingId) {
+  const set = await getListingImageSet(listingId);
+  return {
+    ...set.rank1,
+    images: set.images
   };
 }
 
@@ -194,59 +213,75 @@ async function analyzeImage(buffer) {
 
   const { data, info } = await sharp(buffer)
     .rotate()
+    .removeAlpha()
+    .toColourspace('srgb')
     .resize({
       width: 420,
       height: 420,
       fit: 'inside',
       withoutEnlargement: true
     })
-    .greyscale()
     .raw()
     .toBuffer({ resolveWithObject: true });
 
-  const values = Array.from(data);
-  values.sort((a, b) => a - b);
+  const channels = info.channels;
+  const luminanceValues = [];
 
-  const count = values.length || 1;
-
-  let sum = 0;
+  let sumL = 0;
+  let sumR = 0;
+  let sumG = 0;
+  let sumB = 0;
+  let sumChroma = 0;
   let shadowCount = 0;
   let deepShadowCount = 0;
   let highlightCount = 0;
+  let pixelCount = 0;
 
-  for (const value of values) {
-    sum += value;
+  for (let i = 0; i < data.length; i += channels) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
 
-    if (value < 55) {
-      shadowCount += 1;
-    }
+    const luminance = Math.round(
+      0.2126 * r +
+      0.7152 * g +
+      0.0722 * b
+    );
 
-    if (value < 28) {
-      deepShadowCount += 1;
-    }
+    const maxRgb = Math.max(r, g, b);
+    const minRgb = Math.min(r, g, b);
 
-    if (value > 230) {
-      highlightCount += 1;
-    }
+    luminanceValues.push(luminance);
+
+    sumL += luminance;
+    sumR += r;
+    sumG += g;
+    sumB += b;
+    sumChroma += maxRgb - minRgb;
+
+    if (luminance < 55) shadowCount += 1;
+    if (luminance < 28) deepShadowCount += 1;
+    if (luminance > 230) highlightCount += 1;
+
+    pixelCount += 1;
   }
 
-  const brightness = Math.round(sum / count);
+  luminanceValues.sort((a, b) => a - b);
+
+  const count = pixelCount || 1;
+  const brightness = Math.round(sumL / count);
 
   let varianceSum = 0;
 
-  for (const value of values) {
+  for (const value of luminanceValues) {
     const delta = value - brightness;
     varianceSum += delta * delta;
   }
 
-  const contrast = Math.round(
-    Math.sqrt(varianceSum / count)
-  );
-
-  const p10 = percentileFromSorted(values, 0.10);
-  const p50 = percentileFromSorted(values, 0.50);
-  const p90 = percentileFromSorted(values, 0.90);
-
+  const contrast = Math.round(Math.sqrt(varianceSum / count));
+  const p10 = percentileFromSorted(luminanceValues, 0.10);
+  const p50 = percentileFromSorted(luminanceValues, 0.50);
+  const p90 = percentileFromSorted(luminanceValues, 0.90);
   const tonalRange = p90 - p10;
 
   let darknessLabel = 'good';
@@ -262,28 +297,22 @@ async function analyzeImage(buffer) {
   return {
     width: metadata.width ?? info.width ?? null,
     height: metadata.height ?? info.height ?? null,
-
     brightness_0_255: brightness,
     contrast_stdev: contrast,
     darkness_label: darknessLabel,
-
     p10,
     p50,
     p90,
-
     tonal_range_p10_p90: tonalRange,
-
-    shadow_percent: round1(
-      (shadowCount / count) * 100
-    ),
-
-    deep_shadow_percent: round1(
-      (deepShadowCount / count) * 100
-    ),
-
-    highlight_percent: round1(
-      (highlightCount / count) * 100
-    )
+    shadow_percent: round1((shadowCount / count) * 100),
+    deep_shadow_percent: round1((deepShadowCount / count) * 100),
+    highlight_percent: round1((highlightCount / count) * 100),
+    mean_rgb: {
+      r: round1(sumR / count),
+      g: round1(sumG / count),
+      b: round1(sumB / count)
+    },
+    mean_chroma: round1(sumChroma / count)
   };
 }
 
@@ -296,346 +325,193 @@ function assessThumbnail(analysis) {
   const highlights = analysis.highlight_percent;
   const tonalRange = analysis.tonal_range_p10_p90;
 
-  if (b < 50) {
-    score -= 34;
-  } else if (b < 60) {
-    score -= 27;
-  } else if (b < 70) {
-    score -= 19;
-  } else if (b < 80) {
-    score -= 11;
-  } else if (b < 90) {
-    score -= 5;
-  }
+  if (b < 50) score -= 34;
+  else if (b < 60) score -= 27;
+  else if (b < 70) score -= 19;
+  else if (b < 80) score -= 11;
+  else if (b < 90) score -= 5;
 
-  if (shadows > 60) {
-    score -= 24;
-  } else if (shadows > 50) {
-    score -= 17;
-  } else if (shadows > 40) {
-    score -= 10;
-  } else if (shadows > 32) {
-    score -= 5;
-  }
+  if (shadows > 60) score -= 24;
+  else if (shadows > 50) score -= 17;
+  else if (shadows > 40) score -= 10;
+  else if (shadows > 32) score -= 5;
 
-  if (deep > 38) {
-    score -= 14;
-  } else if (deep > 28) {
-    score -= 9;
-  } else if (deep > 20) {
-    score -= 4;
-  }
+  if (deep > 38) score -= 14;
+  else if (deep > 28) score -= 9;
+  else if (deep > 20) score -= 4;
 
-  if (highlights > 14) {
-    score -= 8;
-  } else if (highlights > 8) {
-    score -= 4;
-  }
+  if (highlights > 14) score -= 8;
+  else if (highlights > 8) score -= 4;
 
-  if (tonalRange < 55) {
-    score -= 12;
-  } else if (tonalRange < 70) {
-    score -= 6;
-  }
+  if (tonalRange < 55) score -= 12;
+  else if (tonalRange < 70) score -= 6;
 
-  score = clamp(
-    Math.round(score),
-    0,
-    100
-  );
+  score = clamp(Math.round(score), 0, 100);
 
   let priority = 'none';
   let recommendedAction = 'keep';
 
   if (score < 45) {
     priority = 'urgent';
-    recommendedAction =
-      'prepare_shadow_lift_preview';
+    recommendedAction = 'prepare_reference_preserving_preview';
   } else if (score < 60) {
     priority = 'high';
-    recommendedAction =
-      'prepare_shadow_lift_preview';
+    recommendedAction = 'prepare_reference_preserving_preview';
   } else if (score < 75) {
     priority = 'review';
-    recommendedAction =
-      'review_before_repair';
+    recommendedAction = 'review_before_repair';
   }
 
   return {
     readability_score_0_100: score,
     priority,
-    recommended_action:
-      recommendedAction,
-
+    recommended_action: recommendedAction,
     auto_publish_allowed: false,
-
     reason:
       recommendedAction === 'keep'
         ? 'Thumbnail readability is within the conservative safe range.'
-        : 'Readability signals suggest the rank 1 image may be too dark on small screens; visual approval is required before any Etsy change.'
+        : 'Readability may be weak on small screens. A reference-preserving preview and visual approval are required.'
   };
 }
 
-function chooseShadowLiftStrength(
-  analysis,
-  mode = 'auto'
-) {
-  if (mode === 'gentle') {
-    return 0.38;
-  }
+function chooseShadowLiftStrength(analysis, mode = 'auto') {
+  if (mode === 'gentle') return 0.32;
+  if (mode === 'balanced') return 0.46;
 
-  if (mode === 'balanced') {
-    return 0.52;
-  }
+  const brightness = analysis.brightness_0_255;
+  const shadowPercent = analysis.shadow_percent;
 
-  const brightness =
-    analysis.brightness_0_255;
+  let strength = 0.28;
 
-  const shadowPercent =
-    analysis.shadow_percent;
+  if (brightness < 40) strength = 0.54;
+  else if (brightness < 50) strength = 0.48;
+  else if (brightness < 60) strength = 0.42;
+  else if (brightness < 70) strength = 0.36;
+  else if (brightness < 80) strength = 0.30;
 
-  let strength = 0.32;
+  if (shadowPercent > 70) strength += 0.04;
+  else if (shadowPercent < 35) strength -= 0.04;
 
-  if (brightness < 50) {
-    strength = 0.64;
-  } else if (brightness < 60) {
-    strength = 0.56;
-  } else if (brightness < 70) {
-    strength = 0.48;
-  } else if (brightness < 80) {
-    strength = 0.38;
-  }
-
-  if (shadowPercent > 55) {
-    strength += 0.06;
-  } else if (shadowPercent < 35) {
-    strength -= 0.05;
-  }
-
-  return round1(
-    clamp(
-      strength,
-      0.25,
-      0.72
-    )
-  );
+  return round1(clamp(strength, 0.22, 0.58));
 }
 
 function normalizeRepairMode(value) {
-  const mode = String(
-    value || 'auto'
-  )
-    .trim()
-    .toLowerCase();
+  const mode = String(value || 'auto').trim().toLowerCase();
 
-  if (
-    [
-      'auto',
-      'gentle',
-      'balanced'
-    ].includes(mode)
-  ) {
+  if (['auto', 'gentle', 'balanced'].includes(mode)) {
     return mode;
   }
 
   return 'auto';
 }
 
-async function createShadowLift(
-  buffer,
-  strength
-) {
-  const { data, info } =
-    await sharp(buffer)
-      .rotate()
-      .removeAlpha()
-      .toColourspace('srgb')
-      .raw()
-      .toBuffer({
-        resolveWithObject: true
-      });
+async function createReferencePreservingLift(buffer, strength) {
+  const { data, info } = await sharp(buffer)
+    .rotate()
+    .removeAlpha()
+    .toColourspace('srgb')
+    .raw()
+    .toBuffer({ resolveWithObject: true });
 
   if (info.channels < 3) {
-    const err =
-      new Error(
-        'Unsupported image channel layout'
-      );
-
+    const err = new Error('Unsupported image channel layout');
     err.status = 422;
-
     throw err;
   }
 
-  const output =
-    Buffer.allocUnsafe(
-      data.length
-    );
+  const output = Buffer.allocUnsafe(data.length);
+  const channels = info.channels;
 
-  const channels =
-    info.channels;
-
-  for (
-    let i = 0;
-    i < data.length;
-    i += channels
-  ) {
+  for (let i = 0; i < data.length; i += channels) {
     const r = data[i];
     const g = data[i + 1];
     const b = data[i + 2];
 
-    const luminance =
-      (
-        0.2126 * r +
-        0.7152 * g +
-        0.0722 * b
-      ) / 255;
+    const luminance = (
+      0.2126 * r +
+      0.7152 * g +
+      0.0722 * b
+    ) / 255;
 
-    /*
-      IMPORTANT:
-      We are NOT applying global exposure,
-      contrast boost, gamma push or generative redraw.
-
-      The goal is to preserve the artwork's
-      blacks, highlights and color identity.
-
-      Only shadow / mid-shadow information
-      receives a conservative lift.
-    */
-
-    const blackProtect =
-      clamp(
-        (
-          luminance -
-          0.015
-        ) / 0.09,
-        0,
-        1
-      );
-
-    const shadowWeight =
-      Math.pow(
-        1 - luminance,
-        2.35
-      ) *
-      blackProtect;
+    const blackProtect = clamp((luminance - 0.018) / 0.11, 0, 1);
+    const highlightProtect = clamp((0.82 - luminance) / 0.35, 0, 1);
+    const shadowWeight = Math.pow(1 - luminance, 2.55);
 
     const factor =
       1 +
       strength *
-      shadowWeight;
+      shadowWeight *
+      blackProtect *
+      highlightProtect;
 
-    output[i] =
-      clamp(
-        Math.round(
-          r * factor
-        ),
-        0,
-        255
-      );
+    output[i] = clamp(Math.round(r * factor), 0, 255);
+    output[i + 1] = clamp(Math.round(g * factor), 0, 255);
+    output[i + 2] = clamp(Math.round(b * factor), 0, 255);
 
-    output[i + 1] =
-      clamp(
-        Math.round(
-          g * factor
-        ),
-        0,
-        255
-      );
-
-    output[i + 2] =
-      clamp(
-        Math.round(
-          b * factor
-        ),
-        0,
-        255
-      );
-
-    for (
-      let c = 3;
-      c < channels;
-      c += 1
-    ) {
-      output[i + c] =
-        data[i + c];
+    for (let c = 3; c < channels; c += 1) {
+      output[i + c] = data[i + c];
     }
   }
 
-  return sharp(
-    output,
-    {
-      raw: {
-        width:
-          info.width,
-
-        height:
-          info.height,
-
-        channels:
-          info.channels
-      }
+  return sharp(output, {
+    raw: {
+      width: info.width,
+      height: info.height,
+      channels: info.channels
     }
-  )
+  })
     .jpeg({
       quality: 96,
-      chromaSubsampling:
-        '4:4:4',
+      chromaSubsampling: '4:4:4',
       mozjpeg: true
     })
     .toBuffer();
 }
 
-function validateRepairResult(
-  before,
-  after
-) {
+function rgbDistance(a, b) {
+  if (!a || !b) return null;
+
+  return Math.sqrt(
+    Math.pow(Number(a.r) - Number(b.r), 2) +
+    Math.pow(Number(a.g) - Number(b.g), 2) +
+    Math.pow(Number(a.b) - Number(b.b), 2)
+  );
+}
+
+function validateRepairResult(before, after) {
   const brightnessGain =
     after.brightness_0_255 -
     before.brightness_0_255;
 
   const contrastRatio =
     before.contrast_stdev > 0
-      ? after.contrast_stdev /
-        before.contrast_stdev
+      ? after.contrast_stdev / before.contrast_stdev
       : 1;
 
   const highlightIncrease =
     after.highlight_percent -
     before.highlight_percent;
 
+  const chromaDelta =
+    Math.abs(
+      after.mean_chroma -
+      before.mean_chroma
+    );
+
+  const meanRgbDelta =
+    rgbDistance(
+      before.mean_rgb,
+      after.mean_rgb
+    ) ?? 0;
+
   const warnings = [];
 
-  if (
-    brightnessGain < 3
-  ) {
-    warnings.push(
-      'repair_too_weak'
-    );
-  }
-
-  if (
-    brightnessGain > 28
-  ) {
-    warnings.push(
-      'brightness_increase_too_large'
-    );
-  }
-
-  if (
-    contrastRatio < 0.90
-  ) {
-    warnings.push(
-      'contrast_loss_detected'
-    );
-  }
-
-  if (
-    highlightIncrease > 6
-  ) {
-    warnings.push(
-      'highlight_clipping_risk'
-    );
-  }
+  if (brightnessGain < 2) warnings.push('repair_too_weak');
+  if (brightnessGain > 22) warnings.push('brightness_increase_too_large');
+  if (contrastRatio < 0.92) warnings.push('contrast_loss_detected');
+  if (highlightIncrease > 4) warnings.push('highlight_clipping_risk');
+  if (chromaDelta > 12) warnings.push('color_intensity_shift_detected');
+  if (meanRgbDelta > 24) warnings.push('color_grade_shift_detected');
 
   return {
     safe_for_visual_review:
@@ -645,16 +521,131 @@ function validateRepairResult(
       brightnessGain,
 
     contrast_ratio:
-      round1(
-        contrastRatio
-      ),
+      round1(contrastRatio),
 
     highlight_increase_percent:
-      round1(
-        highlightIncrease
-      ),
+      round1(highlightIncrease),
+
+    chroma_delta:
+      round1(chromaDelta),
+
+    mean_rgb_delta:
+      round1(meanRgbDelta),
 
     warnings
+  };
+}
+
+function assessGalleryConsistency(
+  source,
+  preview,
+  rank2Analysis
+) {
+  const sourceToPreviewRgb =
+    rgbDistance(
+      source.mean_rgb,
+      preview.mean_rgb
+    ) ?? 0;
+
+  const chromaDelta =
+    Math.abs(
+      preview.mean_chroma -
+      source.mean_chroma
+    );
+
+  const contrastRatio =
+    source.contrast_stdev > 0
+      ? preview.contrast_stdev /
+        source.contrast_stdev
+      : 1;
+
+  const warnings = [];
+
+  if (sourceToPreviewRgb > 24) {
+    warnings.push('preview_color_drift');
+  }
+
+  if (chromaDelta > 12) {
+    warnings.push('preview_chroma_drift');
+  }
+
+  if (contrastRatio < 0.92) {
+    warnings.push('preview_contrast_drift');
+  }
+
+  let rank2Reference = null;
+
+  if (rank2Analysis) {
+    const sourceToRank2Rgb =
+      rgbDistance(
+        source.mean_rgb,
+        rank2Analysis.mean_rgb
+      ) ?? 0;
+
+    const previewToRank2Rgb =
+      rgbDistance(
+        preview.mean_rgb,
+        rank2Analysis.mean_rgb
+      ) ?? 0;
+
+    const relativeMoveAway =
+      sourceToRank2Rgb > 0
+        ? (
+            previewToRank2Rgb -
+            sourceToRank2Rgb
+          ) /
+          sourceToRank2Rgb
+        : 0;
+
+    rank2Reference = {
+      source_to_rank2_rgb_distance:
+        round1(sourceToRank2Rgb),
+
+      preview_to_rank2_rgb_distance:
+        round1(previewToRank2Rgb),
+
+      relative_move_away_from_rank2:
+        round1(relativeMoveAway)
+    };
+
+    if (
+      relativeMoveAway > 0.35 &&
+      sourceToPreviewRgb > 10
+    ) {
+      warnings.push(
+        'preview_moves_too_far_from_gallery_reference'
+      );
+    }
+  }
+
+  return {
+    passed:
+      warnings.length === 0,
+
+    hard_block_upload:
+      warnings.length > 0,
+
+    source_to_preview_rgb_distance:
+      round1(sourceToPreviewRgb),
+
+    source_to_preview_chroma_delta:
+      round1(chromaDelta),
+
+    source_to_preview_contrast_ratio:
+      round1(contrastRatio),
+
+    rank2_reference_available:
+      Boolean(rank2Analysis),
+
+    rank2_reference:
+      rank2Reference,
+
+    warnings,
+
+    note:
+      rank2Analysis
+        ? 'Image 2 is used as a soft gallery color/tonal reference. Geometry is not pixel-compared because gallery images may use different mockups or crops.'
+        : 'Image 2 was not available. Consistency is checked against the original rank 1 image only.'
   };
 }
 
@@ -662,25 +653,17 @@ function signToken(payload) {
   const encoded =
     Buffer
       .from(
-        JSON.stringify(
-          payload
-        )
+        JSON.stringify(payload)
       )
-      .toString(
-        'base64url'
-      );
+      .toString('base64url');
 
   const signature =
     createHmac(
       'sha256',
-      required(
-        'BRIDGE_API_KEY'
-      )
+      required('BRIDGE_API_KEY')
     )
       .update(encoded)
-      .digest(
-        'base64url'
-      );
+      .digest('base64url');
 
   return `${encoded}.${signature}`;
 }
@@ -693,53 +676,35 @@ function verifyToken(
     encoded,
     signature
   ] =
-    String(
-      token || ''
-    ).split('.');
+    String(token || '').split('.');
 
-  if (
-    !encoded ||
-    !signature
-  ) {
+  if (!encoded || !signature) {
     const err =
       new Error(
         'Invalid signed token'
       );
 
     err.status = 400;
-
     throw err;
   }
 
   const expected =
     createHmac(
       'sha256',
-      required(
-        'BRIDGE_API_KEY'
-      )
+      required('BRIDGE_API_KEY')
     )
       .update(encoded)
-      .digest(
-        'base64url'
-      );
+      .digest('base64url');
 
   const a =
-    Buffer.from(
-      signature
-    );
+    Buffer.from(signature);
 
   const b =
-    Buffer.from(
-      expected
-    );
+    Buffer.from(expected);
 
   if (
-    a.length !==
-      b.length ||
-    !timingSafeEqual(
-      a,
-      b
-    )
+    a.length !== b.length ||
+    !timingSafeEqual(a, b)
   ) {
     const err =
       new Error(
@@ -747,7 +712,6 @@ function verifyToken(
       );
 
     err.status = 400;
-
     throw err;
   }
 
@@ -761,9 +725,7 @@ function verifyToken(
             encoded,
             'base64url'
           )
-          .toString(
-            'utf8'
-          )
+          .toString('utf8')
       );
   } catch {
     const err =
@@ -772,14 +734,12 @@ function verifyToken(
       );
 
     err.status = 400;
-
     throw err;
   }
 
   if (
     !payload?.exp ||
-    Date.now() >
-      payload.exp
+    Date.now() > payload.exp
   ) {
     const err =
       new Error(
@@ -787,14 +747,12 @@ function verifyToken(
       );
 
     err.status = 410;
-
     throw err;
   }
 
   if (
     expectedType &&
-    payload.type !==
-      expectedType
+    payload.type !== expectedType
   ) {
     const err =
       new Error(
@@ -802,7 +760,6 @@ function verifyToken(
       );
 
     err.status = 409;
-
     throw err;
   }
 
@@ -818,25 +775,52 @@ async function buildRepairPreview(
       `/listings/${listingId}`
     );
 
-  const rank1 =
-    await getRank1Image(
+  const imageSet =
+    await getListingImageSet(
       listingId
     );
 
-  const { buffer } =
+  const {
+    buffer: sourceBuffer
+  } =
     await downloadImage(
-      rank1.imageUrl
+      imageSet.rank1.imageUrl
     );
 
   const before =
     await analyzeImage(
-      buffer
+      sourceBuffer
     );
 
   const assessment =
     assessThumbnail(
       before
     );
+
+  let rank2Analysis = null;
+
+  if (
+    imageSet.rank2?.imageUrl
+  ) {
+    try {
+      const {
+        buffer: rank2Buffer
+      } =
+        await downloadImage(
+          imageSet.rank2.imageUrl
+        );
+
+      rank2Analysis =
+        await analyzeImage(
+          rank2Buffer
+        );
+    } catch (err) {
+      console.warn(
+        'Rank 2 reference could not be analyzed:',
+        err.message
+      );
+    }
+  }
 
   const strength =
     chooseShadowLiftStrength(
@@ -845,8 +829,8 @@ async function buildRepairPreview(
     );
 
   const repaired =
-    await createShadowLift(
-      buffer,
+    await createReferencePreservingLift(
+      sourceBuffer,
       strength
     );
 
@@ -861,23 +845,40 @@ async function buildRepairPreview(
       after
     );
 
+  const galleryConsistency =
+    assessGalleryConsistency(
+      before,
+      after,
+      rank2Analysis
+    );
+
   const token =
     signToken({
       type:
-        'thumbnail_preview_v2',
+        'thumbnail_preview_v3',
 
       listingId,
 
       sourceImageId:
         String(
-          rank1.imageId
+          imageSet.rank1.imageId
         ),
 
+      rank2ImageId:
+        imageSet.rank2?.imageId
+          ? String(
+              imageSet.rank2.imageId
+            )
+          : null,
+
       method:
-        'shadow_lift_v2',
+        'reference_preserving_shadow_lift_v3',
 
       strength,
       mode,
+
+      consistencyPassed:
+        galleryConsistency.passed,
 
       exp:
         Date.now() +
@@ -886,13 +887,15 @@ async function buildRepairPreview(
 
   return {
     listing,
-    rank1,
+    imageSet,
     before,
     after,
+    rank2Analysis,
     assessment,
     strength,
     mode,
     validation,
+    galleryConsistency,
     token
   };
 }
@@ -903,17 +906,13 @@ async function mapLimit(
   mapper
 ) {
   const results =
-    new Array(
-      items.length
-    );
+    new Array(items.length);
 
   let cursor = 0;
 
   async function worker() {
     while (true) {
-      const index =
-        cursor;
-
+      const index = cursor;
       cursor += 1;
 
       if (
@@ -967,19 +966,14 @@ function listingAgeDays(
     Math.floor(
       (
         Date.now() /
-          1000 -
+        1000 -
         Number(ts)
       ) /
       86400
     );
 
-  return Number.isFinite(
-    age
-  )
-    ? Math.max(
-        0,
-        age
-      )
+  return Number.isFinite(age)
+    ? Math.max(0, age)
     : null;
 }
 
@@ -993,8 +987,7 @@ function performanceSignal(
 
   const favorites =
     Number(
-      listing
-        ?.num_favorers ??
+      listing?.num_favorers ??
       0
     );
 
@@ -1047,30 +1040,22 @@ function compactImageList(
   data
 ) {
   return (
-    data?.results || []
+    data?.results ||
+    []
   ).map(
     (img) => ({
       image_id:
-        getImageId(
-          img
-        ),
+        getImageId(img),
 
       rank:
         img.rank ??
         null,
 
       image_url:
-        getImageUrl(
-          img
-        )
+        getImageUrl(img)
     })
   );
 }
-
-
-// ==================================================
-// HEALTH
-// ==================================================
 
 app.get(
   '/health',
@@ -1082,24 +1067,17 @@ app.get(
         'vaelons-etsy-seller-bridge',
 
       thumbnail_engine:
-        'shadow_lift_v2'
+        'reference_preserving_shadow_lift_v3'
     });
   }
 );
-
-
-// ==================================================
-// OAUTH
-// ==================================================
 
 app.get(
   '/oauth/etsy/start',
   (req, res) => {
     if (
       req.query.setup_secret !==
-      required(
-        'SETUP_SECRET'
-      )
+      required('SETUP_SECRET')
     ) {
       return res
         .status(401)
@@ -1109,19 +1087,13 @@ app.get(
     }
 
     const state =
-      randomBase64Url(
-        24
-      );
+      randomBase64Url(24);
 
     const verifier =
-      randomBase64Url(
-        48
-      );
+      randomBase64Url(48);
 
     const challenge =
-      pkceChallenge(
-        verifier
-      );
+      pkceChallenge(verifier);
 
     const redirectUri =
       `${publicBase()}/oauth/etsy/callback`;
@@ -1140,8 +1112,7 @@ app.get(
       {
         httpOnly: true,
         secure: true,
-        sameSite:
-          'lax',
+        sameSite: 'lax',
         maxAge:
           10 *
           60 *
@@ -1195,7 +1166,6 @@ app.get(
   }
 );
 
-
 app.get(
   '/oauth/etsy/callback',
   async (
@@ -1210,17 +1180,15 @@ app.get(
           .status(400)
           .send(
             `Etsy authorization failed: ${
-              req.query
-                .error_description ||
+              req.query.error_description ||
               req.query.error
             }`
           );
       }
 
       const cookie =
-        parseCookies(
-          req
-        ).etsy_oauth;
+        parseCookies(req)
+          .etsy_oauth;
 
       if (!cookie) {
         return res
@@ -1231,21 +1199,17 @@ app.get(
       }
 
       const flow =
-        openJson(
-          cookie
-        );
+        openJson(cookie);
 
       if (
-        !req.query
-          .state ||
-        req.query
-          .state !==
+        !req.query.state ||
+        req.query.state !==
           flow.state ||
         Date.now() -
           flow.ts >
           10 *
-            60 *
-            1000
+          60 *
+          1000
       ) {
         return res
           .status(400)
@@ -1270,8 +1234,7 @@ app.get(
 
           code:
             String(
-              req.query
-                .code ||
+              req.query.code ||
               ''
             ),
 
@@ -1320,8 +1283,7 @@ app.get(
         {
           params: {
             limit: 1,
-            state:
-              'active'
+            state: 'active'
           }
         }
       );
@@ -1329,8 +1291,7 @@ app.get(
       const encryptedCapsule =
         sealJson({
           refresh_token:
-            token
-              .refresh_token,
+            token.refresh_token,
 
           shop_id:
             shopId
@@ -1344,12 +1305,8 @@ app.get(
         .type('html')
         .send(`
 <!doctype html>
-
 <meta charset="utf-8">
-
-<title>
-VAELONS Etsy Connected
-</title>
+<title>VAELONS Etsy Connected</title>
 
 <style>
 body {
@@ -1386,12 +1343,10 @@ adıyla ekleyin.
 Production + Preview seçin, kaydedin ve redeploy yapın.
 Bu değeri gizli tutun.
 </p>
-        `);
+      `);
 
     } catch (err) {
-      console.error(
-        err
-      );
+      console.error(err);
 
       res
         .status(
@@ -1410,11 +1365,6 @@ Bu değeri gizli tutun.
   }
 );
 
-
-// ==================================================
-// PUBLIC PREVIEW
-// ==================================================
-
 app.get(
   '/preview/thumbnail-repair/:token',
   async (
@@ -1424,29 +1374,26 @@ app.get(
     try {
       const payload =
         verifyToken(
-          req.params
-            .token,
-          'thumbnail_preview_v2'
+          req.params.token,
+          'thumbnail_preview_v3'
         );
 
       const listingId =
         asListingId(
-          payload
-            .listingId
+          payload.listingId
         );
 
-      const rank1 =
-        await getRank1Image(
+      const imageSet =
+        await getListingImageSet(
           listingId
         );
 
       if (
         String(
-          rank1.imageId
+          imageSet.rank1.imageId
         ) !==
         String(
-          payload
-            .sourceImageId
+          payload.sourceImageId
         )
       ) {
         return res
@@ -1461,15 +1408,14 @@ app.get(
         buffer
       } =
         await downloadImage(
-          rank1.imageUrl
+          imageSet.rank1.imageUrl
         );
 
       const repaired =
-        await createShadowLift(
+        await createReferencePreservingLift(
           buffer,
           Number(
-            payload
-              .strength
+            payload.strength
           )
         );
 
@@ -1480,7 +1426,7 @@ app.get(
 
       res.setHeader(
         'content-disposition',
-        'inline; filename="thumbnail-shadow-lift-preview.jpg"'
+        'inline; filename="thumbnail-reference-preserving-preview.jpg"'
       );
 
       res.setHeader(
@@ -1493,9 +1439,7 @@ app.get(
       );
 
     } catch (err) {
-      console.error(
-        err
-      );
+      console.error(err);
 
       res
         .status(
@@ -1510,11 +1454,6 @@ app.get(
   }
 );
 
-
-// ==================================================
-// PUBLIC BEFORE / AFTER COMPARE
-// ==================================================
-
 app.get(
   '/preview/thumbnail-repair/:token/compare',
   async (
@@ -1524,15 +1463,13 @@ app.get(
     try {
       const payload =
         verifyToken(
-          req.params
-            .token,
-          'thumbnail_preview_v2'
+          req.params.token,
+          'thumbnail_preview_v3'
         );
 
       const listingId =
         asListingId(
-          payload
-            .listingId
+          payload.listingId
         );
 
       const listing =
@@ -1540,18 +1477,17 @@ app.get(
           `/listings/${listingId}`
         );
 
-      const rank1 =
-        await getRank1Image(
+      const imageSet =
+        await getListingImageSet(
           listingId
         );
 
       if (
         String(
-          rank1.imageId
+          imageSet.rank1.imageId
         ) !==
         String(
-          payload
-            .sourceImageId
+          payload.sourceImageId
         )
       ) {
         return res
@@ -1563,15 +1499,18 @@ app.get(
 
       const token =
         encodeURIComponent(
-          req.params
-            .token
+          req.params.token
         );
 
       const beforeUrl =
-        rank1.imageUrl;
+        imageSet.rank1.imageUrl;
 
       const afterUrl =
         `${publicBase()}/preview/thumbnail-repair/${token}`;
+
+      const rank2Url =
+        imageSet.rank2?.imageUrl ||
+        null;
 
       const esc =
         (value) =>
@@ -1595,6 +1534,22 @@ app.get(
               '"',
               '&quot;'
             );
+
+      const rank2Card =
+        rank2Url
+          ? `
+<div class="card">
+  <div class="label">
+  REFERANS — Listing image 2
+  </div>
+
+  <img
+    src="${esc(rank2Url)}"
+    alt="Image 2 reference"
+  >
+</div>
+`
+          : '';
 
       res
         .type('html')
@@ -1630,7 +1585,7 @@ body {
 }
 
 main {
-  max-width: 1180px;
+  max-width: 1500px;
   margin: 0 auto;
   padding: 24px;
 }
@@ -1648,24 +1603,24 @@ p {
 .grid {
   display: grid;
   grid-template-columns:
-    1fr 1fr;
+    repeat(
+      3,
+      minmax(0, 1fr)
+    );
+
   gap: 18px;
 }
 
 .card {
   background: #1b1b1b;
-  border:
-    1px solid #333;
+  border: 1px solid #333;
   border-radius: 14px;
   overflow: hidden;
 }
 
 .label {
-  padding:
-    12px 14px;
-
-  font-weight:
-    700;
+  padding: 12px 14px;
+  font-weight: 700;
 }
 
 img {
@@ -1684,7 +1639,7 @@ img {
 }
 
 @media (
-  max-width: 760px
+  max-width: 980px
 ) {
   .grid {
     grid-template-columns:
@@ -1709,13 +1664,11 @@ ${esc(
 
 <p>
 Listing ID:
-${esc(
-  listingId
-)}
+${esc(listingId)}
 ·
 Source image ID:
 ${esc(
-  rank1.imageId
+  imageSet.rank1.imageId
 )}
 </p>
 
@@ -1728,24 +1681,22 @@ ${esc(
 </div>
 
 <img
-  src="${esc(
-    beforeUrl
-  )}"
+  src="${esc(beforeUrl)}"
   alt="Before"
 >
 
 </div>
 
+${rank2Card}
+
 <div class="card">
 
 <div class="label">
-SONRA — sadece gölge açma preview
+SONRA — reference-preserving preview
 </div>
 
 <img
-  src="${esc(
-    afterUrl
-  )}"
+  src="${esc(afterUrl)}"
   alt="After"
 >
 
@@ -1755,7 +1706,9 @@ SONRA — sadece gölge açma preview
 
 <div class="note">
 Bu sayfa Etsy'de değişiklik yapmaz.
-Yeni görsel yalnızca açık onaydan sonra yüklenebilir.
+Image 2 yalnızca görsel tutarlılık referansıdır.
+Preview; kompozisyonu, crop'u veya sahneyi yeniden üretmez.
+Sadece mevcut rank 1 piksellerinde kontrollü gölge açma uygular.
 </div>
 
 </main>
@@ -1763,12 +1716,10 @@ Yeni görsel yalnızca açık onaydan sonra yüklenebilir.
 </body>
 
 </html>
-        `);
+      `);
 
     } catch (err) {
-      console.error(
-        err
-      );
+      console.error(err);
 
       res
         .status(
@@ -1782,20 +1733,10 @@ Yeni görsel yalnızca açık onaydan sonra yüklenebilir.
   }
 );
 
-
-// ==================================================
-// API AUTH
-// ==================================================
-
 app.use(
   '/api',
   bridgeAuth
 );
-
-
-// ==================================================
-// TOKEN STATUS
-// ==================================================
 
 app.get(
   '/api/token-status',
@@ -1808,19 +1749,11 @@ app.get(
       res.json(
         await getTokenStatus()
       );
-
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
-
-// ==================================================
-// SHOP
-// ==================================================
 
 app.get(
   '/api/shop',
@@ -1835,15 +1768,11 @@ app.get(
           `/shops/${await sid()}`
         )
       );
-
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
 
 app.patch(
   '/api/shop',
@@ -1900,17 +1829,10 @@ app.patch(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
-
-// ==================================================
-// LISTINGS
-// ==================================================
 
 app.get(
   '/api/listings',
@@ -1925,8 +1847,7 @@ app.get(
           1,
           Math.min(
             Number(
-              req.query
-                .limit ||
+              req.query.limit ||
               25
             ),
             25
@@ -1937,8 +1858,7 @@ app.get(
         Math.max(
           0,
           Number(
-            req.query
-              .offset ||
+            req.query.offset ||
             0
           )
         );
@@ -1976,20 +1896,16 @@ app.get(
               listing
             ) => ({
               listing_id:
-                listing
-                  .listing_id,
+                listing.listing_id,
 
               title:
-                listing
-                  .title,
+                listing.title,
 
               state:
-                listing
-                  .state,
+                listing.state,
 
               num_favorers:
-                listing
-                  .num_favorers ??
+                listing.num_favorers ??
                 0,
 
               created_timestamp:
@@ -2012,13 +1928,10 @@ app.get(
       });
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
 
 app.get(
   '/api/listings/:listingId',
@@ -2030,8 +1943,7 @@ app.get(
     try {
       const listingId =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       res.json(
@@ -2041,13 +1953,10 @@ app.get(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
 
 app.patch(
   '/api/listings/:listingId',
@@ -2059,8 +1968,7 @@ app.patch(
     try {
       const listingId =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       const allowed = [
@@ -2117,17 +2025,10 @@ app.patch(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
-
-// ==================================================
-// LISTING IMAGES
-// ==================================================
 
 app.get(
   '/api/listings/:listingId/images',
@@ -2139,8 +2040,7 @@ app.get(
     try {
       const listingId =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       res.json(
@@ -2150,13 +2050,10 @@ app.get(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
 
 app.post(
   '/api/listings/:listingId/images',
@@ -2168,8 +2065,7 @@ app.post(
     try {
       const listingId =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       const refs =
@@ -2212,8 +2108,7 @@ app.post(
 
       const fileUrl =
         new URL(
-          fileRef
-            .download_link
+          fileRef.download_link
         );
 
       if (
@@ -2230,13 +2125,10 @@ app.post(
 
       const response =
         await fetch(
-          fileRef
-            .download_link
+          fileRef.download_link
         );
 
-      if (
-        !response.ok
-      ) {
+      if (!response.ok) {
         return res
           .status(400)
           .json({
@@ -2252,8 +2144,7 @@ app.post(
         );
 
       const contentType =
-        fileRef
-          .mime_type ||
+        fileRef.mime_type ||
         response.headers.get(
           'content-type'
         ) ||
@@ -2294,17 +2185,10 @@ app.post(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
-
-// ==================================================
-// THUMBNAIL ANALYSIS
-// ==================================================
 
 app.get(
   '/api/listings/:listingId/thumbnail-analysis',
@@ -2316,8 +2200,7 @@ app.get(
     try {
       const listingId =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       const listing =
@@ -2325,8 +2208,8 @@ app.get(
           `/listings/${listingId}`
         );
 
-      const rank1 =
-        await getRank1Image(
+      const imageSet =
+        await getListingImageSet(
           listingId
         );
 
@@ -2334,7 +2217,7 @@ app.get(
         buffer
       } =
         await downloadImage(
-          rank1.imageUrl
+          imageSet.rank1.imageUrl
         );
 
       const analysis =
@@ -2358,14 +2241,22 @@ app.get(
           null,
 
         image_id:
-          rank1.imageId,
+          imageSet.rank1.imageId,
 
         rank:
-          rank1.image.rank ??
+          imageSet.rank1.image.rank ??
           null,
 
         image_url:
-          rank1.imageUrl,
+          imageSet.rank1.imageUrl,
+
+        image2_reference_id:
+          imageSet.rank2?.imageId ??
+          null,
+
+        image2_reference_url:
+          imageSet.rank2?.imageUrl ??
+          null,
 
         analysis,
         assessment,
@@ -2375,18 +2266,10 @@ app.get(
       });
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
-
-// ==================================================
-// WORKER SCAN
-// READ ONLY
-// ==================================================
 
 app.get(
   '/api/worker/scan',
@@ -2400,8 +2283,7 @@ app.get(
         Math.max(
           0,
           Number(
-            req.query
-              .offset ||
+            req.query.offset ||
             0
           )
         );
@@ -2411,8 +2293,7 @@ app.get(
           1,
           Math.min(
             Number(
-              req.query
-                .limit ||
+              req.query.limit ||
               8
             ),
             SCAN_MAX_LIMIT
@@ -2446,12 +2327,11 @@ app.get(
             try {
               const listingId =
                 String(
-                  listing
-                    .listing_id
+                  listing.listing_id
                 );
 
-              const rank1 =
-                await getRank1Image(
+              const imageSet =
+                await getListingImageSet(
                   listingId
                 );
 
@@ -2459,8 +2339,7 @@ app.get(
                 buffer
               } =
                 await downloadImage(
-                  rank1
-                    .imageUrl
+                  imageSet.rank1.imageUrl
                 );
 
               const analysis =
@@ -2480,24 +2359,27 @@ app.get(
 
               return {
                 listing_id:
-                  listing
-                    .listing_id,
+                  listing.listing_id,
 
                 exact_title:
-                  listing
-                    .title,
+                  listing.title,
 
                 state:
-                  listing
-                    .state,
+                  listing.state,
 
                 rank1_image_id:
-                  rank1
-                    .imageId,
+                  imageSet.rank1.imageId,
 
                 rank1_image_url:
-                  rank1
-                    .imageUrl,
+                  imageSet.rank1.imageUrl,
+
+                image2_reference_id:
+                  imageSet.rank2?.imageId ??
+                  null,
+
+                image2_reference_url:
+                  imageSet.rank2?.imageUrl ??
+                  null,
 
                 analysis,
                 assessment,
@@ -2512,12 +2394,10 @@ app.get(
             } catch (err) {
               return {
                 listing_id:
-                  listing
-                    .listing_id,
+                  listing.listing_id,
 
                 exact_title:
-                  listing
-                    .title,
+                  listing.title,
 
                 error:
                   err.message,
@@ -2559,13 +2439,9 @@ app.get(
             ] ?? 9;
 
           if (
-            pa !==
-            pb
+            pa !== pb
           ) {
-            return (
-              pa -
-              pb
-            );
+            return pa - pb;
           }
 
           const sa =
@@ -2578,10 +2454,7 @@ app.get(
               ?.readability_score_0_100 ??
             100;
 
-          return (
-            sa -
-            sb
-          );
+          return sa - sb;
         }
       );
 
@@ -2626,18 +2499,10 @@ app.get(
       });
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
-
-// ==================================================
-// THUMBNAIL REPAIR PREVIEW
-// READ ONLY
-// ==================================================
 
 app.post(
   '/api/listings/:listingId/thumbnail-repair/preview',
@@ -2649,14 +2514,12 @@ app.post(
     try {
       const listingId =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       const mode =
         normalizeRepairMode(
-          req.body
-            ?.mode
+          req.body?.mode
         );
 
       const preview =
@@ -2672,23 +2535,25 @@ app.post(
           ),
 
         exact_title:
-          preview
-            .listing
-            ?.title ??
+          preview.listing?.title ??
           null,
 
         source_image_id:
-          preview
-            .rank1
-            .imageId,
+          preview.imageSet.rank1.imageId,
 
         source_image_url:
-          preview
-            .rank1
-            .imageUrl,
+          preview.imageSet.rank1.imageUrl,
+
+        image2_reference_id:
+          preview.imageSet.rank2?.imageId ??
+          null,
+
+        image2_reference_url:
+          preview.imageSet.rank2?.imageUrl ??
+          null,
 
         preview_file_name:
-          `etsy-${listingId}-shadow-lift-preview.jpg`,
+          `etsy-${listingId}-reference-preserving-preview.jpg`,
 
         preview_url:
           `${publicBase()}/preview/thumbnail-repair/${preview.token}`,
@@ -2697,46 +2562,50 @@ app.post(
           `${publicBase()}/preview/thumbnail-repair/${preview.token}/compare`,
 
         before:
-          preview
-            .before,
+          preview.before,
 
         after:
-          preview
-            .after,
+          preview.after,
+
+        image2_reference_analysis:
+          preview.rank2Analysis,
 
         assessment:
-          preview
-            .assessment,
+          preview.assessment,
 
         validation:
-          preview
-            .validation,
+          preview.validation,
+
+        visual_consistency:
+          preview.galleryConsistency,
 
         repair: {
           type:
-            'shadow_lift_v2',
+            'reference_preserving_shadow_lift_v3',
 
           mode:
             preview.mode,
 
           strength:
-            preview
-              .strength,
+            preview.strength,
 
-          contrast_preservation_goal:
-            true,
+          geometry_changed:
+            false,
 
-          true_black_protection:
-            true,
+          crop_changed:
+            false,
 
-          highlight_protection:
-            true,
+          perspective_changed:
+            false,
 
           generative_redraw_used:
             false,
 
           artwork_content_changed:
-            false
+            false,
+
+          note:
+            'The same rank 1 pixels are used. Only a conservative luminance-dependent shadow lift is applied.'
         },
 
         preview_token:
@@ -2751,24 +2620,20 @@ app.post(
         approval_required_for_upload:
           'ONAYLIYORUM',
 
+        upload_blocked_by_consistency:
+          !preview
+            .galleryConsistency
+            .passed,
+
         etsy_modified:
           false
       });
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
-
-// ==================================================
-// THUMBNAIL REPAIR APPLY
-// EXACT APPROVAL REQUIRED
-// DOES NOT DELETE OLD IMAGE
-// ==================================================
 
 app.post(
   '/api/listings/:listingId/thumbnail-repair/apply',
@@ -2780,21 +2645,18 @@ app.post(
     try {
       const listingId =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       const approval =
         String(
-          req.body
-            ?.approval ||
+          req.body?.approval ||
           ''
         ).trim();
 
       const previewToken =
         String(
-          req.body
-            ?.preview_token ||
+          req.body?.preview_token ||
           ''
         ).trim();
 
@@ -2813,13 +2675,12 @@ app.post(
       const payload =
         verifyToken(
           previewToken,
-          'thumbnail_preview_v2'
+          'thumbnail_preview_v3'
         );
 
       if (
         String(
-          payload
-            .listingId
+          payload.listingId
         ) !==
         listingId
       ) {
@@ -2836,18 +2697,17 @@ app.post(
           `/listings/${listingId}`
         );
 
-      const rank1 =
-        await getRank1Image(
+      const imageSet =
+        await getListingImageSet(
           listingId
         );
 
       if (
         String(
-          rank1.imageId
+          imageSet.rank1.imageId
         ) !==
         String(
-          payload
-            .sourceImageId
+          payload.sourceImageId
         )
       ) {
         return res
@@ -2858,24 +2718,77 @@ app.post(
           });
       }
 
+      if (
+        payload.rank2ImageId
+      ) {
+        const currentRank2Id =
+          imageSet.rank2?.imageId
+            ? String(
+                imageSet.rank2.imageId
+              )
+            : null;
+
+        if (
+          currentRank2Id !==
+          String(
+            payload.rank2ImageId
+          )
+        ) {
+          return res
+            .status(409)
+            .json({
+              error:
+                'Image 2 reference changed after preview; create a new preview and approve again'
+            });
+        }
+      }
+
       const {
-        buffer
+        buffer:
+          sourceBuffer
       } =
         await downloadImage(
-          rank1.imageUrl
+          imageSet.rank1.imageUrl
         );
 
       const before =
         await analyzeImage(
-          buffer
+          sourceBuffer
         );
 
+      let rank2Analysis =
+        null;
+
+      if (
+        imageSet.rank2?.imageUrl
+      ) {
+        try {
+          const {
+            buffer:
+              rank2Buffer
+          } =
+            await downloadImage(
+              imageSet.rank2.imageUrl
+            );
+
+          rank2Analysis =
+            await analyzeImage(
+              rank2Buffer
+            );
+
+        } catch (err) {
+          console.warn(
+            'Rank 2 reference could not be re-analyzed:',
+            err.message
+          );
+        }
+      }
+
       const repaired =
-        await createShadowLift(
-          buffer,
+        await createReferencePreservingLift(
+          sourceBuffer,
           Number(
-            payload
-              .strength
+            payload.strength
           )
         );
 
@@ -2890,19 +2803,31 @@ app.post(
           after
         );
 
+      const galleryConsistency =
+        assessGalleryConsistency(
+          before,
+          after,
+          rank2Analysis
+        );
+
       if (
         !validation
-          .safe_for_visual_review
+          .safe_for_visual_review ||
+        !galleryConsistency
+          .passed
       ) {
         return res
           .status(409)
           .json({
             error:
-              'Repair safety validation failed before upload',
+              'Visual consistency safety check failed before upload',
 
             before,
             after,
             validation,
+
+            visual_consistency:
+              galleryConsistency,
 
             etsy_modified:
               false
@@ -2920,7 +2845,7 @@ app.post(
             repaired,
 
           filename:
-            `etsy-${listingId}-shadow-lift.jpg`,
+            `etsy-${listingId}-reference-preserving.jpg`,
 
           contentType:
             'image/jpeg'
@@ -2942,8 +2867,7 @@ app.post(
         );
 
       const postImages =
-        postImagesData
-          ?.results ||
+        postImagesData?.results ||
         [];
 
       const currentRank1 =
@@ -2953,22 +2877,21 @@ app.post(
               img.rank
             ) === 1
         ) ||
-        [
-          ...postImages
-        ].sort(
-          (
-            a,
-            b
-          ) =>
-            Number(
-              a.rank ??
-              9999
-            ) -
-            Number(
-              b.rank ??
-              9999
-            )
-        )[0] ||
+        [...postImages]
+          .sort(
+            (
+              a,
+              b
+            ) =>
+              Number(
+                a.rank ??
+                9999
+              ) -
+              Number(
+                b.rank ??
+                9999
+              )
+          )[0] ||
         null;
 
       const currentRank1Id =
@@ -3016,8 +2939,7 @@ app.post(
 
             sourceImageId:
               String(
-                rank1
-                  .imageId
+                imageSet.rank1.imageId
               ),
 
             replacementImageId:
@@ -3048,12 +2970,14 @@ app.post(
           ),
 
         source_image_id:
-          rank1
-            .imageId,
+          imageSet.rank1.imageId,
 
         source_image_url:
-          rank1
-            .imageUrl,
+          imageSet.rank1.imageUrl,
+
+        image2_reference_id:
+          imageSet.rank2?.imageId ??
+          null,
 
         uploaded_image_id:
           uploadedImageId,
@@ -3069,6 +2993,9 @@ app.post(
         before,
         after,
         validation,
+
+        visual_consistency:
+          galleryConsistency,
 
         existing_images_deleted:
           false,
@@ -3096,23 +3023,15 @@ app.post(
 
         warning:
           newImageIsRank1
-            ? 'Replacement is verified as rank 1. Old source image is still present until separate cleanup approval.'
+            ? 'Replacement is verified as rank 1. Old source image remains until separate cleanup approval.'
             : 'Upload returned, but replacement was not verified as rank 1. Cleanup is blocked.'
       });
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
-
-// ==================================================
-// THUMBNAIL CLEANUP
-// SEPARATE APPROVAL REQUIRED
-// ==================================================
 
 app.post(
   '/api/listings/:listingId/thumbnail-repair/cleanup',
@@ -3124,21 +3043,18 @@ app.post(
     try {
       const listingId =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       const approval =
         String(
-          req.body
-            ?.approval ||
+          req.body?.approval ||
           ''
         ).trim();
 
       const cleanupToken =
         String(
-          req.body
-            ?.cleanup_token ||
+          req.body?.cleanup_token ||
           ''
         ).trim();
 
@@ -3162,8 +3078,7 @@ app.post(
 
       if (
         String(
-          payload
-            .listingId
+          payload.listingId
         ) !==
         listingId
       ) {
@@ -3181,8 +3096,7 @@ app.post(
         );
 
       const images =
-        beforeData
-          ?.results ||
+        beforeData?.results ||
         [];
 
       if (
@@ -3206,8 +3120,7 @@ app.post(
               )
             ) ===
             String(
-              payload
-                .sourceImageId
+              payload.sourceImageId
             )
         );
 
@@ -3243,9 +3156,7 @@ app.post(
           });
       }
 
-      if (
-        !replacement
-      ) {
+      if (!replacement) {
         return res
           .status(409)
           .json({
@@ -3304,18 +3215,15 @@ app.post(
 
       const sourceUsedByVariation =
         (
-          variationData
-            ?.results ||
+          variationData?.results ||
           []
         ).some(
           (item) =>
             String(
-              item
-                ?.image_id
+              item?.image_id
             ) ===
             String(
-              payload
-                .sourceImageId
+              payload.sourceImageId
             )
         );
 
@@ -3339,17 +3247,7 @@ app.post(
           }
         );
 
-      } catch (
-        deleteErr
-      ) {
-        /*
-          Some Etsy wrappers may dislike
-          a successful 204 with an empty body.
-
-          Re-read the listing before treating
-          that as a real delete failure.
-        */
-
+      } catch (deleteErr) {
         const probe =
           await getListingImages(
             listingId
@@ -3359,8 +3257,7 @@ app.post(
 
         const probeStillHasSource =
           (
-            probe
-              ?.results ||
+            probe?.results ||
             []
           ).some(
             (img) =>
@@ -3370,8 +3267,7 @@ app.post(
                 )
               ) ===
               String(
-                payload
-                  .sourceImageId
+                payload.sourceImageId
               )
           );
 
@@ -3389,8 +3285,7 @@ app.post(
         );
 
       const afterImages =
-        afterData
-          ?.results ||
+        afterData?.results ||
         [];
 
       const sourceStillExists =
@@ -3402,8 +3297,7 @@ app.post(
               )
             ) ===
             String(
-              payload
-                .sourceImageId
+              payload.sourceImageId
             )
         );
 
@@ -3425,8 +3319,7 @@ app.post(
         success:
           !sourceStillExists &&
           Number(
-            replacementAfter
-              ?.rank
+            replacementAfter?.rank
           ) === 1,
 
         listing_id:
@@ -3435,16 +3328,14 @@ app.post(
           ),
 
         deleted_old_source_image_id:
-          payload
-            .sourceImageId,
+          payload.sourceImageId,
 
         replacement_image_id:
           payload
             .replacementImageId,
 
         replacement_rank_after_cleanup:
-          replacementAfter
-            ?.rank ??
+          replacementAfter?.rank ??
           null,
 
         old_source_still_present:
@@ -3460,17 +3351,10 @@ app.post(
       });
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
-
-// ==================================================
-// SECTIONS
-// ==================================================
 
 app.get(
   '/api/sections',
@@ -3487,13 +3371,10 @@ app.get(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
 
 app.post(
   '/api/sections',
@@ -3505,8 +3386,7 @@ app.post(
     try {
       const title =
         String(
-          req.body
-            ?.title ||
+          req.body?.title ||
           ''
         ).trim();
 
@@ -3534,13 +3414,10 @@ app.post(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
 
 app.put(
   '/api/sections/:sectionId',
@@ -3552,14 +3429,12 @@ app.put(
     try {
       const sectionId =
         asSectionId(
-          req.params
-            .sectionId
+          req.params.sectionId
         );
 
       const title =
         String(
-          req.body
-            ?.title ||
+          req.body?.title ||
           ''
         ).trim();
 
@@ -3587,17 +3462,10 @@ app.put(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
-
-// ==================================================
-// ERROR HANDLER
-// ==================================================
 
 app.use(
   (
@@ -3606,9 +3474,7 @@ app.use(
     res,
     _next
   ) => {
-    console.error(
-      err
-    );
+    console.error(err);
 
     res
       .status(
@@ -3627,9 +3493,7 @@ app.use(
   }
 );
 
-
 export default app;
-
 
 if (
   !process.env.VERCEL
