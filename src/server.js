@@ -19,12 +19,10 @@ import {
   uploadListingImage
 } from './etsy.js';
 
-
 const app = express();
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: false }));
-
 
 const PREVIEW_TTL_MS = 20 * 60 * 1000;
 const CLEANUP_TTL_MS = 24 * 60 * 60 * 1000;
@@ -32,7 +30,7 @@ const SCAN_MAX_LIMIT = 10;
 
 
 /* =========================================================
-   BASIC HELPERS
+   BASIC
 ========================================================= */
 
 function required(name) {
@@ -47,27 +45,29 @@ function required(name) {
   return value;
 }
 
-
 function publicBase() {
-  return required('PUBLIC_BASE_URL').replace(/\/$/, '');
+  return required(
+    'PUBLIC_BASE_URL'
+  ).replace(/\/$/, '');
 }
 
-
 function bridgeAuth(req, res, next) {
-  const auth = req.get('authorization') || '';
+  const auth =
+    req.get('authorization') || '';
 
   if (
     auth !==
     `Bearer ${required('BRIDGE_API_KEY')}`
   ) {
-    return res.status(401).json({
-      error: 'unauthorized'
-    });
+    return res
+      .status(401)
+      .json({
+        error: 'unauthorized'
+      });
   }
 
   next();
 }
-
 
 function parseCookies(req) {
   const result = {};
@@ -76,20 +76,23 @@ function parseCookies(req) {
     const part of
     (req.headers.cookie || '').split(';')
   ) {
-    const idx = part.indexOf('=');
+    const idx =
+      part.indexOf('=');
 
     if (idx > -1) {
       result[
         part.slice(0, idx).trim()
-      ] = decodeURIComponent(
-        part.slice(idx + 1).trim()
-      );
+      ] =
+        decodeURIComponent(
+          part
+            .slice(idx + 1)
+            .trim()
+        );
     }
   }
 
   return result;
 }
-
 
 async function sid() {
   return String(
@@ -97,14 +100,15 @@ async function sid() {
   );
 }
 
-
 function asListingId(value) {
-  const id = String(value || '').trim();
+  const id =
+    String(value || '').trim();
 
   if (!/^\d+$/.test(id)) {
-    const err = new Error(
-      'Invalid listingId'
-    );
+    const err =
+      new Error(
+        'Invalid listingId'
+      );
 
     err.status = 400;
     throw err;
@@ -112,15 +116,16 @@ function asListingId(value) {
 
   return id;
 }
-
 
 function asSectionId(value) {
-  const id = String(value || '').trim();
+  const id =
+    String(value || '').trim();
 
   if (!/^\d+$/.test(id)) {
-    const err = new Error(
-      'Invalid sectionId'
-    );
+    const err =
+      new Error(
+        'Invalid sectionId'
+      );
 
     err.status = 400;
     throw err;
@@ -129,29 +134,43 @@ function asSectionId(value) {
   return id;
 }
 
-
-function clamp(value, min, max) {
+function clamp(
+  value,
+  min,
+  max
+) {
   return Math.max(
     min,
     Math.min(max, value)
   );
 }
 
-
 function round1(value) {
-  return Math.round(
-    Number(value) * 10
-  ) / 10;
+  return (
+    Math.round(
+      Number(value) * 10
+    ) / 10
+  );
 }
 
-
-function smoothstep(edge0, edge1, value) {
-  const t = clamp(
-    (value - edge0) /
-    (edge1 - edge0),
-    0,
-    1
-  );
+function smoothstep(
+  edge0,
+  edge1,
+  value
+) {
+  const t =
+    clamp(
+      (
+        value -
+        edge0
+      ) /
+      (
+        edge1 -
+        edge0
+      ),
+      0,
+      1
+    );
 
   return (
     t *
@@ -160,7 +179,6 @@ function smoothstep(edge0, edge1, value) {
   );
 }
 
-
 function getImageId(image) {
   return (
     image?.listing_image_id ??
@@ -168,7 +186,6 @@ function getImageId(image) {
     null
   );
 }
-
 
 function getImageUrl(image) {
   return (
@@ -181,8 +198,9 @@ function getImageUrl(image) {
   );
 }
 
-
-function extractUploadedImage(uploadResult) {
+function extractUploadedImage(
+  uploadResult
+) {
   if (!uploadResult) {
     return null;
   }
@@ -203,10 +221,12 @@ function extractUploadedImage(uploadResult) {
 
 
 /* =========================================================
-   LISTING IMAGE HELPERS
+   LISTING IMAGES
 ========================================================= */
 
-async function getListingImageSet(listingId) {
+async function getListingImageSet(
+  listingId
+) {
   const data =
     await getListingImages(
       listingId
@@ -218,9 +238,10 @@ async function getListingImageSet(listingId) {
       : [];
 
   if (!images.length) {
-    const err = new Error(
-      'No listing images found'
-    );
+    const err =
+      new Error(
+        'No listing images found'
+      );
 
     err.status = 404;
     throw err;
@@ -256,9 +277,10 @@ async function getListingImageSet(listingId) {
     getImageUrl(rank1);
 
   if (!rank1Url) {
-    const err = new Error(
-      'No usable rank 1 image URL found'
-    );
+    const err =
+      new Error(
+        'No usable rank 1 image URL found'
+      );
 
     err.status = 404;
     throw err;
@@ -281,7 +303,8 @@ async function getListingImageSet(listingId) {
     },
 
     rank2:
-      rank2 && rank2Url
+      rank2 &&
+      rank2Url
         ? {
             image: rank2,
             imageId:
@@ -293,17 +316,18 @@ async function getListingImageSet(listingId) {
   };
 }
 
-
 async function downloadImage(url) {
   const parsed =
     new URL(url);
 
   if (
-    parsed.protocol !== 'https:'
+    parsed.protocol !==
+    'https:'
   ) {
-    const err = new Error(
-      'Image URL must use HTTPS'
-    );
+    const err =
+      new Error(
+        'Image URL must use HTTPS'
+      );
 
     err.status = 400;
     throw err;
@@ -313,9 +337,10 @@ async function downloadImage(url) {
     await fetch(url);
 
   if (!response.ok) {
-    const err = new Error(
-      `Could not download image (${response.status})`
-    );
+    const err =
+      new Error(
+        `Could not download image (${response.status})`
+      );
 
     err.status = 502;
     throw err;
@@ -330,9 +355,10 @@ async function downloadImage(url) {
     buffer.length >
     20 * 1024 * 1024
   ) {
-    const err = new Error(
-      'Image is larger than 20 MB'
-    );
+    const err =
+      new Error(
+        'Image is larger than 20 MB'
+      );
 
     err.status = 413;
     throw err;
@@ -365,7 +391,10 @@ function percentileFromSorted(
   const index =
     clamp(
       Math.round(
-        (values.length - 1) *
+        (
+          values.length -
+          1
+        ) *
         fraction
       ),
       0,
@@ -374,7 +403,6 @@ function percentileFromSorted(
 
   return values[index];
 }
-
 
 async function analyzeImage(buffer) {
   const metadata =
@@ -403,7 +431,7 @@ async function analyzeImage(buffer) {
   const channels =
     info.channels;
 
-  const luminanceValues = [];
+  const values = [];
 
   let sumL = 0;
   let sumR = 0;
@@ -416,7 +444,7 @@ async function analyzeImage(buffer) {
   let deepShadowCount = 0;
   let highlightCount = 0;
 
-  let pixelCount = 0;
+  let count = 0;
 
   for (
     let i = 0;
@@ -427,98 +455,88 @@ async function analyzeImage(buffer) {
     const g = data[i + 1];
     const b = data[i + 2];
 
-    const luminance =
+    const y =
       Math.round(
         0.2126 * r +
         0.7152 * g +
         0.0722 * b
       );
 
-    const maxRgb =
-      Math.max(r, g, b);
+    values.push(y);
 
-    const minRgb =
-      Math.min(r, g, b);
-
-    luminanceValues.push(
-      luminance
-    );
-
-    sumL += luminance;
+    sumL += y;
     sumR += r;
     sumG += g;
     sumB += b;
 
     sumChroma +=
-      maxRgb - minRgb;
+      Math.max(r, g, b) -
+      Math.min(r, g, b);
 
-    if (luminance < 55) {
+    if (y < 55) {
       shadowCount += 1;
     }
 
-    if (luminance < 28) {
+    if (y < 28) {
       deepShadowCount += 1;
     }
 
-    if (luminance > 230) {
+    if (y > 230) {
       highlightCount += 1;
     }
 
-    pixelCount += 1;
+    count += 1;
   }
 
-  luminanceValues.sort(
+  values.sort(
     (a, b) => a - b
   );
 
-  const count =
-    pixelCount || 1;
+  const safeCount =
+    count || 1;
 
   const brightness =
     Math.round(
-      sumL / count
+      sumL / safeCount
     );
 
-  let varianceSum = 0;
+  let variance = 0;
 
   for (
-    const value of
-    luminanceValues
+    const value of values
   ) {
     const delta =
       value - brightness;
 
-    varianceSum +=
+    variance +=
       delta * delta;
   }
 
   const contrast =
     Math.round(
       Math.sqrt(
-        varianceSum / count
+        variance /
+        safeCount
       )
     );
 
   const p10 =
     percentileFromSorted(
-      luminanceValues,
+      values,
       0.10
     );
 
   const p50 =
     percentileFromSorted(
-      luminanceValues,
+      values,
       0.50
     );
 
   const p90 =
     percentileFromSorted(
-      luminanceValues,
+      values,
       0.90
     );
-
-  const tonalRange =
-    p90 - p10;
 
   let darknessLabel =
     'good';
@@ -526,17 +544,28 @@ async function analyzeImage(buffer) {
   if (brightness < 60) {
     darknessLabel =
       'very_dark';
+
   } else if (
     brightness < 75
   ) {
     darknessLabel =
       'dark';
+
   } else if (
     brightness < 90
   ) {
     darknessLabel =
       'slightly_dark';
   }
+
+  const meanR =
+    sumR / safeCount;
+
+  const meanG =
+    sumG / safeCount;
+
+  const meanB =
+    sumB / safeCount;
 
   return {
     width:
@@ -563,13 +592,13 @@ async function analyzeImage(buffer) {
     p90,
 
     tonal_range_p10_p90:
-      tonalRange,
+      p90 - p10,
 
     shadow_percent:
       round1(
         (
           shadowCount /
-          count
+          safeCount
         ) *
         100
       ),
@@ -578,7 +607,7 @@ async function analyzeImage(buffer) {
       round1(
         (
           deepShadowCount /
-          count
+          safeCount
         ) *
         100
       ),
@@ -587,38 +616,47 @@ async function analyzeImage(buffer) {
       round1(
         (
           highlightCount /
-          count
+          safeCount
         ) *
         100
       ),
 
     mean_rgb: {
       r:
-        round1(
-          sumR / count
-        ),
+        round1(meanR),
 
       g:
-        round1(
-          sumG / count
-        ),
+        round1(meanG),
 
       b:
-        round1(
-          sumB / count
-        )
+        round1(meanB)
     },
 
     mean_chroma:
       round1(
-        sumChroma / count
-      )
+        sumChroma /
+        safeCount
+      ),
+
+    color_balance: {
+      r_minus_g:
+        round1(
+          meanR -
+          meanG
+        ),
+
+      b_minus_g:
+        round1(
+          meanB -
+          meanG
+        )
+    }
   };
 }
 
 
 /* =========================================================
-   THUMBNAIL SCORING
+   SCORE
 ========================================================= */
 
 function assessThumbnail(
@@ -638,7 +676,7 @@ function assessThumbnail(
   const highlights =
     analysis.highlight_percent;
 
-  const tonalRange =
+  const range =
     analysis
       .tonal_range_p10_p90;
 
@@ -690,10 +728,10 @@ function assessThumbnail(
     score -= 4;
   }
 
-  if (tonalRange < 55) {
+  if (range < 55) {
     score -= 12;
   } else if (
-    tonalRange < 70
+    range < 70
   ) {
     score -= 6;
   }
@@ -708,14 +746,14 @@ function assessThumbnail(
   let priority =
     'none';
 
-  let recommendedAction =
+  let action =
     'keep';
 
   if (score < 45) {
     priority =
       'urgent';
 
-    recommendedAction =
+    action =
       'prepare_reference_preserving_preview';
 
   } else if (
@@ -724,7 +762,7 @@ function assessThumbnail(
     priority =
       'high';
 
-    recommendedAction =
+    action =
       'prepare_reference_preserving_preview';
 
   } else if (
@@ -733,7 +771,7 @@ function assessThumbnail(
     priority =
       'review';
 
-    recommendedAction =
+    action =
       'review_before_repair';
   }
 
@@ -744,22 +782,21 @@ function assessThumbnail(
     priority,
 
     recommended_action:
-      recommendedAction,
+      action,
 
     auto_publish_allowed:
       false,
 
     reason:
-      recommendedAction ===
-      'keep'
+      action === 'keep'
         ? 'Thumbnail readability is within the conservative safe range.'
-        : 'Thumbnail may be too dark on small screens. A reference-preserving preview and visual approval are required.'
+        : 'Thumbnail may be too dark on small screens. Visual review is required.'
   };
 }
 
 
 /* =========================================================
-   V4 REPAIR TARGET
+   V4.1 REPAIR SETTINGS
 ========================================================= */
 
 function normalizeRepairMode(
@@ -786,37 +823,45 @@ function normalizeRepairMode(
   return 'auto';
 }
 
-
 function chooseTargetBrightness(
   beforeBrightness,
   mode
 ) {
   let target;
 
+  /*
+    Important:
+    We are NOT trying to turn
+    a naturally dark artwork
+    into a bright image.
+
+    The goal is readability.
+  */
+
   if (
-    beforeBrightness < 40
+    beforeBrightness < 35
   ) {
-    target = 58;
+    target = 47;
 
   } else if (
-    beforeBrightness < 50
+    beforeBrightness < 45
   ) {
-    target = 64;
+    target = 53;
 
   } else if (
-    beforeBrightness < 60
+    beforeBrightness < 55
   ) {
-    target = 70;
+    target = 59;
 
   } else if (
-    beforeBrightness < 70
+    beforeBrightness < 65
   ) {
-    target = 76;
+    target = 66;
 
   } else if (
-    beforeBrightness < 80
+    beforeBrightness < 75
   ) {
-    target = 82;
+    target = 73;
 
   } else {
     target =
@@ -826,93 +871,99 @@ function chooseTargetBrightness(
   if (
     mode === 'gentle'
   ) {
-    target -= 6;
+    target -= 4;
   }
 
   if (
     mode === 'balanced'
   ) {
-    target += 5;
+    target += 4;
   }
 
   return clamp(
     Math.round(target),
     beforeBrightness,
-    88
+    82
   );
 }
 
 
 /* =========================================================
-   V4 REFERENCE-PRESERVING PIXEL LIFT
+   V4.1 LUMINANCE-ONLY LIFT
+
+   Core idea:
+   calculate brightness delta,
+   then add the SAME delta to
+   R/G/B.
+
+   This preserves channel differences
+   much better than multiplying RGB.
 ========================================================= */
 
-function liftPixelV4(
+function liftPixelV41(
   r,
   g,
   b,
   strength
 ) {
-  const y =
+  const y255 =
     (
       0.2126 * r +
       0.7152 * g +
       0.0722 * b
-    ) /
-    255;
+    );
+
+  const y =
+    y255 / 255;
 
   /*
-    Black protection:
-    Pixels very close to true black
-    should remain dark.
+    Preserve near-black pixels.
+    We do not want black frames,
+    black canvas borders or deep
+    artistic blacks becoming grey.
   */
-  const blackProtect =
+
+  const blackProtection =
     smoothstep(
-      0.018,
-      0.085,
+      0.025,
+      0.12,
       y
     );
 
   /*
-    Highlight protection:
-    Above ~70% luminance,
-    adjustment fades rapidly.
+    Fade repair before highlights.
   */
-  const highlightProtect =
+
+  const highlightProtection =
     1 -
     smoothstep(
-      0.68,
-      0.90,
+      0.58,
+      0.83,
       y
     );
 
   /*
-    Main shadow mask.
-    Maximum effect in shadow /
-    mid-shadow range.
+    Strongest effect in shadows,
+    gentler in midtones.
   */
+
   const shadowMask =
     Math.pow(
       1 - y,
-      2.0
+      1.8
     );
 
-  /*
-    Mid-shadow support.
-    Helps reveal artwork detail
-    without flattening highlights.
-  */
-  const midMask =
+  const midShadowMask =
     smoothstep(
       0.08,
-      0.24,
+      0.23,
       y
     ) *
     (
       1 -
       smoothstep(
-        0.50,
-        0.72,
+        0.45,
+        0.66,
         y
       )
     );
@@ -920,18 +971,18 @@ function liftPixelV4(
   let weight =
     (
       shadowMask *
-      0.78
+      0.74
     ) +
     (
-      midMask *
-      0.36
+      midShadowMask *
+      0.42
     );
 
   weight *=
-    blackProtect;
+    blackProtection;
 
   weight *=
-    highlightProtect;
+    highlightProtection;
 
   weight =
     clamp(
@@ -941,101 +992,74 @@ function liftPixelV4(
     );
 
   /*
-    Add luminance,
-    but keep RGB proportions.
+    Luminance delta in 0-255 space.
 
-    This avoids global grey wash
-    from adding the same offset
-    to every RGB channel.
+    Same delta is applied to
+    all three RGB channels.
+
+    This is the key difference
+    from v4.
   */
-  const lift =
-    strength *
-    weight *
-    (
-      0.42 -
-      0.18 * y
-    );
 
-  const newY =
-    clamp(
-      y + lift,
-      0,
-      1
-    );
+  const maxDelta =
+    34 * strength;
 
-  let scale =
-    y > 0.001
-      ? newY / y
-      : 1;
+  const delta =
+    maxDelta *
+    weight;
 
   /*
-    Prevent dark pixels
-    from exploding unnaturally.
+    If any channel would clip badly,
+    reduce the delta.
+
+    This protects existing color.
   */
-  scale =
-    clamp(
-      scale,
-      1,
-      1.90
+
+  const availableHeadroom =
+    255 -
+    Math.max(
+      r,
+      g,
+      b
     );
 
-  let nr =
-    r * scale;
-
-  let ng =
-    g * scale;
-
-  let nb =
-    b * scale;
-
-  /*
-    Tiny neutral guard only.
-    This is NOT desaturation.
-    It prevents exaggerated warm cast.
-  */
-  const avg =
-    (
-      nr +
-      ng +
-      nb
-    ) /
-    3;
-
-  nr =
-    nr * 0.992 +
-    avg * 0.008;
-
-  ng =
-    ng * 0.995 +
-    avg * 0.005;
-
-  nb =
-    nb * 0.993 +
-    avg * 0.007;
+  const safeDelta =
+    Math.min(
+      delta,
+      availableHeadroom
+    );
 
   return [
     clamp(
-      Math.round(nr),
+      Math.round(
+        r +
+        safeDelta
+      ),
       0,
       255
     ),
 
     clamp(
-      Math.round(ng),
+      Math.round(
+        g +
+        safeDelta
+      ),
       0,
       255
     ),
 
     clamp(
-      Math.round(nb),
+      Math.round(
+        b +
+        safeDelta
+      ),
       0,
       255
     )
   ];
 }
 
-
-async function renderLiftV4(
+async function renderLiftV41(
   sourceBuffer,
   strength
 ) {
@@ -1096,7 +1120,7 @@ async function renderLiftV4(
       ng,
       nb
     ] =
-      liftPixelV4(
+      liftPixelV41(
         r,
         g,
         b,
@@ -1138,7 +1162,7 @@ async function renderLiftV4(
     }
   )
     .jpeg({
-      quality: 96,
+      quality: 97,
       chromaSubsampling:
         '4:4:4',
       mozjpeg: true
@@ -1148,26 +1172,25 @@ async function renderLiftV4(
 
 
 /* =========================================================
-   V4 AUTOMATIC STRENGTH SEARCH
-
-   Finds the weakest strength that gets
-   close to the conservative target.
+   AUTO STRENGTH SEARCH
 ========================================================= */
 
-async function findV4Repair(
+async function findV41Repair(
   sourceBuffer,
   before,
   mode
 ) {
   const target =
     chooseTargetBrightness(
-      before.brightness_0_255,
+      before
+        .brightness_0_255,
       mode
     );
 
   if (
     target <=
-    before.brightness_0_255
+    before
+      .brightness_0_255
   ) {
     return {
       target,
@@ -1179,14 +1202,14 @@ async function findV4Repair(
     };
   }
 
-  let low = 0.08;
-  let high = 0.95;
+  let low = 0.10;
+  let high = 1.25;
 
   let best = null;
 
   for (
     let attempt = 0;
-    attempt < 7;
+    attempt < 8;
     attempt += 1
   ) {
     const strength =
@@ -1197,7 +1220,7 @@ async function findV4Repair(
       2;
 
     const candidate =
-      await renderLiftV4(
+      await renderLiftV41(
         sourceBuffer,
         strength
       );
@@ -1260,83 +1283,103 @@ async function findV4Repair(
 
 
 /* =========================================================
-   COLOR / CONSISTENCY
+   CONSISTENCY
 ========================================================= */
 
-function rgbDistance(a, b) {
-  if (!a || !b) {
-    return null;
+function colorBalanceDistance(
+  a,
+  b
+) {
+  if (
+    !a?.color_balance ||
+    !b?.color_balance
+  ) {
+    return 0;
   }
 
   return Math.sqrt(
     Math.pow(
-      Number(a.r) -
-      Number(b.r),
+      Number(
+        a.color_balance
+          .r_minus_g
+      ) -
+      Number(
+        b.color_balance
+          .r_minus_g
+      ),
       2
     ) +
     Math.pow(
-      Number(a.g) -
-      Number(b.g),
-      2
-    ) +
-    Math.pow(
-      Number(a.b) -
-      Number(b.b),
+      Number(
+        a.color_balance
+          .b_minus_g
+      ) -
+      Number(
+        b.color_balance
+          .b_minus_g
+      ),
       2
     )
   );
 }
-
 
 function validateRepairResult(
   before,
   after
 ) {
   const brightnessGain =
-    after.brightness_0_255 -
-    before.brightness_0_255;
+    after
+      .brightness_0_255 -
+    before
+      .brightness_0_255;
 
   const contrastRatio =
-    before.contrast_stdev > 0
+    before
+      .contrast_stdev >
+    0
       ? (
-          after.contrast_stdev /
-          before.contrast_stdev
+          after
+            .contrast_stdev /
+          before
+            .contrast_stdev
         )
       : 1;
 
   const highlightIncrease =
-    after.highlight_percent -
-    before.highlight_percent;
+    after
+      .highlight_percent -
+    before
+      .highlight_percent;
 
   const chromaDelta =
     Math.abs(
-      after.mean_chroma -
-      before.mean_chroma
+      after
+        .mean_chroma -
+      before
+        .mean_chroma
     );
 
-  const meanRgbDelta =
-    rgbDistance(
-      before.mean_rgb,
-      after.mean_rgb
-    ) ?? 0;
+  const balanceDrift =
+    colorBalanceDistance(
+      before,
+      after
+    );
 
   const warnings = [];
 
   if (
     brightnessGain < 4 &&
-    before.brightness_0_255 < 70
+    before
+      .brightness_0_255 <
+    60
   ) {
     warnings.push(
       'repair_too_weak'
     );
   }
 
-  /*
-    We deliberately do not want
-    the old 31 -> 110 behaviour.
-  */
   if (
-    brightnessGain > 36
+    brightnessGain > 24
   ) {
     warnings.push(
       'brightness_increase_too_large'
@@ -1344,7 +1387,7 @@ function validateRepairResult(
   }
 
   if (
-    contrastRatio < 0.90
+    contrastRatio < 0.91
   ) {
     warnings.push(
       'contrast_loss_detected'
@@ -1352,7 +1395,7 @@ function validateRepairResult(
   }
 
   if (
-    contrastRatio > 1.28
+    contrastRatio > 1.20
   ) {
     warnings.push(
       'contrast_increase_too_large'
@@ -1360,7 +1403,7 @@ function validateRepairResult(
   }
 
   if (
-    highlightIncrease > 4
+    highlightIncrease > 3
   ) {
     warnings.push(
       'highlight_clipping_risk'
@@ -1368,18 +1411,18 @@ function validateRepairResult(
   }
 
   if (
-    chromaDelta > 14
+    chromaDelta > 8
   ) {
     warnings.push(
-      'color_intensity_shift_detected'
+      'chroma_shift_detected'
     );
   }
 
   if (
-    meanRgbDelta > 32
+    balanceDrift > 5
   ) {
     warnings.push(
-      'color_grade_shift_detected'
+      'color_balance_shift_detected'
     );
   }
 
@@ -1392,8 +1435,7 @@ function validateRepairResult(
 
   return {
     safe_for_visual_review:
-      hardWarnings.length ===
-      0,
+      hardWarnings.length === 0,
 
     brightness_gain:
       brightnessGain,
@@ -1413,59 +1455,58 @@ function validateRepairResult(
         chromaDelta
       ),
 
-    mean_rgb_delta:
+    color_balance_drift:
       round1(
-        meanRgbDelta
+        balanceDrift
       ),
 
     warnings
   };
 }
 
-
 function assessGalleryConsistency(
   source,
   preview,
-  rank2Analysis
+  rank2
 ) {
-  const sourceToPreviewRgb =
-    rgbDistance(
-      source.mean_rgb,
-      preview.mean_rgb
-    ) ?? 0;
+  const balanceDrift =
+    colorBalanceDistance(
+      source,
+      preview
+    );
 
   const chromaDelta =
     Math.abs(
-      preview.mean_chroma -
-      source.mean_chroma
+      preview
+        .mean_chroma -
+      source
+        .mean_chroma
     );
 
   const contrastRatio =
-    source.contrast_stdev > 0
+    source
+      .contrast_stdev >
+    0
       ? (
-          preview.contrast_stdev /
-          source.contrast_stdev
+          preview
+            .contrast_stdev /
+          source
+            .contrast_stdev
         )
       : 1;
 
   const warnings = [];
 
-  /*
-    Source rank-1 is the hard reference.
-    Because image 2 may use a different
-    mockup/crop, image 2 is only a soft
-    gallery reference.
-  */
   if (
-    sourceToPreviewRgb > 32
+    balanceDrift > 5
   ) {
     warnings.push(
-      'preview_color_drift'
+      'preview_color_balance_drift'
     );
   }
 
   if (
-    chromaDelta > 14
+    chromaDelta > 8
   ) {
     warnings.push(
       'preview_chroma_drift'
@@ -1473,7 +1514,7 @@ function assessGalleryConsistency(
   }
 
   if (
-    contrastRatio < 0.90
+    contrastRatio < 0.91
   ) {
     warnings.push(
       'preview_contrast_loss'
@@ -1481,7 +1522,7 @@ function assessGalleryConsistency(
   }
 
   if (
-    contrastRatio > 1.28
+    contrastRatio > 1.20
   ) {
     warnings.push(
       'preview_contrast_increase'
@@ -1491,51 +1532,51 @@ function assessGalleryConsistency(
   let rank2Reference =
     null;
 
-  if (rank2Analysis) {
-    const sourceToRank2Rgb =
-      rgbDistance(
-        source.mean_rgb,
-        rank2Analysis.mean_rgb
-      ) ?? 0;
+  if (rank2) {
+    const sourceRank2Balance =
+      colorBalanceDistance(
+        source,
+        rank2
+      );
 
-    const previewToRank2Rgb =
-      rgbDistance(
-        preview.mean_rgb,
-        rank2Analysis.mean_rgb
-      ) ?? 0;
-
-    const moveAway =
-      previewToRank2Rgb -
-      sourceToRank2Rgb;
+    const previewRank2Balance =
+      colorBalanceDistance(
+        preview,
+        rank2
+      );
 
     rank2Reference = {
-      source_to_rank2_rgb_distance:
+      source_to_rank2_color_balance_distance:
         round1(
-          sourceToRank2Rgb
+          sourceRank2Balance
         ),
 
-      preview_to_rank2_rgb_distance:
+      preview_to_rank2_color_balance_distance:
         round1(
-          previewToRank2Rgb
+          previewRank2Balance
         ),
 
-      absolute_move_away:
+      move_away:
         round1(
-          moveAway
+          previewRank2Balance -
+          sourceRank2Balance
         )
     };
 
     /*
-      Soft warning only.
-      Different mockups can naturally
-      have different global averages.
+      Image 2 is only a soft
+      reference because it may be
+      a different mockup/crop.
     */
+
     if (
-      moveAway > 45 &&
-      sourceToPreviewRgb > 20
+      (
+        previewRank2Balance -
+        sourceRank2Balance
+      ) > 12
     ) {
       warnings.push(
-        'preview_moves_away_from_gallery_reference'
+        'preview_moves_away_from_image2_color_identity'
       );
     }
   }
@@ -1544,37 +1585,33 @@ function assessGalleryConsistency(
     warnings.filter(
       (warning) =>
         warning !==
-        'preview_moves_away_from_gallery_reference'
+        'preview_moves_away_from_image2_color_identity'
     );
 
   return {
     passed:
-      hardWarnings.length ===
-      0,
+      hardWarnings.length === 0,
 
     hard_block_upload:
-      hardWarnings.length >
-      0,
+      hardWarnings.length > 0,
 
-    source_to_preview_rgb_distance:
+    color_balance_drift:
       round1(
-        sourceToPreviewRgb
+        balanceDrift
       ),
 
-    source_to_preview_chroma_delta:
+    chroma_delta:
       round1(
         chromaDelta
       ),
 
-    source_to_preview_contrast_ratio:
+    contrast_ratio:
       round1(
         contrastRatio
       ),
 
     rank2_reference_available:
-      Boolean(
-        rank2Analysis
-      ),
+      Boolean(rank2),
 
     rank2_reference:
       rank2Reference,
@@ -1582,9 +1619,9 @@ function assessGalleryConsistency(
     warnings,
 
     note:
-      rank2Analysis
-        ? 'Image 2 is used as a soft gallery reference. The original rank 1 image remains the hard identity reference.'
-        : 'Image 2 was unavailable. Consistency is checked against original rank 1 only.'
+      rank2
+        ? 'Image 2 is a soft gallery reference. Original rank 1 remains the hard visual identity reference.'
+        : 'Image 2 unavailable. Original rank 1 is used as the visual identity reference.'
   };
 }
 
@@ -1621,7 +1658,6 @@ function signToken(payload) {
     `${encoded}.${signature}`
   );
 }
-
 
 function verifyToken(
   token,
@@ -1671,12 +1707,8 @@ function verifyToken(
     );
 
   if (
-    a.length !==
-      b.length ||
-    !timingSafeEqual(
-      a,
-      b
-    )
+    a.length !== b.length ||
+    !timingSafeEqual(a, b)
   ) {
     const err =
       new Error(
@@ -1745,12 +1777,12 @@ function verifyToken(
 
 
 /* =========================================================
-   BUILD V4 PREVIEW
+   BUILD PREVIEW
 ========================================================= */
 
 async function buildRepairPreview(
   listingId,
-  mode = 'auto'
+  mode
 ) {
   const listing =
     await etsyRequest(
@@ -1767,7 +1799,9 @@ async function buildRepairPreview(
       sourceBuffer
   } =
     await downloadImage(
-      imageSet.rank1.imageUrl
+      imageSet
+        .rank1
+        .imageUrl
     );
 
   const before =
@@ -1784,7 +1818,9 @@ async function buildRepairPreview(
     null;
 
   if (
-    imageSet.rank2?.imageUrl
+    imageSet
+      .rank2
+      ?.imageUrl
   ) {
     try {
       const {
@@ -1792,7 +1828,9 @@ async function buildRepairPreview(
           rank2Buffer
       } =
         await downloadImage(
-          imageSet.rank2.imageUrl
+          imageSet
+            .rank2
+            .imageUrl
         );
 
       rank2Analysis =
@@ -1809,7 +1847,7 @@ async function buildRepairPreview(
   }
 
   const repair =
-    await findV4Repair(
+    await findV41Repair(
       sourceBuffer,
       before,
       mode
@@ -1821,7 +1859,7 @@ async function buildRepairPreview(
       repair.after
     );
 
-  const galleryConsistency =
+  const consistency =
     assessGalleryConsistency(
       before,
       repair.after,
@@ -1831,24 +1869,30 @@ async function buildRepairPreview(
   const token =
     signToken({
       type:
-        'thumbnail_preview_v4',
+        'thumbnail_preview_v41',
 
       listingId,
 
       sourceImageId:
         String(
-          imageSet.rank1.imageId
+          imageSet
+            .rank1
+            .imageId
         ),
 
       rank2ImageId:
-        imageSet.rank2?.imageId
+        imageSet
+          .rank2
+          ?.imageId
           ? String(
-              imageSet.rank2.imageId
+              imageSet
+                .rank2
+                .imageId
             )
           : null,
 
       method:
-        'reference_preserving_shadow_lift_v4',
+        'reference_preserving_luminance_v41',
 
       strength:
         repair.strength,
@@ -1866,33 +1910,20 @@ async function buildRepairPreview(
   return {
     listing,
     imageSet,
-
-    sourceBuffer,
-
     before,
-
     after:
       repair.after,
-
     repaired:
       repair.repaired,
-
     assessment,
-
     rank2Analysis,
-
+    validation,
+    consistency,
     strength:
       repair.strength,
-
     target:
       repair.target,
-
     mode,
-
-    validation,
-
-    galleryConsistency,
-
     token
   };
 }
@@ -1952,7 +1983,6 @@ async function mapLimit(
   return results;
 }
 
-
 function listingAgeDays(
   listing
 ) {
@@ -1987,7 +2017,6 @@ function listingAgeDays(
     : null;
 }
 
-
 function performanceSignal(
   listing
 ) {
@@ -1998,7 +2027,8 @@ function performanceSignal(
 
   const favorites =
     Number(
-      listing?.num_favorers ??
+      listing
+        ?.num_favorers ??
       0
     );
 
@@ -2006,9 +2036,12 @@ function performanceSignal(
     ageDays === null
   ) {
     return {
-      age_days: null,
+      age_days:
+        null,
+
       num_favorers:
         favorites,
+
       signal:
         'insufficient_data'
     };
@@ -2049,7 +2082,6 @@ function performanceSignal(
   };
 }
 
-
 function compactImageList(
   data
 ) {
@@ -2086,21 +2118,22 @@ app.get(
         'vaelons-etsy-seller-bridge',
 
       thumbnail_engine:
-        'reference_preserving_shadow_lift_v4'
+        'reference_preserving_luminance_v41'
     });
   }
 );
 
 
 /* =========================================================
-   ETSY OAUTH
+   OAUTH
 ========================================================= */
 
 app.get(
   '/oauth/etsy/start',
   (req, res) => {
     if (
-      req.query.setup_secret !==
+      req.query
+        .setup_secret !==
       required(
         'SETUP_SECRET'
       )
@@ -2266,7 +2299,8 @@ app.get(
 
           code:
             String(
-              req.query.code ||
+              req.query
+                .code ||
               ''
             ),
 
@@ -2339,6 +2373,7 @@ app.get(
         .type('html')
         .send(`
 <!doctype html>
+
 <meta charset="utf-8">
 
 <title>
@@ -2404,7 +2439,7 @@ Bu değeri gizli tutun.
 
 
 /* =========================================================
-   PUBLIC PREVIEW IMAGE
+   PUBLIC PREVIEW
 ========================================================= */
 
 app.get(
@@ -2417,7 +2452,7 @@ app.get(
       const payload =
         verifyToken(
           req.params.token,
-          'thumbnail_preview_v4'
+          'thumbnail_preview_v41'
         );
 
       const listingId =
@@ -2432,10 +2467,13 @@ app.get(
 
       if (
         String(
-          imageSet.rank1.imageId
+          imageSet
+            .rank1
+            .imageId
         ) !==
         String(
-          payload.sourceImageId
+          payload
+            .sourceImageId
         )
       ) {
         return res
@@ -2447,24 +2485,25 @@ app.get(
       }
 
       const {
-        buffer:
-          sourceBuffer
+        buffer
       } =
         await downloadImage(
-          imageSet.rank1.imageUrl
+          imageSet
+            .rank1
+            .imageUrl
         );
 
       const repaired =
         Number(
           payload.strength
         ) > 0
-          ? await renderLiftV4(
-              sourceBuffer,
+          ? await renderLiftV41(
+              buffer,
               Number(
                 payload.strength
               )
             )
-          : sourceBuffer;
+          : buffer;
 
       res.setHeader(
         'content-type',
@@ -2473,7 +2512,7 @@ app.get(
 
       res.setHeader(
         'content-disposition',
-        'inline; filename="thumbnail-reference-preserving-v4.jpg"'
+        'inline; filename="thumbnail-luminance-v41-preview.jpg"'
       );
 
       res.setHeader(
@@ -2503,7 +2542,7 @@ app.get(
 
 
 /* =========================================================
-   PUBLIC 3-WAY COMPARE
+   THREE IMAGE COMPARE
 ========================================================= */
 
 app.get(
@@ -2516,7 +2555,7 @@ app.get(
       const payload =
         verifyToken(
           req.params.token,
-          'thumbnail_preview_v4'
+          'thumbnail_preview_v41'
         );
 
       const listingId =
@@ -2536,10 +2575,13 @@ app.get(
 
       if (
         String(
-          imageSet.rank1.imageId
+          imageSet
+            .rank1
+            .imageId
         ) !==
         String(
-          payload.sourceImageId
+          payload
+            .sourceImageId
         )
       ) {
         return res
@@ -2555,20 +2597,23 @@ app.get(
         );
 
       const beforeUrl =
-        imageSet.rank1.imageUrl;
+        imageSet
+          .rank1
+          .imageUrl;
 
       const afterUrl =
         `${publicBase()}/preview/thumbnail-repair/${token}`;
 
       const rank2Url =
-        imageSet.rank2?.imageUrl ||
+        imageSet
+          .rank2
+          ?.imageUrl ||
         null;
 
       const esc =
         (value) =>
           String(
-            value ??
-            ''
+            value ?? ''
           )
             .replaceAll(
               '&',
@@ -2591,14 +2636,16 @@ app.get(
         rank2Url
           ? `
 <div class="card">
-  <div class="label">
-    IMAGE 2 — müşteri tutarlılık referansı
-  </div>
 
-  <img
-    src="${esc(rank2Url)}"
-    alt="Image 2 reference"
-  >
+<div class="label">
+IMAGE 2 — müşteri tutarlılık referansı
+</div>
+
+<img
+  src="${esc(rank2Url)}"
+  alt="Image 2 reference"
+>
+
 </div>
 `
           : '';
@@ -2624,6 +2671,7 @@ VAELONS Thumbnail Compare
 </title>
 
 <style>
+
 body {
   font-family:
     system-ui,
@@ -2653,11 +2701,13 @@ p {
 
 .grid {
   display: grid;
+
   grid-template-columns:
     repeat(
       3,
       minmax(0, 1fr)
     );
+
   gap: 18px;
 }
 
@@ -2696,6 +2746,7 @@ img {
       1fr;
   }
 }
+
 </style>
 
 </head>
@@ -2724,35 +2775,39 @@ ${esc(
 <div class="grid">
 
 <div class="card">
-  <div class="label">
-    ÖNCE — mevcut Etsy rank 1
-  </div>
 
-  <img
-    src="${esc(beforeUrl)}"
-    alt="Before"
-  >
+<div class="label">
+ÖNCE — mevcut Etsy rank 1
+</div>
+
+<img
+  src="${esc(beforeUrl)}"
+  alt="Before"
+>
+
 </div>
 
 ${rank2Card}
 
 <div class="card">
-  <div class="label">
-    SONRA — reference-preserving v4 preview
-  </div>
 
-  <img
-    src="${esc(afterUrl)}"
-    alt="After"
-  >
+<div class="label">
+SONRA — luminance-only v4.1 preview
+</div>
+
+<img
+  src="${esc(afterUrl)}"
+  alt="After"
+>
+
 </div>
 
 </div>
 
 <div class="note">
-Amaç müşteriye başka bir ürün göstermek değildir.
 Yeni thumbnail mevcut rank-1 görselinden üretilir.
-Crop, perspektif, sahne ve artwork içeriği değiştirilmez.
+Sahne, crop, perspektif ve artwork içeriği değiştirilmez.
+Renk kimliğini korumak için RGB kanallarına aynı luminance farkı uygulanır.
 Image 2 yalnızca galeri tutarlılığı referansıdır.
 Bu sayfa Etsy'de hiçbir değişiklik yapmaz.
 </div>
@@ -2791,7 +2846,7 @@ app.use(
 
 
 /* =========================================================
-   TOKEN
+   CONNECTION
 ========================================================= */
 
 app.get(
@@ -2837,7 +2892,6 @@ app.get(
   }
 );
 
-
 app.patch(
   '/api/shop',
   async (
@@ -2857,8 +2911,7 @@ app.patch(
       const body =
         Object.fromEntries(
           Object.entries(
-            req.body ||
-            {}
+            req.body || {}
           ).filter(
             ([key]) =>
               allowed.includes(
@@ -2868,9 +2921,7 @@ app.patch(
         );
 
       if (
-        !Object.keys(
-          body
-        ).length
+        !Object.keys(body).length
       ) {
         return res
           .status(400)
@@ -2884,9 +2935,7 @@ app.patch(
         await etsyRequest(
           `/shops/${await sid()}`,
           {
-            method:
-              'PUT',
-
+            method: 'PUT',
             body
           }
         )
@@ -3000,7 +3049,6 @@ app.get(
   }
 );
 
-
 app.get(
   '/api/listings/:listingId',
   async (
@@ -3025,7 +3073,6 @@ app.get(
     }
   }
 );
-
 
 app.patch(
   '/api/listings/:listingId',
@@ -3058,8 +3105,7 @@ app.patch(
       const body =
         Object.fromEntries(
           Object.entries(
-            req.body ||
-            {}
+            req.body || {}
           ).filter(
             ([key]) =>
               allowed.includes(
@@ -3069,9 +3115,7 @@ app.patch(
         );
 
       if (
-        !Object.keys(
-          body
-        ).length
+        !Object.keys(body).length
       ) {
         return res
           .status(400)
@@ -3085,9 +3129,7 @@ app.patch(
         await etsyRequest(
           `/shops/${await sid()}/listings/${listingId}`,
           {
-            method:
-              'PATCH',
-
+            method: 'PATCH',
             body
           }
         )
@@ -3128,7 +3170,6 @@ app.get(
     }
   }
 );
-
 
 app.post(
   '/api/listings/:listingId/images',
@@ -3234,7 +3275,7 @@ app.post(
           });
       }
 
-      const data =
+      res.json(
         await uploadListingImage({
           shopId:
             await sid(),
@@ -3248,9 +3289,8 @@ app.post(
             'image.jpg',
 
           contentType
-        });
-
-      res.json(data);
+        })
+      );
 
     } catch (err) {
       next(err);
@@ -3260,7 +3300,7 @@ app.post(
 
 
 /* =========================================================
-   SINGLE THUMBNAIL ANALYSIS
+   THUMBNAIL ANALYSIS
 ========================================================= */
 
 app.get(
@@ -3298,11 +3338,6 @@ app.get(
           buffer
         );
 
-      const assessment =
-        assessThumbnail(
-          analysis
-        );
-
       res.json({
         listing_id:
           Number(listingId),
@@ -3330,7 +3365,11 @@ app.get(
           null,
 
         analysis,
-        assessment,
+
+        assessment:
+          assessThumbnail(
+            analysis
+          ),
 
         etsy_modified:
           false
@@ -3345,7 +3384,6 @@ app.get(
 
 /* =========================================================
    WORKER SCAN
-   READ ONLY
 ========================================================= */
 
 app.get(
@@ -3398,6 +3436,7 @@ app.get(
         await mapLimit(
           listings,
           3,
+
           async (
             listing
           ) => {
@@ -3416,22 +3455,14 @@ app.get(
                 buffer
               } =
                 await downloadImage(
-                  imageSet.rank1.imageUrl
+                  imageSet
+                    .rank1
+                    .imageUrl
                 );
 
               const analysis =
                 await analyzeImage(
                   buffer
-                );
-
-              const assessment =
-                assessThumbnail(
-                  analysis
-                );
-
-              const performance =
-                performanceSignal(
-                  listing
                 );
 
               return {
@@ -3445,24 +3476,38 @@ app.get(
                   listing.state,
 
                 rank1_image_id:
-                  imageSet.rank1.imageId,
+                  imageSet
+                    .rank1
+                    .imageId,
 
                 rank1_image_url:
-                  imageSet.rank1.imageUrl,
+                  imageSet
+                    .rank1
+                    .imageUrl,
 
                 image2_reference_id:
-                  imageSet.rank2?.imageId ??
+                  imageSet
+                    .rank2
+                    ?.imageId ??
                   null,
 
                 image2_reference_url:
-                  imageSet.rank2?.imageUrl ??
+                  imageSet
+                    .rank2
+                    ?.imageUrl ??
                   null,
 
                 analysis,
-                assessment,
+
+                assessment:
+                  assessThumbnail(
+                    analysis
+                  ),
 
                 available_performance_signal:
-                  performance,
+                  performanceSignal(
+                    listing
+                  ),
 
                 note:
                   'Only available Etsy listing signals are used. Missing CTR, conversion or view data is never invented.'
@@ -3491,7 +3536,7 @@ app.get(
           }
         );
 
-      const priorityOrder = {
+      const order = {
         urgent: 0,
         high: 1,
         review: 2,
@@ -3499,18 +3544,15 @@ app.get(
       };
 
       scanned.sort(
-        (
-          a,
-          b
-        ) => {
+        (a, b) => {
           const pa =
-            priorityOrder[
+            order[
               a?.assessment
                 ?.priority
             ] ?? 9;
 
           const pb =
-            priorityOrder[
+            order[
               b?.assessment
                 ?.priority
             ] ?? 9;
@@ -3518,23 +3560,20 @@ app.get(
           if (
             pa !== pb
           ) {
-            return (
-              pa - pb
-            );
+            return pa - pb;
           }
 
-          const sa =
-            a?.assessment
-              ?.readability_score_0_100 ??
-            100;
-
-          const sb =
-            b?.assessment
-              ?.readability_score_0_100 ??
-            100;
-
           return (
-            sa - sb
+            (
+              a?.assessment
+                ?.readability_score_0_100 ??
+              100
+            ) -
+            (
+              b?.assessment
+                ?.readability_score_0_100 ??
+              100
+            )
           );
         }
       );
@@ -3566,14 +3605,12 @@ app.get(
           scanned.length,
 
         next_offset:
-          nextOffset <
-          total
+          nextOffset < total
             ? nextOffset
             : null,
 
         has_more:
-          nextOffset <
-          total,
+          nextOffset < total,
 
         results:
           scanned
@@ -3587,8 +3624,7 @@ app.get(
 
 
 /* =========================================================
-   V4 PREVIEW
-   READ ONLY
+   PREVIEW V4.1
 ========================================================= */
 
 app.post(
@@ -3624,21 +3660,33 @@ app.post(
           null,
 
         source_image_id:
-          preview.imageSet.rank1.imageId,
+          preview
+            .imageSet
+            .rank1
+            .imageId,
 
         source_image_url:
-          preview.imageSet.rank1.imageUrl,
+          preview
+            .imageSet
+            .rank1
+            .imageUrl,
 
         image2_reference_id:
-          preview.imageSet.rank2?.imageId ??
+          preview
+            .imageSet
+            .rank2
+            ?.imageId ??
           null,
 
         image2_reference_url:
-          preview.imageSet.rank2?.imageUrl ??
+          preview
+            .imageSet
+            .rank2
+            ?.imageUrl ??
           null,
 
         preview_file_name:
-          `etsy-${listingId}-reference-preserving-v4.jpg`,
+          `etsy-${listingId}-luminance-v41.jpg`,
 
         preview_url:
           `${publicBase()}/preview/thumbnail-repair/${preview.token}`,
@@ -3662,11 +3710,11 @@ app.post(
           preview.validation,
 
         visual_consistency:
-          preview.galleryConsistency,
+          preview.consistency,
 
         repair: {
           type:
-            'reference_preserving_shadow_lift_v4',
+            'reference_preserving_luminance_v41',
 
           mode:
             preview.mode,
@@ -3677,6 +3725,12 @@ app.post(
           strength:
             preview.strength,
 
+          rgb_channel_scaling_used:
+            false,
+
+          equal_luminance_delta:
+            true,
+
           geometry_changed:
             false,
 
@@ -3686,20 +3740,17 @@ app.post(
           perspective_changed:
             false,
 
+          mockup_structure_changed:
+            false,
+
           generative_redraw_used:
             false,
 
           artwork_content_changed:
             false,
 
-          color_identity_preservation:
-            true,
-
-          mockup_structure_changed:
-            false,
-
           note:
-            'The current Etsy rank 1 image remains the visual source. Only luminance-dependent shadow and mid-shadow recovery is applied.'
+            'Brightness repair uses the current rank 1 pixels. A protected luminance delta is applied equally to RGB channels to preserve color identity.'
         },
 
         preview_token:
@@ -3718,7 +3769,7 @@ app.post(
           (
             !preview.validation
               .safe_for_visual_review ||
-            !preview.galleryConsistency
+            !preview.consistency
               .passed
           ),
 
@@ -3734,8 +3785,7 @@ app.post(
 
 
 /* =========================================================
-   APPLY V4
-   EXACT ONAYLIYORUM REQUIRED
+   APPLY V4.1
 ========================================================= */
 
 app.post(
@@ -3778,7 +3828,7 @@ app.post(
       const payload =
         verifyToken(
           previewToken,
-          'thumbnail_preview_v4'
+          'thumbnail_preview_v41'
         );
 
       if (
@@ -3807,10 +3857,13 @@ app.post(
 
       if (
         String(
-          imageSet.rank1.imageId
+          imageSet
+            .rank1
+            .imageId
         ) !==
         String(
-          payload.sourceImageId
+          payload
+            .sourceImageId
         )
       ) {
         return res
@@ -3824,17 +3877,22 @@ app.post(
       if (
         payload.rank2ImageId
       ) {
-        const currentRank2Id =
-          imageSet.rank2?.imageId
+        const rank2Now =
+          imageSet
+            .rank2
+            ?.imageId
             ? String(
-                imageSet.rank2.imageId
+                imageSet
+                  .rank2
+                  .imageId
               )
             : null;
 
         if (
-          currentRank2Id !==
+          rank2Now !==
           String(
-            payload.rank2ImageId
+            payload
+              .rank2ImageId
           )
         ) {
           return res
@@ -3851,7 +3909,9 @@ app.post(
           sourceBuffer
       } =
         await downloadImage(
-          imageSet.rank1.imageUrl
+          imageSet
+            .rank1
+            .imageUrl
         );
 
       const before =
@@ -3863,7 +3923,9 @@ app.post(
         null;
 
       if (
-        imageSet.rank2?.imageUrl
+        imageSet
+          .rank2
+          ?.imageUrl
       ) {
         try {
           const {
@@ -3871,7 +3933,9 @@ app.post(
               rank2Buffer
           } =
             await downloadImage(
-              imageSet.rank2.imageUrl
+              imageSet
+                .rank2
+                .imageUrl
             );
 
           rank2Analysis =
@@ -3891,7 +3955,7 @@ app.post(
         Number(
           payload.strength
         ) > 0
-          ? await renderLiftV4(
+          ? await renderLiftV41(
               sourceBuffer,
               Number(
                 payload.strength
@@ -3910,7 +3974,7 @@ app.post(
           after
         );
 
-      const galleryConsistency =
+      const consistency =
         assessGalleryConsistency(
           before,
           after,
@@ -3920,7 +3984,7 @@ app.post(
       if (
         !validation
           .safe_for_visual_review ||
-        !galleryConsistency
+        !consistency
           .passed
       ) {
         return res
@@ -3935,7 +3999,7 @@ app.post(
             validation,
 
             visual_consistency:
-              galleryConsistency,
+              consistency,
 
             etsy_modified:
               false
@@ -3953,7 +4017,7 @@ app.post(
             repaired,
 
           filename:
-            `etsy-${listingId}-reference-preserving-v4.jpg`,
+            `etsy-${listingId}-luminance-v41.jpg`,
 
           contentType:
             'image/jpeg'
@@ -3975,7 +4039,8 @@ app.post(
         );
 
       const postImages =
-        postImagesData?.results ||
+        postImagesData
+          ?.results ||
         [];
 
       const currentRank1 =
@@ -3987,10 +4052,7 @@ app.post(
         ) ||
         [...postImages]
           .sort(
-            (
-              a,
-              b
-            ) =>
+            (a, b) =>
               Number(
                 a.rank ??
                 9999
@@ -4047,7 +4109,9 @@ app.post(
 
             sourceImageId:
               String(
-                imageSet.rank1.imageId
+                imageSet
+                  .rank1
+                  .imageId
               ),
 
             replacementImageId:
@@ -4076,13 +4140,19 @@ app.post(
           Number(listingId),
 
         source_image_id:
-          imageSet.rank1.imageId,
+          imageSet
+            .rank1
+            .imageId,
 
         source_image_url:
-          imageSet.rank1.imageUrl,
+          imageSet
+            .rank1
+            .imageUrl,
 
         image2_reference_id:
-          imageSet.rank2?.imageId ??
+          imageSet
+            .rank2
+            ?.imageId ??
           null,
 
         uploaded_image_id:
@@ -4100,7 +4170,7 @@ app.post(
         validation,
 
         visual_consistency:
-          galleryConsistency,
+          consistency,
 
         existing_images_deleted:
           false,
@@ -4140,8 +4210,7 @@ app.post(
 
 
 /* =========================================================
-   OLD THUMBNAIL CLEANUP
-   SEPARATE APPROVAL REQUIRED
+   CLEANUP
 ========================================================= */
 
 app.post(
@@ -4207,7 +4276,8 @@ app.post(
         );
 
       const images =
-        beforeData?.results ||
+        beforeData
+          ?.results ||
         [];
 
       if (
@@ -4228,7 +4298,8 @@ app.post(
               getImageId(img)
             ) ===
             String(
-              payload.sourceImageId
+              payload
+                .sourceImageId
             )
         );
 
@@ -4239,7 +4310,8 @@ app.post(
               getImageId(img)
             ) ===
             String(
-              payload.replacementImageId
+              payload
+                .replacementImageId
             )
         );
 
@@ -4275,7 +4347,8 @@ app.post(
           getImageId(rank1)
         ) !==
         String(
-          payload.replacementImageId
+          payload
+            .replacementImageId
         )
       ) {
         return res
@@ -4311,9 +4384,10 @@ app.post(
           })
         );
 
-      const sourceUsedByVariation =
+      const usedByVariation =
         (
-          variationData?.results ||
+          variationData
+            ?.results ||
           []
         ).some(
           (item) =>
@@ -4321,12 +4395,13 @@ app.post(
               item?.image_id
             ) ===
             String(
-              payload.sourceImageId
+              payload
+                .sourceImageId
             )
         );
 
       if (
-        sourceUsedByVariation
+        usedByVariation
       ) {
         return res
           .status(409)
@@ -4346,12 +4421,6 @@ app.post(
         );
 
       } catch (deleteErr) {
-        /*
-          Etsy can return 204 No Content.
-          Some wrappers may dislike an empty body.
-          Re-read images before declaring failure.
-        */
-
         const probe =
           await getListingImages(
             listingId
@@ -4361,7 +4430,8 @@ app.post(
 
         const stillExists =
           (
-            probe?.results ||
+            probe
+              ?.results ||
             []
           ).some(
             (img) =>
@@ -4369,7 +4439,8 @@ app.post(
                 getImageId(img)
               ) ===
               String(
-                payload.sourceImageId
+                payload
+                  .sourceImageId
               )
           );
 
@@ -4387,7 +4458,8 @@ app.post(
         );
 
       const afterImages =
-        afterData?.results ||
+        afterData
+          ?.results ||
         [];
 
       const sourceStillExists =
@@ -4397,7 +4469,8 @@ app.post(
               getImageId(img)
             ) ===
             String(
-              payload.sourceImageId
+              payload
+                .sourceImageId
             )
         );
 
@@ -4408,7 +4481,8 @@ app.post(
               getImageId(img)
             ) ===
             String(
-              payload.replacementImageId
+              payload
+                .replacementImageId
             )
         );
 
@@ -4417,7 +4491,8 @@ app.post(
           Boolean(
             !sourceStillExists &&
             Number(
-              replacementAfter?.rank
+              replacementAfter
+                ?.rank
             ) === 1
           ),
 
@@ -4425,13 +4500,16 @@ app.post(
           Number(listingId),
 
         deleted_old_source_image_id:
-          payload.sourceImageId,
+          payload
+            .sourceImageId,
 
         replacement_image_id:
-          payload.replacementImageId,
+          payload
+            .replacementImageId,
 
         replacement_rank_after_cleanup:
-          replacementAfter?.rank ??
+          replacementAfter
+            ?.rank ??
           null,
 
         old_source_still_present:
@@ -4477,7 +4555,6 @@ app.get(
   }
 );
 
-
 app.post(
   '/api/sections',
   async (
@@ -4520,7 +4597,6 @@ app.post(
     }
   }
 );
-
 
 app.put(
   '/api/sections/:sectionId',
@@ -4572,7 +4648,7 @@ app.put(
 
 
 /* =========================================================
-   ERROR HANDLER
+   ERROR
 ========================================================= */
 
 app.use(
@@ -4601,9 +4677,7 @@ app.use(
   }
 );
 
-
 export default app;
-
 
 if (
   !process.env.VERCEL
