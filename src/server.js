@@ -106,7 +106,7 @@ app.patch('/api/shop', async (req, res, next) => {
 app.get('/api/listings', async (req, res, next) => {
   try {
     const params = {
-      limit: Math.min(Number(req.query.limit || 5), 25),
+      limit: Math.min(Number(req.query.limit || 25), 25),
       offset: Number(req.query.offset || 0),
       state: req.query.state || 'active'
     };
@@ -116,6 +116,25 @@ app.get('/api/listings', async (req, res, next) => {
       { params }
     );
 
+    res.json({
+      count: data?.count ?? 0,
+      offset: params.offset,
+      limit: params.limit,
+      results: (data?.results || []).map((listing) => ({
+        listing_id: listing.listing_id,
+        title: listing.title,
+        state: listing.state,
+        created_timestamp:
+          listing.original_creation_timestamp ??
+          listing.creation_timestamp ??
+          listing.created_timestamp ??
+          null
+      }))
+    });
+  } catch (e) {
+    next(e);
+  }
+});
     res.json({
       count: data?.count ?? 0,
       results: (data?.results || []).map((listing) => ({
