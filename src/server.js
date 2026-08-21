@@ -135,19 +135,7 @@ app.get('/api/listings', async (req, res, next) => {
     next(e);
   }
 });
-    res.json({
-      count: data?.count ?? 0,
-      results: (data?.results || []).map((listing) => ({
-        listing_id: listing.listing_id,
-        title: listing.title,
-        state: listing.state
-      }))
-    });
-  } catch (e) {
-    next(e);
-  }
-});
-
+  
 app.get('/api/listings/:listingId', async (req, res, next) => {
   try { res.json(await etsyRequest(`/application/listings/${req.params.listingId}`)); } catch (e) { next(e); }
 });
