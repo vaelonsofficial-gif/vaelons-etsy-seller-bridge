@@ -180,18 +180,77 @@ async function analyzeImage(buffer) {
   };
 }
 
-function calculateRepairTransform(brightness) {
-  const target = 105;
-  const gain = 1.08;
+function normalizeTargetBrightness(value) {
+  const parsed = Number(value);
 
-  const offset = Math.max(
-    0,
-    Math.min(
-      45,
-      Math.round(target - brightness * gain)
-    )
+  if (!Number.isFinite(parsed)) {
+    return 110;
+  }
+
+  return Math.max(
+    80,
+    Math.min(140, Math.round(parsed))
   );
+}
 
+async function findRepairTransform(
+  buffer,
+  currentBrightness,
+  requestedTarget = 110
+) {
+  const target = normalizeTargetBrightness(requestedTarget);
+
+  const gain = 1.06;
+
+  let low = 0;
+  let high = 120;
+
+  let best = {
+    gain,
+    offset: 0,
+    target,
+    achieved: currentBrightness,
+    distance: Math.abs(target - currentBrightness)
+  };
+
+  for (let i = 0; i < 8; i += 1) {
+    const offset = Math.round((low + high) / 2);
+
+    const candidate = await repairImage(
+      buffer,
+      {
+        gain,
+        offset
+      }
+    );
+
+    const analysis = await analyzeImage(candidate);
+
+    const achieved = analysis.brightness_0_255;
+
+    const distance = Math.abs(
+      target - achieved
+    );
+
+    if (distance < best.distance) {
+      best = {
+        gain,
+        offset,
+        target,
+        achieved,
+        distance
+      };
+    }
+
+    if (achieved < target) {
+      low = offset + 1;
+    } else {
+      high = offset - 1;
+    }
+  }
+
+  return best;
+}
   return {
     gain,
     offset,
@@ -1123,16 +1182,23 @@ app.post(
           buffer
         );
 
-      const transform =
-        calculateRepairTransform(
-          before.brightness_0_255
-        );
+     const targetBrightness =
+  normalizeTargetBrightness(
+    req.body?.target_brightness ?? 110
+  );
 
-      const repaired =
-        await repairImage(
-          buffer,
-          transform
-        );
+const transform =
+  await findRepairTransform(
+    buffer,
+    before.brightness_0_255,
+    targetBrightness
+  );
+
+const repaired =
+  await repairImage(
+    buffer,
+    transform
+  );
 
       const after =
         await analyzeImage(
@@ -1140,25 +1206,27 @@ app.post(
         );
 
       const token =
-        signRepairPayload({
-          listingId,
+  signRepairPayload({
+    listingId,
 
-          sourceImageId:
-            String(
-              rank1.imageId
-            ),
+    sourceImageId:
+      String(rank1.imageId),
 
-          gain:
-            transform.gain,
+    gain:
+      transform.gain,
 
-          offset:
-            transform.offset,
+    offset:
+      transform.offset,
 
-          exp:
-            Date.now() +
-            15 * 60 * 1000
-        });
+    target:
+      transform.target,
 
+    exp:
+      Date.now() +
+      15 * 60 * 1000
+  });
+
+         
       const fileName =
         `etsy-${listingId}-thumbnail-repair.jpg`;
 
@@ -1186,19 +1254,24 @@ app.post(
 
         after,
 
-        repair: {
-          type:
-            'brightness_only',
+       repair: {
+  type: 'brightness_only',
 
-          gain:
-            transform.gain,
+  target_brightness:
+    transform.target,
 
-          offset:
-            transform.offset,
+  achieved_brightness:
+    after.brightness_0_255,
 
-          artwork_content_changed:
-            false
-        },
+  gain:
+    transform.gain,
+
+  offset:
+    transform.offset,
+
+  artwork_content_changed:
+    false
+},
 
         preview_token:
           token,
