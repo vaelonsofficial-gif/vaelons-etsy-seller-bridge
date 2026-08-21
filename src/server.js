@@ -1,5 +1,6 @@
 import express from 'express';
 import multer from 'multer';
+import sharp from 'sharp';
 import { randomBase64Url, pkceChallenge, sealJson, openJson } from './crypto.js';
 import { etsyRequest, getShopId, etsyApiKeyForOAuth, setInitialToken, getTokenStatus, getListingImages, uploadListingImage } from './etsy.js';
 
