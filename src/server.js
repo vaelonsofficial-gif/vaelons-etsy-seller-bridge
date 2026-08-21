@@ -105,9 +105,28 @@ app.patch('/api/shop', async (req, res, next) => {
 
 app.get('/api/listings', async (req, res, next) => {
   try {
-    const params = { limit: Math.min(Number(req.query.limit || 100), 100), offset: Number(req.query.offset || 0), state: req.query.state || undefined };
-  res.json(await etsyRequest(`/shops/${await sid()}/listings`, { params }));
-  } catch (e) { next(e); }
+    const params = {
+      limit: Math.min(Number(req.query.limit || 5), 25),
+      offset: Number(req.query.offset || 0),
+      state: req.query.state || 'active'
+    };
+
+    const data = await etsyRequest(
+      `/shops/${await sid()}/listings`,
+      { params }
+    );
+
+    res.json({
+      count: data?.count ?? 0,
+      results: (data?.results || []).map((listing) => ({
+        listing_id: listing.listing_id,
+        title: listing.title,
+        state: listing.state
+      }))
+    });
+  } catch (e) {
+    next(e);
+  }
 });
 
 app.get('/api/listings/:listingId', async (req, res, next) => {
