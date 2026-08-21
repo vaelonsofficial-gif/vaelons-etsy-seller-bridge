@@ -23,16 +23,18 @@ function required(name) {
   return value;
 }
 
+function publicBase() {
+  return required('PUBLIC_BASE_URL').replace(/\/$/, '');
+}
+
 function bridgeAuth(req, res, next) {
   const auth = req.get('authorization') || '';
+
   if (auth !== `Bearer ${required('BRIDGE_API_KEY')}`) {
     return res.status(401).json({ error: 'unauthorized' });
   }
-  next();
-}
 
-function publicBase() {
-  return required('PUBLIC_BASE_URL').replace(/\/$/, '');
+  next();
 }
 
 function parseCookies(req) {
@@ -59,7 +61,21 @@ function asListingId(value) {
   const id = String(value || '').trim();
 
   if (!/^\d+$/.test(id)) {
-    throw new Error('Invalid listingId');
+    const err = new Error('Invalid listingId');
+    err.status = 400;
+    throw err;
+  }
+
+  return id;
+}
+
+function asSectionId(value) {
+  const id = String(value || '').trim();
+
+  if (!/^\d+$/.test(id)) {
+    const err = new Error('Invalid sectionId');
+    err.status = 400;
+    throw err;
   }
 
   return id;
@@ -114,7 +130,9 @@ async function downloadImage(url) {
   const parsed = new URL(url);
 
   if (parsed.protocol !== 'https:') {
-    throw new Error('Image URL must use HTTPS');
+    const err = new Error('Image URL must use HTTPS');
+    err.status = 400;
+    throw err;
   }
 
   const response = await fetch(url);
@@ -125,8 +143,7 @@ async function downloadImage(url) {
     throw err;
   }
 
-  const arrayBuffer = await response.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
+  const buffer = Buffer.from(await response.arrayBuffer());
 
   if (buffer.length > 20 * 1024 * 1024) {
     const err = new Error('Image is larger than 20 MB');
@@ -153,13 +170,8 @@ async function analyzeImage(buffer) {
     .greyscale()
     .stats();
 
-  const brightness = Math.round(
-    stats.channels?.[0]?.mean ?? 0
-  );
-
-  const contrast = Math.round(
-    stats.channels?.[0]?.stdev ?? 0
-  );
+  const brightness = Math.round(stats.channels?.[0]?.mean ?? 0);
+  const contrast = Math.round(stats.channels?.[0]?.stdev ?? 0);
 
   let darknessLabel = 'good';
 
@@ -187,10 +199,17 @@ function normalizeTargetBrightness(value) {
     return 110;
   }
 
-  return Math.max(
-    80,
-    Math.min(140, Math.round(parsed))
-  );
+  return Math.max(80, Math.min(140, Math.round(parsed)));
+}
+
+async function repairImage(buffer, transform) {
+  return sharp(buffer)
+    .linear(transform.gain, transform.offset)
+    .jpeg({
+      quality: 95,
+      chromaSubsampling: '4:4:4'
+    })
+    .toBuffer();
 }
 
 async function findRepairTransform(
@@ -199,7 +218,6 @@ async function findRepairTransform(
   requestedTarget = 110
 ) {
   const target = normalizeTargetBrightness(requestedTarget);
-
   const gain = 1.06;
 
   let low = 0;
@@ -216,21 +234,14 @@ async function findRepairTransform(
   for (let i = 0; i < 8; i += 1) {
     const offset = Math.round((low + high) / 2);
 
-    const candidate = await repairImage(
-      buffer,
-      {
-        gain,
-        offset
-      }
-    );
+    const candidate = await repairImage(buffer, {
+      gain,
+      offset
+    });
 
     const analysis = await analyzeImage(candidate);
-
     const achieved = analysis.brightness_0_255;
-
-    const distance = Math.abs(
-      target - achieved
-    );
+    const distance = Math.abs(target - achieved);
 
     if (distance < best.distance) {
       best = {
@@ -251,22 +262,6 @@ async function findRepairTransform(
 
   return best;
 }
-  return {
-    gain,
-    offset,
-    target
-  };
-}
-
-async function repairImage(buffer, transform) {
-  return sharp(buffer)
-    .linear(transform.gain, transform.offset)
-    .jpeg({
-      quality: 95,
-      chromaSubsampling: '4:4:4'
-    })
-    .toBuffer();
-}
 
 function signRepairPayload(payload) {
   const encoded = Buffer
@@ -284,11 +279,12 @@ function signRepairPayload(payload) {
 }
 
 function verifyRepairToken(token) {
-  const [encoded, signature] =
-    String(token || '').split('.');
+  const [encoded, signature] = String(token || '').split('.');
 
   if (!encoded || !signature) {
-    throw new Error('Invalid repair token');
+    const err = new Error('Invalid repair token');
+    err.status = 400;
+    throw err;
   }
 
   const expected = createHmac(
@@ -305,22 +301,17 @@ function verifyRepairToken(token) {
     a.length !== b.length ||
     !timingSafeEqual(a, b)
   ) {
-    throw new Error('Invalid repair token signature');
+    const err = new Error('Invalid repair token signature');
+    err.status = 400;
+    throw err;
   }
 
   const payload = JSON.parse(
-    Buffer.from(encoded, 'base64url')
-      .toString('utf8')
+    Buffer.from(encoded, 'base64url').toString('utf8')
   );
 
-  if (
-    !payload?.exp ||
-    Date.now() > payload.exp
-  ) {
-    const err = new Error(
-      'Repair preview expired'
-    );
-
+  if (!payload?.exp || Date.now() > payload.exp) {
+    const err = new Error('Repair preview expired');
     err.status = 410;
     throw err;
   }
@@ -330,7 +321,7 @@ function verifyRepairToken(token) {
 
 
 // ==================================================
-// PUBLIC HEALTH
+// HEALTH
 // ==================================================
 
 app.get('/health', (_req, res) => {
@@ -342,7 +333,7 @@ app.get('/health', (_req, res) => {
 
 
 // ==================================================
-// ETSY OAUTH
+// OAUTH
 // ==================================================
 
 app.get('/oauth/etsy/start', (req, res) => {
@@ -358,9 +349,7 @@ app.get('/oauth/etsy/start', (req, res) => {
   const state = randomBase64Url(24);
   const verifier = randomBase64Url(48);
   const challenge = pkceChallenge(verifier);
-
-  const redirectUri =
-    `${publicBase()}/oauth/etsy/callback`;
+  const redirectUri = `${publicBase()}/oauth/etsy/callback`;
 
   const capsule = sealJson({
     state,
@@ -368,55 +357,27 @@ app.get('/oauth/etsy/start', (req, res) => {
     ts: Date.now()
   });
 
-  res.cookie(
-    'etsy_oauth',
-    capsule,
-    {
-      httpOnly: true,
-      secure: true,
-      sameSite: 'lax',
-      maxAge: 10 * 60 * 1000
-    }
-  );
+  res.cookie('etsy_oauth', capsule, {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'lax',
+    maxAge: 10 * 60 * 1000
+  });
 
   const url = new URL(
     'https://www.etsy.com/oauth/connect'
   );
 
-  url.searchParams.set(
-    'response_type',
-    'code'
-  );
-
-  url.searchParams.set(
-    'client_id',
-    etsyApiKeyForOAuth()
-  );
-
-  url.searchParams.set(
-    'redirect_uri',
-    redirectUri
-  );
-
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('client_id', etsyApiKeyForOAuth());
+  url.searchParams.set('redirect_uri', redirectUri);
   url.searchParams.set(
     'scope',
     'listings_r listings_w shops_r shops_w'
   );
-
-  url.searchParams.set(
-    'state',
-    state
-  );
-
-  url.searchParams.set(
-    'code_challenge',
-    challenge
-  );
-
-  url.searchParams.set(
-    'code_challenge_method',
-    'S256'
-  );
+  url.searchParams.set('state', state);
+  url.searchParams.set('code_challenge', challenge);
+  url.searchParams.set('code_challenge_method', 'S256');
 
   res.redirect(url.toString());
 });
@@ -435,8 +396,7 @@ app.get(
         );
       }
 
-      const cookie =
-        parseCookies(req).etsy_oauth;
+      const cookie = parseCookies(req).etsy_oauth;
 
       if (!cookie) {
         return res
@@ -456,51 +416,33 @@ app.get(
       ) {
         return res
           .status(400)
-          .send(
-            'Invalid OAuth state.'
-          );
+          .send('Invalid OAuth state.');
       }
 
       const redirectUri =
         `${publicBase()}/oauth/etsy/callback`;
 
-      const body =
-        new URLSearchParams({
-          grant_type:
-            'authorization_code',
+      const body = new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: etsyApiKeyForOAuth(),
+        redirect_uri: redirectUri,
+        code: String(req.query.code || ''),
+        code_verifier: flow.verifier
+      });
 
-          client_id:
-            etsyApiKeyForOAuth(),
+      const tokenRes = await fetch(
+        'https://api.etsy.com/v3/public/oauth/token',
+        {
+          method: 'POST',
+          headers: {
+            'content-type':
+              'application/x-www-form-urlencoded; charset=utf-8'
+          },
+          body
+        }
+      );
 
-          redirect_uri:
-            redirectUri,
-
-          code:
-            String(
-              req.query.code || ''
-            ),
-
-          code_verifier:
-            flow.verifier
-        });
-
-      const tokenRes =
-        await fetch(
-          'https://api.etsy.com/v3/public/oauth/token',
-          {
-            method: 'POST',
-
-            headers: {
-              'content-type':
-                'application/x-www-form-urlencoded; charset=utf-8'
-            },
-
-            body
-          }
-        );
-
-      const token =
-        await tokenRes.json();
+      const token = await tokenRes.json();
 
       if (!tokenRes.ok) {
         return res
@@ -512,8 +454,7 @@ app.get(
 
       await setInitialToken(token);
 
-      const shopId =
-        await getShopId();
+      const shopId = await getShopId();
 
       await etsyRequest(
         `/shops/${shopId}/listings`,
@@ -525,61 +466,51 @@ app.get(
         }
       );
 
-      const encryptedCapsule =
-        sealJson({
-          refresh_token:
-            token.refresh_token,
+      const encryptedCapsule = sealJson({
+        refresh_token: token.refresh_token,
+        shop_id: shopId
+      });
 
-          shop_id:
-            shopId
-        });
+      res.clearCookie('etsy_oauth');
 
-      res.clearCookie(
-        'etsy_oauth'
-      );
-
-      res
-        .type('html')
-        .send(
-`<!doctype html>
+      res.type('html').send(`
+<!doctype html>
 <meta charset="utf-8">
 <title>VAELONS Etsy Connected</title>
 
 <style>
-body{
-  font-family:system-ui;
-  max-width:800px;
-  margin:60px auto;
-  padding:0 20px;
-  line-height:1.5
+body {
+  font-family: system-ui;
+  max-width: 800px;
+  margin: 60px auto;
+  padding: 0 20px;
+  line-height: 1.5;
 }
 
-textarea{
-  width:100%;
-  height:150px;
-  word-break:break-all
+textarea {
+  width: 100%;
+  height: 150px;
+  word-break: break-all;
 }
 </style>
 
-<h2>
-VAELONS Etsy Seller bağlantısı doğrulandı.
-</h2>
+<h2>VAELONS Etsy Seller bağlantısı doğrulandı.</h2>
 
 <p>
 Aşağıdaki şifreli değeri Vercel Environment Variables bölümüne
-<b>ETSY_TOKEN_CAPSULE</b>
-adıyla ekleyin.
+<b>ETSY_TOKEN_CAPSULE</b> adıyla ekleyin.
 </p>
 
 <textarea
-readonly
-onclick="this.select()">${encryptedCapsule}</textarea>
+  readonly
+  onclick="this.select()"
+>${encryptedCapsule}</textarea>
 
 <p>
 Production + Preview seçin, kaydedin ve redeploy yapın.
 Bu değeri gizli tutun.
-</p>`
-        );
+</p>
+      `);
 
     } catch (err) {
       console.error(err);
@@ -587,11 +518,8 @@ Bu değeri gizli tutun.
       res.status(
         err.status || 500
       ).json({
-        error:
-          err.message,
-
-        details:
-          err.details || null
+        error: err.message,
+        details: err.details || null
       });
     }
   }
@@ -599,7 +527,7 @@ Bu değeri gizli tutun.
 
 
 // ==================================================
-// PUBLIC SIGNED THUMBNAIL PREVIEW
+// PUBLIC PREVIEW
 // ==================================================
 
 app.get(
@@ -643,14 +571,10 @@ app.get(
           buffer,
           {
             gain:
-              Number(
-                payload.gain
-              ),
+              Number(payload.gain),
 
             offset:
-              Number(
-                payload.offset
-              )
+              Number(payload.offset)
           }
         );
 
@@ -677,8 +601,7 @@ app.get(
       res.status(
         err.status || 400
       ).json({
-        error:
-          err.message
+        error: err.message
       });
     }
   }
@@ -686,7 +609,7 @@ app.get(
 
 
 // ==================================================
-// PROTECTED API
+// API AUTH
 // ==================================================
 
 app.use(
@@ -960,12 +883,11 @@ app.get(
           req.params.listingId
         );
 
-      const data =
+      res.json(
         await getListingImages(
           listingId
-        );
-
-      res.json(data);
+        )
+      );
 
     } catch (err) {
       next(err);
@@ -1182,23 +1104,24 @@ app.post(
           buffer
         );
 
-     const targetBrightness =
-  normalizeTargetBrightness(
-    req.body?.target_brightness ?? 110
-  );
+      const targetBrightness =
+        normalizeTargetBrightness(
+          req.body?.target_brightness ??
+          110
+        );
 
-const transform =
-  await findRepairTransform(
-    buffer,
-    before.brightness_0_255,
-    targetBrightness
-  );
+      const transform =
+        await findRepairTransform(
+          buffer,
+          before.brightness_0_255,
+          targetBrightness
+        );
 
-const repaired =
-  await repairImage(
-    buffer,
-    transform
-  );
+      const repaired =
+        await repairImage(
+          buffer,
+          transform
+        );
 
       const after =
         await analyzeImage(
@@ -1206,27 +1129,28 @@ const repaired =
         );
 
       const token =
-  signRepairPayload({
-    listingId,
+        signRepairPayload({
+          listingId,
 
-    sourceImageId:
-      String(rank1.imageId),
+          sourceImageId:
+            String(
+              rank1.imageId
+            ),
 
-    gain:
-      transform.gain,
+          gain:
+            transform.gain,
 
-    offset:
-      transform.offset,
+          offset:
+            transform.offset,
 
-    target:
-      transform.target,
+          target:
+            transform.target,
 
-    exp:
-      Date.now() +
-      15 * 60 * 1000
-  });
+          exp:
+            Date.now() +
+            15 * 60 * 1000
+        });
 
-         
       const fileName =
         `etsy-${listingId}-thumbnail-repair.jpg`;
 
@@ -1254,24 +1178,25 @@ const repaired =
 
         after,
 
-       repair: {
-  type: 'brightness_only',
+        repair: {
+          type:
+            'brightness_only',
 
-  target_brightness:
-    transform.target,
+          target_brightness:
+            transform.target,
 
-  achieved_brightness:
-    after.brightness_0_255,
+          achieved_brightness:
+            after.brightness_0_255,
 
-  gain:
-    transform.gain,
+          gain:
+            transform.gain,
 
-  offset:
-    transform.offset,
+          offset:
+            transform.offset,
 
-  artwork_content_changed:
-    false
-},
+          artwork_content_changed:
+            false
+        },
 
         preview_token:
           token,
@@ -1292,7 +1217,7 @@ const repaired =
 
 // ==================================================
 // THUMBNAIL REPAIR APPLY
-// WRITE - REQUIRES ONAYLIYORUM
+// REQUIRES ONAYLIYORUM
 // ==================================================
 
 app.post(
@@ -1334,7 +1259,8 @@ app.post(
       if (
         String(
           payload.listingId
-        ) !== listingId
+        ) !==
+        listingId
       ) {
         return res
           .status(409)
@@ -1486,7 +1412,7 @@ app.post(
 
 
 // ==================================================
-// SHOP SECTIONS
+// SECTIONS
 // ==================================================
 
 app.get(
@@ -1529,7 +1455,6 @@ app.post(
           `/shops/${await sid()}/sections`,
           {
             method: 'POST',
-
             body: {
               title
             }
@@ -1549,23 +1474,9 @@ app.put(
   async (req, res, next) => {
     try {
       const sectionId =
-        String(
-          req.params.sectionId ||
-          ''
-        ).trim();
-
-      if (
-        !/^\d+$/.test(
-          sectionId
-        )
-      ) {
-        return res
-          .status(400)
-          .json({
-            error:
-              'Invalid sectionId'
-          });
-      }
+        asSectionId(
+          req.params.sectionId
+        );
 
       const title =
         String(
