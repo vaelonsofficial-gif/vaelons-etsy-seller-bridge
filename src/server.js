@@ -30,129 +30,71 @@ const SCAN_MAX_LIMIT = 10;
 
 
 /* =========================================================
-   BASIC HELPERS
+   BASIC
 ========================================================= */
 
 function required(name) {
   const value = process.env[name];
 
   if (!value) {
-    throw new Error(
-      `Missing environment variable: ${name}`
-    );
+    throw new Error(`Missing environment variable: ${name}`);
   }
 
   return value;
 }
 
-
 function publicBase() {
-  return required(
-    'PUBLIC_BASE_URL'
-  ).replace(/\/$/, '');
+  return required('PUBLIC_BASE_URL').replace(/\/$/, '');
 }
 
+function bridgeAuth(req, res, next) {
+  const auth = req.get('authorization') || '';
 
-function bridgeAuth(
-  req,
-  res,
-  next
-) {
-  const auth =
-    req.get(
-      'authorization'
-    ) || '';
-
-  if (
-    auth !==
-    `Bearer ${required('BRIDGE_API_KEY')}`
-  ) {
-    return res
-      .status(401)
-      .json({
-        error:
-          'unauthorized'
-      });
+  if (auth !== `Bearer ${required('BRIDGE_API_KEY')}`) {
+    return res.status(401).json({
+      error: 'unauthorized'
+    });
   }
 
   next();
 }
 
-
 function parseCookies(req) {
   const result = {};
 
-  for (
-    const part of
-    (
-      req.headers.cookie ||
-      ''
-    ).split(';')
-  ) {
-    const idx =
-      part.indexOf('=');
+  for (const part of (req.headers.cookie || '').split(';')) {
+    const idx = part.indexOf('=');
 
     if (idx > -1) {
-      result[
-        part
-          .slice(0, idx)
-          .trim()
-      ] =
-        decodeURIComponent(
-          part
-            .slice(idx + 1)
-            .trim()
-        );
+      result[part.slice(0, idx).trim()] =
+        decodeURIComponent(part.slice(idx + 1).trim());
     }
   }
 
   return result;
 }
 
-
 async function sid() {
-  return String(
-    await getShopId()
-  );
+  return String(await getShopId());
 }
-
 
 function asListingId(value) {
-  const id =
-    String(
-      value || ''
-    ).trim();
+  const id = String(value || '').trim();
 
-  if (
-    !/^\d+$/.test(id)
-  ) {
-    const err =
-      new Error(
-        'Invalid listingId'
-      );
-
+  if (!/^\d+$/.test(id)) {
+    const err = new Error('Invalid listingId');
     err.status = 400;
     throw err;
   }
 
   return id;
 }
-
 
 function asSectionId(value) {
-  const id =
-    String(
-      value || ''
-    ).trim();
+  const id = String(value || '').trim();
 
-  if (
-    !/^\d+$/.test(id)
-  ) {
-    const err =
-      new Error(
-        'Invalid sectionId'
-      );
-
+  if (!/^\d+$/.test(id)) {
+    const err = new Error('Invalid sectionId');
     err.status = 400;
     throw err;
   }
@@ -160,43 +102,21 @@ function asSectionId(value) {
   return id;
 }
 
-
-function clamp(
-  value,
-  min,
-  max
-) {
-  return Math.max(
-    min,
-    Math.min(
-      max,
-      value
-    )
-  );
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
 }
-
 
 function round1(value) {
-  return (
-    Math.round(
-      Number(value) *
-      10
-    ) /
-    10
-  );
+  return Math.round(Number(value) * 10) / 10;
 }
-
 
 function getImageId(image) {
   return (
-    image
-      ?.listing_image_id ??
-    image
-      ?.image_id ??
+    image?.listing_image_id ??
+    image?.image_id ??
     null
   );
 }
-
 
 function getImageUrl(image) {
   return (
@@ -209,24 +129,13 @@ function getImageUrl(image) {
   );
 }
 
-
-function extractUploadedImage(
-  uploadResult
-) {
+function extractUploadedImage(uploadResult) {
   if (!uploadResult) {
     return null;
   }
 
-  if (
-    Array.isArray(
-      uploadResult?.results
-    )
-  ) {
-    return (
-      uploadResult
-        .results[0] ||
-      null
-    );
+  if (Array.isArray(uploadResult?.results)) {
+    return uploadResult.results[0] || null;
   }
 
   return uploadResult;
@@ -234,87 +143,43 @@ function extractUploadedImage(
 
 
 /* =========================================================
-   LISTING IMAGE HELPERS
+   LISTING IMAGES
 ========================================================= */
 
-async function getListingImageSet(
-  listingId
-) {
-  const data =
-    await getListingImages(
-      listingId
-    );
+async function getListingImageSet(listingId) {
+  const data = await getListingImages(listingId);
 
   const images =
-    Array.isArray(
-      data?.results
-    )
+    Array.isArray(data?.results)
       ? data.results
       : [];
 
   if (!images.length) {
-    const err =
-      new Error(
-        'No listing images found'
-      );
-
+    const err = new Error('No listing images found');
     err.status = 404;
     throw err;
   }
 
-  const ordered =
-    [...images].sort(
-      (
-        a,
-        b
-      ) =>
-        Number(
-          a.rank ??
-          9999
-        ) -
-        Number(
-          b.rank ??
-          9999
-        )
-    );
+  const ordered = [...images].sort(
+    (a, b) =>
+      Number(a.rank ?? 9999) -
+      Number(b.rank ?? 9999)
+  );
 
   const rank1 =
-    images.find(
-      (img) =>
-        Number(
-          img.rank
-        ) === 1
-    ) ||
+    images.find((img) => Number(img.rank) === 1) ||
     ordered[0];
 
   const rank2 =
-    images.find(
-      (img) =>
-        Number(
-          img.rank
-        ) === 2
-    ) ||
+    images.find((img) => Number(img.rank) === 2) ||
     ordered[1] ||
     null;
 
-  const rank1Url =
-    getImageUrl(
-      rank1
-    );
-
-  const rank2Url =
-    rank2
-      ? getImageUrl(
-          rank2
-        )
-      : null;
+  const rank1Url = getImageUrl(rank1);
+  const rank2Url = rank2 ? getImageUrl(rank2) : null;
 
   if (!rank1Url) {
-    const err =
-      new Error(
-        'No usable rank 1 image URL found'
-      );
-
+    const err = new Error('No usable rank 1 image URL found');
     err.status = 404;
     throw err;
   }
@@ -323,114 +188,58 @@ async function getListingImageSet(
     images,
 
     rank1: {
-      image:
-        rank1,
-
-      imageId:
-        getImageId(
-          rank1
-        ),
-
-      imageUrl:
-        rank1Url
+      image: rank1,
+      imageId: getImageId(rank1),
+      imageUrl: rank1Url
     },
 
     rank2:
-      rank2 &&
-      rank2Url
+      rank2 && rank2Url
         ? {
-            image:
-              rank2,
-
-            imageId:
-              getImageId(
-                rank2
-              ),
-
-            imageUrl:
-              rank2Url
+            image: rank2,
+            imageId: getImageId(rank2),
+            imageUrl: rank2Url
           }
         : null
   };
 }
 
-
 async function downloadImage(url) {
-  const parsed =
-    new URL(url);
+  const parsed = new URL(url);
 
-  if (
-    parsed.protocol !==
-    'https:'
-  ) {
-    const err =
-      new Error(
-        'Image URL must use HTTPS'
-      );
-
+  if (parsed.protocol !== 'https:') {
+    const err = new Error('Image URL must use HTTPS');
     err.status = 400;
     throw err;
   }
 
-  const response =
-    await fetch(url);
+  const response = await fetch(url);
 
   if (!response.ok) {
-    const err =
-      new Error(
-        `Could not download image (${response.status})`
-      );
+    const err = new Error(
+      `Could not download image (${response.status})`
+    );
 
     err.status = 502;
     throw err;
   }
 
-  const buffer =
-    Buffer.from(
-      await response
-        .arrayBuffer()
-    );
+  const buffer = Buffer.from(
+    await response.arrayBuffer()
+  );
 
-  if (
-    buffer.length >
-    20 *
-    1024 *
-    1024
-  ) {
-    const err =
-      new Error(
-        'Image is larger than 20 MB'
-      );
-
+  if (buffer.length > 20 * 1024 * 1024) {
+    const err = new Error('Image is larger than 20 MB');
     err.status = 413;
     throw err;
   }
 
   return {
     buffer,
-
     contentType:
-      response.headers.get(
-        'content-type'
-      ) ||
+      response.headers.get('content-type') ||
       'image/jpeg'
   };
-}
-
-
-async function normalizeImage(
-  buffer
-) {
-  return sharp(
-    buffer
-  )
-    .rotate()
-    .removeAlpha()
-    .toColourspace(
-      'srgb'
-    )
-    .png()
-    .toBuffer();
 }
 
 
@@ -438,117 +247,65 @@ async function normalizeImage(
    IMAGE ANALYSIS
 ========================================================= */
 
-function percentileFromSorted(
-  values,
-  fraction
-) {
+function percentileFromSorted(values, fraction) {
   if (!values.length) {
     return 0;
   }
 
-  const index =
-    clamp(
-      Math.round(
-        (
-          values.length -
-          1
-        ) *
-        fraction
-      ),
-      0,
-      values.length -
-      1
-    );
+  const index = clamp(
+    Math.round((values.length - 1) * fraction),
+    0,
+    values.length - 1
+  );
 
   return values[index];
 }
 
+async function analyzeImage(buffer) {
+  const metadata = await sharp(buffer).metadata();
 
-async function analyzeImage(
-  buffer
-) {
-  const metadata =
-    await sharp(
-      buffer
-    ).metadata();
-
-  const {
-    data,
-    info
-  } =
-    await sharp(
-      buffer
-    )
+  const { data, info } =
+    await sharp(buffer)
       .rotate()
       .removeAlpha()
-      .toColourspace(
-        'srgb'
-      )
+      .toColourspace('srgb')
       .resize({
-        width:
-          420,
-
-        height:
-          420,
-
-        fit:
-          'inside',
-
-        withoutEnlargement:
-          true
+        width: 420,
+        height: 420,
+        fit: 'inside',
+        withoutEnlargement: true
       })
       .raw()
       .toBuffer({
-        resolveWithObject:
-          true
+        resolveWithObject: true
       });
 
-  const channels =
-    info.channels;
-
-  const luminanceValues =
-    [];
+  const channels = info.channels;
+  const values = [];
 
   let sumL = 0;
   let sumR = 0;
   let sumG = 0;
   let sumB = 0;
-
   let sumChroma = 0;
 
   let shadowCount = 0;
   let deepShadowCount = 0;
   let highlightCount = 0;
-  let pixelCount = 0;
+  let count = 0;
 
-  for (
-    let i = 0;
-    i < data.length;
-    i += channels
-  ) {
-    const r =
-      data[i];
+  for (let i = 0; i < data.length; i += channels) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
 
-    const g =
-      data[
-        i + 1
-      ];
-
-    const b =
-      data[
-        i + 2
-      ];
-
-    const y =
-      Math.round(
-        0.2126 * r +
-        0.7152 * g +
-        0.0722 * b
-      );
-
-    luminanceValues.push(
-      y
+    const y = Math.round(
+      0.2126 * r +
+      0.7152 * g +
+      0.0722 * b
     );
+
+    values.push(y);
 
     sumL += y;
     sumR += r;
@@ -556,127 +313,65 @@ async function analyzeImage(
     sumB += b;
 
     sumChroma +=
-      Math.max(
-        r,
-        g,
-        b
-      ) -
-      Math.min(
-        r,
-        g,
-        b
-      );
+      Math.max(r, g, b) -
+      Math.min(r, g, b);
 
     if (y < 55) {
       shadowCount += 1;
     }
 
     if (y < 28) {
-      deepShadowCount +=
-        1;
+      deepShadowCount += 1;
     }
 
     if (y > 230) {
-      highlightCount +=
-        1;
+      highlightCount += 1;
     }
 
-    pixelCount +=
-      1;
+    count += 1;
   }
 
-  luminanceValues.sort(
-    (
-      a,
-      b
-    ) => a - b
-  );
+  values.sort((a, b) => a - b);
 
-  const count =
-    pixelCount ||
-    1;
+  const safeCount = count || 1;
 
   const brightness =
-    Math.round(
-      sumL /
-      count
-    );
+    Math.round(sumL / safeCount);
 
-  let varianceSum =
-    0;
+  let variance = 0;
 
-  for (
-    const value of
-    luminanceValues
-  ) {
-    const delta =
-      value -
-      brightness;
-
-    varianceSum +=
-      delta *
-      delta;
+  for (const value of values) {
+    const delta = value - brightness;
+    variance += delta * delta;
   }
 
   const contrast =
     Math.round(
       Math.sqrt(
-        varianceSum /
-        count
+        variance / safeCount
       )
     );
 
   const p10 =
-    percentileFromSorted(
-      luminanceValues,
-      0.10
-    );
+    percentileFromSorted(values, 0.10);
 
   const p50 =
-    percentileFromSorted(
-      luminanceValues,
-      0.50
-    );
+    percentileFromSorted(values, 0.50);
 
   const p90 =
-    percentileFromSorted(
-      luminanceValues,
-      0.90
-    );
+    percentileFromSorted(values, 0.90);
 
-  let darknessLabel =
-    'good';
+  let darknessLabel = 'good';
 
-  if (
-    brightness < 60
-  ) {
-    darknessLabel =
-      'very_dark';
+  if (brightness < 60) {
+    darknessLabel = 'very_dark';
 
-  } else if (
-    brightness < 75
-  ) {
-    darknessLabel =
-      'dark';
+  } else if (brightness < 75) {
+    darknessLabel = 'dark';
 
-  } else if (
-    brightness < 90
-  ) {
-    darknessLabel =
-      'slightly_dark';
+  } else if (brightness < 90) {
+    darknessLabel = 'slightly_dark';
   }
-
-  const meanR =
-    sumR /
-    count;
-
-  const meanG =
-    sumG /
-    count;
-
-  const meanB =
-    sumB /
-    count;
 
   return {
     width:
@@ -703,231 +398,128 @@ async function analyzeImage(
     p90,
 
     tonal_range_p10_p90:
-      p90 -
-      p10,
+      p90 - p10,
 
     shadow_percent:
       round1(
-        (
-          shadowCount /
-          count
-        ) *
+        shadowCount /
+        safeCount *
         100
       ),
 
     deep_shadow_percent:
       round1(
-        (
-          deepShadowCount /
-          count
-        ) *
+        deepShadowCount /
+        safeCount *
         100
       ),
 
     highlight_percent:
       round1(
-        (
-          highlightCount /
-          count
-        ) *
+        highlightCount /
+        safeCount *
         100
       ),
 
     mean_rgb: {
-      r:
-        round1(
-          meanR
-        ),
-
-      g:
-        round1(
-          meanG
-        ),
-
-      b:
-        round1(
-          meanB
-        )
+      r: round1(sumR / safeCount),
+      g: round1(sumG / safeCount),
+      b: round1(sumB / safeCount)
     },
 
     mean_chroma:
       round1(
         sumChroma /
-        count
-      ),
-
-    color_balance: {
-      r_minus_g:
-        round1(
-          meanR -
-          meanG
-        ),
-
-      b_minus_g:
-        round1(
-          meanB -
-          meanG
-        )
-    }
+        safeCount
+      )
   };
 }
 
 
 /* =========================================================
-   THUMBNAIL SCORE
+   THUMBNAIL ASSESSMENT
 ========================================================= */
 
-function assessThumbnail(
-  analysis
-) {
+function assessThumbnail(analysis) {
   let score = 100;
 
   const b =
-    analysis
-      .brightness_0_255;
+    analysis.brightness_0_255;
 
   const shadows =
-    analysis
-      .shadow_percent;
+    analysis.shadow_percent;
 
   const deep =
-    analysis
-      .deep_shadow_percent;
+    analysis.deep_shadow_percent;
 
   const highlights =
-    analysis
-      .highlight_percent;
+    analysis.highlight_percent;
 
   const range =
-    analysis
-      .tonal_range_p10_p90;
+    analysis.tonal_range_p10_p90;
 
-  if (
-    b < 50
-  ) {
+  if (b < 50) {
     score -= 34;
-
-  } else if (
-    b < 60
-  ) {
+  } else if (b < 60) {
     score -= 27;
-
-  } else if (
-    b < 70
-  ) {
+  } else if (b < 70) {
     score -= 19;
-
-  } else if (
-    b < 80
-  ) {
+  } else if (b < 80) {
     score -= 11;
-
-  } else if (
-    b < 90
-  ) {
+  } else if (b < 90) {
     score -= 5;
   }
 
-  if (
-    shadows > 60
-  ) {
+  if (shadows > 60) {
     score -= 24;
-
-  } else if (
-    shadows > 50
-  ) {
+  } else if (shadows > 50) {
     score -= 17;
-
-  } else if (
-    shadows > 40
-  ) {
+  } else if (shadows > 40) {
     score -= 10;
-
-  } else if (
-    shadows > 32
-  ) {
+  } else if (shadows > 32) {
     score -= 5;
   }
 
-  if (
-    deep > 38
-  ) {
+  if (deep > 38) {
     score -= 14;
-
-  } else if (
-    deep > 28
-  ) {
+  } else if (deep > 28) {
     score -= 9;
-
-  } else if (
-    deep > 20
-  ) {
+  } else if (deep > 20) {
     score -= 4;
   }
 
-  if (
-    highlights > 14
-  ) {
+  if (highlights > 14) {
     score -= 8;
-
-  } else if (
-    highlights > 8
-  ) {
+  } else if (highlights > 8) {
     score -= 4;
   }
 
-  if (
-    range < 55
-  ) {
+  if (range < 55) {
     score -= 12;
-
-  } else if (
-    range < 70
-  ) {
+  } else if (range < 70) {
     score -= 6;
   }
 
-  score =
-    clamp(
-      Math.round(
-        score
-      ),
-      0,
-      100
-    );
+  score = clamp(
+    Math.round(score),
+    0,
+    100
+  );
 
-  let priority =
-    'none';
+  let priority = 'none';
+  let action = 'keep';
 
-  let action =
-    'keep';
+  if (score < 45) {
+    priority = 'urgent';
+    action = 'inspect_frame_detector';
 
-  if (
-    score < 45
-  ) {
-    priority =
-      'urgent';
+  } else if (score < 60) {
+    priority = 'high';
+    action = 'inspect_frame_detector';
 
-    action =
-      'prepare_reference_frame_preview';
-
-  } else if (
-    score < 60
-  ) {
-    priority =
-      'high';
-
-    action =
-      'prepare_reference_frame_preview';
-
-  } else if (
-    score < 75
-  ) {
-    priority =
-      'review';
-
-    action =
-      'review_before_repair';
+  } else if (score < 75) {
+    priority = 'review';
+    action = 'review_before_repair';
   }
 
   return {
@@ -940,652 +532,790 @@ function assessThumbnail(
       action,
 
     auto_publish_allowed:
-      false,
-
-    reason:
-      action ===
-      'keep'
-        ? 'Thumbnail readability is within the conservative safe range.'
-        : 'Thumbnail should be visually reviewed before any Etsy change.'
+      false
   };
 }
 
 
 /* =========================================================
-   FRAME DETECTION V5
+   V5.1 MULTI-SCALE RECTANGLE DETECTOR
 
-   Fail-closed heuristic.
-   It is intended for roughly front-facing rectangular
-   canvas/frame presentations.
+   Detector-only:
+   no artwork transfer
+   no Etsy modification
 
-   If the frame cannot be detected confidently,
-   the system refuses to prepare the replacement.
+   The detector looks for a central rectangular
+   region whose four borders have strong edge
+   energy compared with the rest of the image.
 ========================================================= */
 
-function median(values) {
-  if (!values.length) {
-    return 0;
-  }
+function buildIntegralImage(
+  values,
+  width,
+  height
+) {
+  const stride =
+    width + 1;
 
-  const sorted =
-    [...values].sort(
-      (
-        a,
-        b
-      ) =>
-        a - b
+  const integral =
+    new Float64Array(
+      (width + 1) *
+      (height + 1)
     );
 
-  const mid =
-    Math.floor(
-      sorted.length /
-      2
+  for (let y = 0; y < height; y += 1) {
+    let rowSum = 0;
+
+    for (let x = 0; x < width; x += 1) {
+      rowSum +=
+        values[
+          y * width + x
+        ];
+
+      integral[
+        (y + 1) *
+        stride +
+        (x + 1)
+      ] =
+        integral[
+          y *
+          stride +
+          (x + 1)
+        ] +
+        rowSum;
+    }
+  }
+
+  return {
+    integral,
+    stride
+  };
+}
+
+function rectSum(
+  integral,
+  stride,
+  x,
+  y,
+  width,
+  height
+) {
+  const x1 =
+    Math.max(
+      0,
+      Math.round(x)
+    );
+
+  const y1 =
+    Math.max(
+      0,
+      Math.round(y)
+    );
+
+  const x2 =
+    Math.max(
+      x1,
+      Math.round(
+        x + width
+      )
+    );
+
+  const y2 =
+    Math.max(
+      y1,
+      Math.round(
+        y + height
+      )
     );
 
   return (
-    sorted.length %
-    2
-  )
-    ? sorted[mid]
-    : (
-        sorted[
-          mid - 1
-        ] +
-        sorted[mid]
-      ) /
-      2;
-}
-
-
-function smoothArray(
-  values,
-  radius = 4
-) {
-  const out =
-    new Array(
-      values.length
-    ).fill(0);
-
-  for (
-    let i = 0;
-    i < values.length;
-    i += 1
-  ) {
-    let sum = 0;
-    let count = 0;
-
-    const start =
-      Math.max(
-        0,
-        i - radius
-      );
-
-    const end =
-      Math.min(
-        values.length -
-        1,
-        i + radius
-      );
-
-    for (
-      let j = start;
-      j <= end;
-      j += 1
-    ) {
-      sum +=
-        values[j];
-
-      count +=
-        1;
-    }
-
-    out[i] =
-      count
-        ? sum /
-          count
-        : values[i];
-  }
-
-  return out;
-}
-
-
-function topPeaks(
-  values,
-  minIndex,
-  maxIndex,
-  count = 18,
-  spacing = 8
-) {
-  const candidates =
-    [];
-
-  for (
-    let i = minIndex;
-    i <= maxIndex;
-    i += 1
-  ) {
-    candidates.push({
-      i,
-
-      value:
-        values[i] ||
-        0
-    });
-  }
-
-  candidates.sort(
-    (
-      a,
-      b
-    ) =>
-      b.value -
-      a.value
+    integral[
+      y2 * stride + x2
+    ] -
+    integral[
+      y1 * stride + x2
+    ] -
+    integral[
+      y2 * stride + x1
+    ] +
+    integral[
+      y1 * stride + x1
+    ]
   );
-
-  const chosen =
-    [];
-
-  for (
-    const candidate of
-    candidates
-  ) {
-    if (
-      chosen.every(
-        (peak) =>
-          Math.abs(
-            peak.i -
-            candidate.i
-          ) >=
-          spacing
-      )
-    ) {
-      chosen.push(
-        candidate
-      );
-
-      if (
-        chosen.length >=
-        count
-      ) {
-        break;
-      }
-    }
-  }
-
-  return chosen;
 }
 
+function rectMean(
+  integral,
+  stride,
+  x,
+  y,
+  width,
+  height
+) {
+  const w =
+    Math.max(
+      1,
+      Math.round(width)
+    );
 
-async function detectArtworkFrame(
+  const h =
+    Math.max(
+      1,
+      Math.round(height)
+    );
+
+  return (
+    rectSum(
+      integral,
+      stride,
+      x,
+      y,
+      w,
+      h
+    ) /
+    (w * h)
+  );
+}
+
+function candidateBorderScore(
+  candidate,
+  integral,
+  stride,
+  globalMean
+) {
+  const {
+    x,
+    y,
+    width,
+    height
+  } = candidate;
+
+  const strip =
+    Math.max(
+      2,
+      Math.round(
+        Math.min(
+          width,
+          height
+        ) *
+        0.018
+      )
+    );
+
+  const top =
+    rectMean(
+      integral,
+      stride,
+      x,
+      y,
+      width,
+      strip
+    );
+
+  const bottom =
+    rectMean(
+      integral,
+      stride,
+      x,
+      y +
+      height -
+      strip,
+      width,
+      strip
+    );
+
+  const left =
+    rectMean(
+      integral,
+      stride,
+      x,
+      y,
+      strip,
+      height
+    );
+
+  const right =
+    rectMean(
+      integral,
+      stride,
+      x +
+      width -
+      strip,
+      y,
+      strip,
+      height
+    );
+
+  const innerMargin =
+    Math.max(
+      strip * 3,
+      Math.round(
+        Math.min(
+          width,
+          height
+        ) *
+        0.06
+      )
+    );
+
+  const innerWidth =
+    Math.max(
+      1,
+      width -
+      innerMargin * 2
+    );
+
+  const innerHeight =
+    Math.max(
+      1,
+      height -
+      innerMargin * 2
+    );
+
+  const inside =
+    rectMean(
+      integral,
+      stride,
+      x +
+      innerMargin,
+      y +
+      innerMargin,
+      innerWidth,
+      innerHeight
+    );
+
+  const sides =
+    [
+      top,
+      bottom,
+      left,
+      right
+    ];
+
+  const avgBorder =
+    sides.reduce(
+      (a, b) => a + b,
+      0
+    ) /
+    sides.length;
+
+  const weakestBorder =
+    Math.min(
+      ...sides
+    );
+
+  const borderRatio =
+    avgBorder /
+    Math.max(
+      globalMean,
+      0.001
+    );
+
+  const weakestRatio =
+    weakestBorder /
+    Math.max(
+      globalMean,
+      0.001
+    );
+
+  const contrastToInside =
+    avgBorder /
+    Math.max(
+      inside,
+      0.001
+    );
+
+  return {
+    top,
+    bottom,
+    left,
+    right,
+    inside,
+    avgBorder,
+    weakestBorder,
+    borderRatio,
+    weakestRatio,
+    contrastToInside
+  };
+}
+
+function generateFractions(
+  start,
+  end,
+  step
+) {
+  const values = [];
+
+  for (
+    let value = start;
+    value <= end + 0.0001;
+    value += step
+  ) {
+    values.push(
+      Number(
+        value.toFixed(4)
+      )
+    );
+  }
+
+  return values;
+}
+
+async function detectCentralFrame(
   buffer,
   role
 ) {
-  const {
-    data,
-    info
-  } =
-    await sharp(
-      buffer
-    )
+  const { data, info } =
+    await sharp(buffer)
+      .rotate()
       .removeAlpha()
       .greyscale()
       .resize({
-        width:
-          520,
-
-        height:
-          520,
-
-        fit:
-          'inside',
-
-        withoutEnlargement:
-          true
+        width: 640,
+        height: 640,
+        fit: 'inside',
+        withoutEnlargement: false
       })
       .raw()
       .toBuffer({
-        resolveWithObject:
-          true
+        resolveWithObject: true
       });
 
-  const w =
+  const width =
     info.width;
 
-  const h =
+  const height =
     info.height;
 
-  const vEdge =
-    new Array(w)
-      .fill(0);
-
-  const hEdge =
-    new Array(h)
-      .fill(0);
-
-  const yMin =
-    Math.floor(
-      h *
-      0.08
+  const gradient =
+    new Float32Array(
+      width * height
     );
 
-  const yMax =
-    Math.ceil(
-      h *
-      0.92
-    );
-
-  const xMin =
-    Math.floor(
-      w *
-      0.08
-    );
-
-  const xMax =
-    Math.ceil(
-      w *
-      0.92
-    );
+  let gradientSum = 0;
+  let gradientCount = 0;
 
   for (
-    let y =
-      yMin + 1;
-
-    y <
-      yMax - 1;
-
+    let y = 1;
+    y < height - 1;
     y += 1
   ) {
     for (
-      let x =
-        xMin + 1;
-
-      x <
-        xMax - 1;
-
+      let x = 1;
+      x < width - 1;
       x += 1
     ) {
       const idx =
-        y *
-        w +
-        x;
+        y * width + x;
 
       const gx =
         Math.abs(
-          data[
-            idx + 1
-          ] -
-          data[
-            idx - 1
-          ]
+          data[idx + 1] -
+          data[idx - 1]
         );
 
       const gy =
         Math.abs(
-          data[
-            idx + w
-          ] -
-          data[
-            idx - w
-          ]
+          data[idx + width] -
+          data[idx - width]
         );
 
-      vEdge[x] +=
-        gx;
+      const magnitude =
+        gx + gy;
 
-      hEdge[y] +=
-        gy;
+      gradient[idx] =
+        magnitude;
+
+      gradientSum +=
+        magnitude;
+
+      gradientCount +=
+        1;
     }
   }
 
-  const sv =
-    smoothArray(
-      vEdge,
-      4
-    );
-
-  const sh =
-    smoothArray(
-      hEdge,
-      4
-    );
-
-  const vBase =
+  const globalMean =
+    gradientSum /
     Math.max(
-      1,
-      median(
-        sv.slice(
-          xMin,
-          xMax + 1
-        )
-      )
+      gradientCount,
+      1
     );
 
-  const hBase =
-    Math.max(
-      1,
-      median(
-        sh.slice(
-          yMin,
-          yMax + 1
-        )
-      )
+  const {
+    integral,
+    stride
+  } =
+    buildIntegralImage(
+      gradient,
+      width,
+      height
     );
 
-  const xPeaks =
-    topPeaks(
-      sv,
-      xMin,
-      xMax,
-      24,
-      Math.max(
-        6,
-        Math.floor(
-          w *
-          0.015
-        )
-      )
+  const widthFractions =
+    generateFractions(
+      0.34,
+      0.78,
+      0.04
     );
 
-  const yPeaks =
-    topPeaks(
-      sh,
-      yMin,
-      yMax,
-      24,
-      Math.max(
-        6,
-        Math.floor(
-          h *
-          0.015
-        )
-      )
+  const heightFractions =
+    generateFractions(
+      0.36,
+      0.82,
+      0.04
     );
 
-  let best =
-    null;
+  const centerXOffsets =
+    generateFractions(
+      -0.10,
+      0.10,
+      0.04
+    );
+
+  const centerYOffsets =
+    role === 'hero'
+      ? generateFractions(
+          -0.16,
+          0.06,
+          0.04
+        )
+      : generateFractions(
+          -0.12,
+          0.10,
+          0.04
+        );
+
+  const candidates = [];
 
   for (
-    const leftP of
-    xPeaks
+    const wf of
+    widthFractions
   ) {
     for (
-      const rightP of
-      xPeaks
+      const hf of
+      heightFractions
     ) {
-      const left =
-        Math.min(
-          leftP.i,
-          rightP.i
+      const aspect =
+        wf * width /
+        (
+          hf *
+          height
         );
 
-      const right =
-        Math.max(
-          leftP.i,
-          rightP.i
-        );
-
-      const rw =
-        right -
-        left;
-
       if (
-        rw <
-          w *
-          0.18 ||
-        rw >
-          w *
-          0.78
-      ) {
-        continue;
-      }
-
-      if (
-        left >
-          w *
-          0.58 ||
-        right <
-          w *
-          0.42
+        aspect < 0.45 ||
+        aspect > 1.65
       ) {
         continue;
       }
 
       for (
-        const topP of
-        yPeaks
+        const cxOffset of
+        centerXOffsets
       ) {
         for (
-          const bottomP of
-          yPeaks
+          const cyOffset of
+          centerYOffsets
         ) {
-          const top =
-            Math.min(
-              topP.i,
-              bottomP.i
+          const candidateWidth =
+            Math.round(
+              wf * width
             );
 
-          const bottom =
-            Math.max(
-              topP.i,
-              bottomP.i
+          const candidateHeight =
+            Math.round(
+              hf * height
             );
 
-          const rh =
-            bottom -
-            top;
+          const centerX =
+            width *
+            (
+              0.5 +
+              cxOffset
+            );
+
+          const centerY =
+            height *
+            (
+              0.48 +
+              cyOffset
+            );
+
+          const x =
+            Math.round(
+              centerX -
+              candidateWidth /
+              2
+            );
+
+          const y =
+            Math.round(
+              centerY -
+              candidateHeight /
+              2
+            );
 
           if (
-            rh <
-              h *
-              0.18 ||
-            rh >
-              h *
-              0.82
+            x < width * 0.04 ||
+            y < height * 0.03 ||
+            x + candidateWidth >
+              width * 0.96 ||
+            y + candidateHeight >
+              height * 0.94
           ) {
             continue;
           }
 
-          if (
-            top >
-              h *
-              0.62 ||
-            bottom <
-              h *
-              0.38
-          ) {
-            continue;
-          }
-
-          const aspect =
-            rw /
-            rh;
-
-          if (
-            aspect <
-              0.45 ||
-            aspect >
-              1.80
-          ) {
-            continue;
-          }
-
-          const cx =
-            (
-              left +
-              right
-            ) /
-            2 /
-            w;
-
-          const cy =
-            (
-              top +
-              bottom
-            ) /
-            2 /
-            h;
-
-          const area =
-            (
-              rw *
-              rh
-            ) /
-            (
-              w *
-              h
+          const border =
+            candidateBorderScore(
+              {
+                x,
+                y,
+                width:
+                  candidateWidth,
+                height:
+                  candidateHeight
+              },
+              integral,
+              stride,
+              globalMean
             );
-
-          const edgeScores =
-            [
-              sv[left] /
-                vBase,
-
-              sv[right] /
-                vBase,
-
-              sh[top] /
-                hBase,
-
-              sh[bottom] /
-                hBase
-            ];
-
-          const minEdge =
-            Math.min(
-              ...edgeScores
-            );
-
-          const avgEdge =
-            edgeScores.reduce(
-              (
-                a,
-                b
-              ) =>
-                a + b,
-              0
-            ) /
-            edgeScores.length;
-
-          const desiredCy =
-            role ===
-            'hero'
-              ? 0.42
-              : 0.45;
 
           const centerPenalty =
             Math.abs(
-              cx -
+              centerX /
+              width -
               0.5
             ) *
-            2.0 +
+            1.5 +
             Math.abs(
-              cy -
-              desiredCy
+              centerY /
+              height -
+              0.44
             ) *
-            1.25;
+            0.8;
 
-          const areaPenalty =
-            area <
-            0.07
-              ? (
-                  0.07 -
-                  area
-                ) *
-                10
-              : 0;
+          const areaRatio =
+            candidateWidth *
+            candidateHeight /
+            (
+              width *
+              height
+            );
+
+          const sizeBonus =
+            clamp(
+              (
+                areaRatio -
+                0.12
+              ) /
+              0.25,
+              0,
+              1
+            ) *
+            0.35;
+
+          const balance =
+            Math.min(
+              border.top,
+              border.bottom
+            ) /
+            Math.max(
+              border.top,
+              border.bottom,
+              0.001
+            ) *
+            Math.min(
+              border.left,
+              border.right
+            ) /
+            Math.max(
+              border.left,
+              border.right,
+              0.001
+            );
 
           const score =
-            avgEdge +
-            minEdge *
-              0.85 -
-            centerPenalty -
-            areaPenalty;
+            border.borderRatio *
+              0.34 +
+            border.weakestRatio *
+              0.36 +
+            border.contrastToInside *
+              0.20 +
+            balance *
+              0.20 +
+            sizeBonus -
+            centerPenalty;
 
-          if (
-            !best ||
-            score >
-              best.score
-          ) {
-            best = {
-              score,
-              left,
-              right,
-              top,
-              bottom,
-              edgeScores,
-              minEdge,
-              avgEdge,
-              area,
-              aspect,
-              cx,
-              cy
-            };
-          }
+          candidates.push({
+            x,
+            y,
+
+            width:
+              candidateWidth,
+
+            height:
+              candidateHeight,
+
+            score,
+
+            areaRatio,
+            aspect,
+
+            border
+          });
         }
       }
     }
   }
 
-  if (!best) {
+  candidates.sort(
+    (a, b) =>
+      b.score -
+      a.score
+  );
+
+  if (!candidates.length) {
     const err =
       new Error(
-        'frame_detection_failed'
+        'frame_detector_found_no_candidate'
       );
 
-    err.status =
-      422;
-
-    err.details = {
-      role,
-
-      reason:
-        'No plausible central rectangular frame found.'
-    };
-
+    err.status = 422;
     throw err;
   }
 
-  const confidence =
+  const best =
+    candidates[0];
+
+  let second =
+    null;
+
+  for (
+    let i = 1;
+    i < candidates.length;
+    i += 1
+  ) {
+    const candidate =
+      candidates[i];
+
+    const dx =
+      Math.abs(
+        candidate.x -
+        best.x
+      ) /
+      width;
+
+    const dy =
+      Math.abs(
+        candidate.y -
+        best.y
+      ) /
+      height;
+
+    const dw =
+      Math.abs(
+        candidate.width -
+        best.width
+      ) /
+      width;
+
+    const dh =
+      Math.abs(
+        candidate.height -
+        best.height
+      ) /
+      height;
+
+    if (
+      dx + dy + dw + dh >
+      0.10
+    ) {
+      second =
+        candidate;
+
+      break;
+    }
+  }
+
+  const weakestEvidence =
+    best.border
+      .weakestRatio;
+
+  const borderEvidence =
+    best.border
+      .borderRatio;
+
+  const separation =
+    second
+      ? clamp(
+          (
+            best.score -
+            second.score
+          ) /
+          Math.max(
+            Math.abs(
+              best.score
+            ),
+            0.1
+          ),
+          0,
+          1
+        )
+      : 0.5;
+
+  const evidenceConfidence =
     clamp(
       (
-        best.minEdge -
-        1.1
+        weakestEvidence -
+        0.90
       ) /
-      3.5,
+      1.9,
       0,
       1
     );
 
-  if (
-    confidence <
-    0.45
+  const averageConfidence =
+    clamp(
+      (
+        borderEvidence -
+        1.0
+      ) /
+      2.0,
+      0,
+      1
+    );
+
+  const confidence =
+    clamp(
+      evidenceConfidence *
+        0.50 +
+      averageConfidence *
+        0.35 +
+      separation *
+        0.15,
+      0,
+      1
+    );
+
+  let status =
+    'low_confidence';
+
+  if (confidence >= 0.65) {
+    status =
+      'high_confidence';
+
+  } else if (
+    confidence >= 0.40
   ) {
-    const err =
-      new Error(
-        'frame_detection_uncertain'
-      );
-
-    err.status =
-      422;
-
-    err.details = {
-      role,
-
-      confidence:
-        round1(
-          confidence
-        ),
-
-      reason:
-        'Frame edges are not strong enough for safe automatic replacement.'
-    };
-
-    throw err;
+    status =
+      'review_required';
   }
 
   return {
     role,
+
+    status,
 
     confidence:
       round1(
@@ -1594,34 +1324,20 @@ async function detectArtworkFrame(
 
     normalized: {
       x:
-        best.left /
-        w,
+        best.x /
+        width,
 
       y:
-        best.top /
-        h,
+        best.y /
+        height,
 
       width:
-        (
-          best.right -
-          best.left
-        ) /
-        w,
+        best.width /
+        width,
 
       height:
-        (
-          best.bottom -
-          best.top
-        ) /
-        h
-    },
-
-    analysis_size: {
-      width:
-        w,
-
-      height:
-        h
+        best.height /
+        height
     },
 
     aspect_ratio:
@@ -1631,637 +1347,212 @@ async function detectArtworkFrame(
 
     area_ratio:
       round1(
-        best.area
-      )
+        best.areaRatio
+      ),
+
+    detector_metrics: {
+      average_border_ratio:
+        round1(
+          best.border
+            .borderRatio
+        ),
+
+      weakest_border_ratio:
+        round1(
+          best.border
+            .weakestRatio
+        ),
+
+      border_to_inside_ratio:
+        round1(
+          best.border
+            .contrastToInside
+        ),
+
+      candidate_separation:
+        round1(
+          separation
+        )
+    }
   };
 }
 
 
-function insetNormalizedRect(
-  rect,
-  fraction
-) {
-  const dx =
-    rect.width *
-    fraction;
+/* =========================================================
+   OVERLAY
+========================================================= */
 
-  const dy =
-    rect.height *
-    fraction;
-
-  return {
-    x:
-      rect.x +
-      dx,
-
-    y:
-      rect.y +
-      dy,
-
-    width:
-      rect.width -
-      dx *
-      2,
-
-    height:
-      rect.height -
-      dy *
-      2
-  };
-}
-
-
-async function normalizedRectToPixels(
+async function makeDetectorOverlay(
   buffer,
-  normalizedRect
+  detection,
+  label
 ) {
-  const meta =
+  const normalized =
+    await sharp(buffer)
+      .rotate()
+      .removeAlpha()
+      .toColourspace('srgb')
+      .jpeg({
+        quality: 95
+      })
+      .toBuffer();
+
+  const metadata =
     await sharp(
-      buffer
+      normalized
     ).metadata();
 
   const width =
-    meta.width;
+    metadata.width;
 
   const height =
-    meta.height;
+    metadata.height;
 
-  if (
-    !width ||
-    !height
-  ) {
+  if (!width || !height) {
     throw new Error(
-      'Could not read image dimensions'
+      'Could not read overlay image dimensions'
     );
   }
 
-  const left =
-    clamp(
-      Math.round(
-        normalizedRect.x *
-        width
-      ),
-      0,
-      width -
-      1
-    );
+  const rect =
+    detection.normalized;
 
-  const top =
-    clamp(
-      Math.round(
-        normalizedRect.y *
-        height
-      ),
-      0,
-      height -
-      1
-    );
-
-  const right =
-    clamp(
-      Math.round(
-        (
-          normalizedRect.x +
-          normalizedRect.width
-        ) *
-        width
-      ),
-      left + 1,
+  const x =
+    Math.round(
+      rect.x *
       width
     );
 
-  const bottom =
-    clamp(
-      Math.round(
-        (
-          normalizedRect.y +
-          normalizedRect.height
-        ) *
-        height
-      ),
-      top + 1,
+  const y =
+    Math.round(
+      rect.y *
       height
     );
 
-  return {
-    left,
-    top,
+  const rectWidth =
+    Math.round(
+      rect.width *
+      width
+    );
 
-    width:
-      right -
-      left,
+  const rectHeight =
+    Math.round(
+      rect.height *
+      height
+    );
 
-    height:
-      bottom -
-      top
-  };
-}
+  const strokeWidth =
+    Math.max(
+      5,
+      Math.round(
+        Math.min(
+          width,
+          height
+        ) *
+        0.008
+      )
+    );
 
+  const fontSize =
+    Math.max(
+      28,
+      Math.round(
+        width *
+        0.028
+      )
+    );
 
-function rectDistance(
-  a,
-  b
-) {
-  if (
-    !a ||
-    !b
-  ) {
-    return Infinity;
-  }
+  const svg = `
+<svg
+  width="${width}"
+  height="${height}"
+  xmlns="http://www.w3.org/2000/svg"
+>
+  <rect
+    x="${x}"
+    y="${y}"
+    width="${rectWidth}"
+    height="${rectHeight}"
+    fill="none"
+    stroke="#00ff66"
+    stroke-width="${strokeWidth}"
+  />
 
-  return Math.max(
-    Math.abs(
-      a.x -
-      b.x
-    ),
+  <rect
+    x="${x}"
+    y="${Math.max(
+      0,
+      y - fontSize - 18
+    )}"
+    width="${Math.min(
+      rectWidth,
+      Math.round(
+        width * 0.72
+      )
+    )}"
+    height="${fontSize + 16}"
+    fill="rgba(0,0,0,0.75)"
+  />
 
-    Math.abs(
-      a.y -
-      b.y
-    ),
+  <text
+    x="${x + 8}"
+    y="${Math.max(
+      fontSize,
+      y - 10
+    )}"
+    fill="#00ff66"
+    font-size="${fontSize}"
+    font-family="Arial, sans-serif"
+    font-weight="700"
+  >
+    ${label}
+  </text>
+</svg>
+`;
 
-    Math.abs(
-      a.width -
-      b.width
-    ),
-
-    Math.abs(
-      a.height -
-      b.height
-    )
-  );
-}
-
-
-async function cropRect(
-  buffer,
-  rect
-) {
   return sharp(
-    buffer
+    normalized
   )
-    .extract(
-      rect
-    )
-    .png()
+    .composite([
+      {
+        input:
+          Buffer.from(svg),
+
+        top: 0,
+        left: 0
+      }
+    ])
+    .jpeg({
+      quality: 96,
+      chromaSubsampling:
+        '4:4:4'
+    })
     .toBuffer();
 }
 
 
 /* =========================================================
-   FRAME REFERENCE TRANSFER V5
-
-   Image 2 artwork pixels are reused.
-   No generative redraw.
-========================================================= */
-
-async function renderReferenceFrameTransfer(
-  heroBuffer,
-  referenceBuffer
-) {
-  const hero =
-    await normalizeImage(
-      heroBuffer
-    );
-
-  const reference =
-    await normalizeImage(
-      referenceBuffer
-    );
-
-  const heroFrame =
-    await detectArtworkFrame(
-      hero,
-      'hero'
-    );
-
-  const referenceFrame =
-    await detectArtworkFrame(
-      reference,
-      'reference'
-    );
-
-  /*
-    Slight inset:
-    avoids copying visible frame borders.
-  */
-
-  const heroInnerNorm =
-    insetNormalizedRect(
-      heroFrame.normalized,
-      0.055
-    );
-
-  const referenceInnerNorm =
-    insetNormalizedRect(
-      referenceFrame.normalized,
-      0.035
-    );
-
-  const heroTarget =
-    await normalizedRectToPixels(
-      hero,
-      heroInnerNorm
-    );
-
-  const referenceCropRect =
-    await normalizedRectToPixels(
-      reference,
-      referenceInnerNorm
-    );
-
-  const heroAspect =
-    heroTarget.width /
-    heroTarget.height;
-
-  const referenceAspect =
-    referenceCropRect.width /
-    referenceCropRect.height;
-
-  const aspectMismatch =
-    Math.abs(
-      Math.log(
-        heroAspect /
-        referenceAspect
-      )
-    );
-
-  /*
-    Fail closed.
-    We do not want to visibly stretch or crop
-    the product artwork.
-  */
-
-  if (
-    aspectMismatch >
-    0.08
-  ) {
-    const err =
-      new Error(
-        'artwork_aspect_ratio_mismatch'
-      );
-
-    err.status =
-      422;
-
-    err.details = {
-      hero_target_aspect:
-        round1(
-          heroAspect
-        ),
-
-      image2_artwork_aspect:
-        round1(
-          referenceAspect
-        ),
-
-      mismatch:
-        round1(
-          aspectMismatch
-        ),
-
-      reason:
-        'Automatic placement would require too much stretching or cropping.'
-    };
-
-    throw err;
-  }
-
-  const referenceArtwork =
-    await cropRect(
-      reference,
-      referenceCropRect
-    );
-
-  /*
-    Because aspect mismatch is already limited,
-    this resize only performs small resampling.
-  */
-
-  const placedArtwork =
-    await sharp(
-      referenceArtwork
-    )
-      .resize(
-        heroTarget.width,
-        heroTarget.height,
-        {
-          fit:
-            'fill',
-
-          kernel:
-            sharp.kernel
-              .lanczos3
-        }
-      )
-      .png()
-      .toBuffer();
-
-  /*
-    Only the detected frame interior
-    is composited.
-
-    The whole hero image is not cropped,
-    reframed or regenerated.
-  */
-
-  const composed =
-    await sharp(
-      hero
-    )
-      .composite([
-        {
-          input:
-            placedArtwork,
-
-          left:
-            heroTarget.left,
-
-          top:
-            heroTarget.top,
-
-          blend:
-            'over'
-        }
-      ])
-      .jpeg({
-        quality:
-          97,
-
-        chromaSubsampling:
-          '4:4:4',
-
-        mozjpeg:
-          true
-      })
-      .toBuffer();
-
-  const referenceAnalysis =
-    await analyzeImage(
-      referenceArtwork
-    );
-
-  const placedAnalysis =
-    await analyzeImage(
-      placedArtwork
-    );
-
-  return {
-    composed,
-
-    heroFrame,
-    referenceFrame,
-
-    heroTarget,
-    referenceCropRect,
-
-    heroInnerNorm,
-    referenceInnerNorm,
-
-    aspectMismatch,
-
-    referenceArtwork,
-
-    referenceAnalysis,
-    placedAnalysis
-  };
-}
-
-
-/* =========================================================
-   TRANSFER SAFETY
-========================================================= */
-
-function colorBalanceDistance(
-  a,
-  b
-) {
-  if (
-    !a?.color_balance ||
-    !b?.color_balance
-  ) {
-    return 0;
-  }
-
-  return Math.sqrt(
-    Math.pow(
-      Number(
-        a.color_balance
-          .r_minus_g
-      ) -
-      Number(
-        b.color_balance
-          .r_minus_g
-      ),
-      2
-    ) +
-    Math.pow(
-      Number(
-        a.color_balance
-          .b_minus_g
-      ) -
-      Number(
-        b.color_balance
-          .b_minus_g
-      ),
-      2
-    )
-  );
-}
-
-
-function assessFrameTransfer(
-  rendered
-) {
-  const reference =
-    rendered
-      .referenceAnalysis;
-
-  const placed =
-    rendered
-      .placedAnalysis;
-
-  const colorBalanceDrift =
-    colorBalanceDistance(
-      reference,
-      placed
-    );
-
-  const chromaDelta =
-    Math.abs(
-      reference.mean_chroma -
-      placed.mean_chroma
-    );
-
-  const brightnessDelta =
-    Math.abs(
-      reference
-        .brightness_0_255 -
-      placed
-        .brightness_0_255
-    );
-
-  const warnings =
-    [];
-
-  if (
-    rendered
-      .heroFrame
-      .confidence <
-    0.5
-  ) {
-    warnings.push(
-      'hero_frame_detection_low_confidence'
-    );
-  }
-
-  if (
-    rendered
-      .referenceFrame
-      .confidence <
-    0.5
-  ) {
-    warnings.push(
-      'image2_frame_detection_low_confidence'
-    );
-  }
-
-  if (
-    rendered
-      .aspectMismatch >
-    0.06
-  ) {
-    warnings.push(
-      'artwork_aspect_ratio_near_limit'
-    );
-  }
-
-  if (
-    colorBalanceDrift >
-    3
-  ) {
-    warnings.push(
-      'reference_color_balance_drift'
-    );
-  }
-
-  if (
-    chromaDelta >
-    5
-  ) {
-    warnings.push(
-      'reference_chroma_drift'
-    );
-  }
-
-  if (
-    brightnessDelta >
-    8
-  ) {
-    warnings.push(
-      'reference_brightness_drift'
-    );
-  }
-
-  const hardWarnings =
-    warnings.filter(
-      (warning) =>
-        warning !==
-        'artwork_aspect_ratio_near_limit'
-    );
-
-  return {
-    passed:
-      hardWarnings.length ===
-      0,
-
-    hard_block_upload:
-      hardWarnings.length >
-      0,
-
-    warnings,
-
-    hero_frame_confidence:
-      rendered
-        .heroFrame
-        .confidence,
-
-    image2_frame_confidence:
-      rendered
-        .referenceFrame
-        .confidence,
-
-    aspect_mismatch:
-      round1(
-        rendered
-          .aspectMismatch
-      ),
-
-    reference_color_balance_drift:
-      round1(
-        colorBalanceDrift
-      ),
-
-    reference_chroma_delta:
-      round1(
-        chromaDelta
-      ),
-
-    reference_brightness_delta:
-      round1(
-        brightnessDelta
-      ),
-
-    non_generative_reference_pixels_used:
-      true,
-
-    hero_outer_scene_edit_operation:
-      false,
-
-    artwork_source:
-      'etsy_image_2_reference_pixels',
-
-    note:
-      'Only the detected hero frame interior is replaced. Image 2 artwork pixels are reused and resampled to the detected frame opening. If detection is uncertain, the operation is blocked.'
-  };
-}
-
-
-/* =========================================================
-   SIGNED TOKENS
+   TOKENS
 ========================================================= */
 
 function signToken(payload) {
   const encoded =
-    Buffer
-      .from(
-        JSON.stringify(
-          payload
-        )
-      )
-      .toString(
-        'base64url'
-      );
+    Buffer.from(
+      JSON.stringify(payload)
+    ).toString(
+      'base64url'
+    );
 
   const signature =
     createHmac(
       'sha256',
-      required(
-        'BRIDGE_API_KEY'
-      )
+      required('BRIDGE_API_KEY')
     )
-      .update(
-        encoded
-      )
-      .digest(
-        'base64url'
-      );
+      .update(encoded)
+      .digest('base64url');
 
-  return (
-    `${encoded}.${signature}`
-  );
+  return `${encoded}.${signature}`;
 }
-
 
 function verifyToken(
   token,
@@ -2272,65 +1563,43 @@ function verifyToken(
     signature
   ] =
     String(
-      token ||
-      ''
+      token || ''
     ).split('.');
 
-  if (
-    !encoded ||
-    !signature
-  ) {
+  if (!encoded || !signature) {
     const err =
       new Error(
         'Invalid signed token'
       );
 
-    err.status =
-      400;
-
+    err.status = 400;
     throw err;
   }
 
   const expected =
     createHmac(
       'sha256',
-      required(
-        'BRIDGE_API_KEY'
-      )
+      required('BRIDGE_API_KEY')
     )
-      .update(
-        encoded
-      )
-      .digest(
-        'base64url'
-      );
+      .update(encoded)
+      .digest('base64url');
 
   const a =
-    Buffer.from(
-      signature
-    );
+    Buffer.from(signature);
 
   const b =
-    Buffer.from(
-      expected
-    );
+    Buffer.from(expected);
 
   if (
-    a.length !==
-      b.length ||
-    !timingSafeEqual(
-      a,
-      b
-    )
+    a.length !== b.length ||
+    !timingSafeEqual(a, b)
   ) {
     const err =
       new Error(
         'Invalid signed token signature'
       );
 
-    err.status =
-      400;
-
+    err.status = 400;
     throw err;
   }
 
@@ -2339,14 +1608,10 @@ function verifyToken(
   try {
     payload =
       JSON.parse(
-        Buffer
-          .from(
-            encoded,
-            'base64url'
-          )
-          .toString(
-            'utf8'
-          )
+        Buffer.from(
+          encoded,
+          'base64url'
+        ).toString('utf8')
       );
 
   } catch {
@@ -2355,9 +1620,7 @@ function verifyToken(
         'Invalid signed token payload'
       );
 
-    err.status =
-      400;
-
+    err.status = 400;
     throw err;
   }
 
@@ -2371,9 +1634,7 @@ function verifyToken(
         'Signed token expired'
       );
 
-    err.status =
-      410;
-
+    err.status = 410;
     throw err;
   }
 
@@ -2387,9 +1648,7 @@ function verifyToken(
         'Signed token is for a different action'
       );
 
-    err.status =
-      409;
-
+    err.status = 409;
     throw err;
   }
 
@@ -2398,10 +1657,10 @@ function verifyToken(
 
 
 /* =========================================================
-   BUILD V5 PREVIEW
+   BUILD DETECTOR PREVIEW
 ========================================================= */
 
-async function buildFramePreview(
+async function buildDetectorPreview(
   listingId
 ) {
   const listing =
@@ -2424,14 +1683,7 @@ async function buildFramePreview(
         'image2_reference_required'
       );
 
-    err.status =
-      422;
-
-    err.details = {
-      reason:
-        'Image 2 is required as the artwork truth reference for frame transfer.'
-    };
-
+    err.status = 422;
     throw err;
   }
 
@@ -2440,10 +1692,9 @@ async function buildFramePreview(
       buffer:
         heroBuffer
     },
-
     {
       buffer:
-        referenceBuffer
+        image2Buffer
     }
   ] =
     await Promise.all([
@@ -2461,39 +1712,35 @@ async function buildFramePreview(
     ]);
 
   const [
-    before,
+    heroDetection,
+    image2Detection,
+    heroAnalysis,
     image2Analysis
   ] =
     await Promise.all([
+      detectCentralFrame(
+        heroBuffer,
+        'hero'
+      ),
+
+      detectCentralFrame(
+        image2Buffer,
+        'image2'
+      ),
+
       analyzeImage(
         heroBuffer
       ),
 
       analyzeImage(
-        referenceBuffer
+        image2Buffer
       )
     ]);
-
-  const rendered =
-    await renderReferenceFrameTransfer(
-      heroBuffer,
-      referenceBuffer
-    );
-
-  const after =
-    await analyzeImage(
-      rendered.composed
-    );
-
-  const transferSafety =
-    assessFrameTransfer(
-      rendered
-    );
 
   const token =
     signToken({
       type:
-        'thumbnail_preview_v5',
+        'thumbnail_detector_v51',
 
       listingId,
 
@@ -2511,18 +1758,11 @@ async function buildFramePreview(
             .imageId
         ),
 
-      heroFrame:
-        rendered
-          .heroFrame
-          .normalized,
+      heroDetection:
+        heroDetection.normalized,
 
-      referenceFrame:
-        rendered
-          .referenceFrame
-          .normalized,
-
-      method:
-        'image2_reference_frame_transfer_v5',
+      image2Detection:
+        image2Detection.normalized,
 
       exp:
         Date.now() +
@@ -2532,322 +1772,488 @@ async function buildFramePreview(
   return {
     listing,
     imageSet,
-    before,
-    after,
+    heroBuffer,
+    image2Buffer,
+    heroDetection,
+    image2Detection,
+    heroAnalysis,
     image2Analysis,
-    rendered,
-    transferSafety,
     token
   };
 }
 
 
-async function rebuildFromToken(
-  listingId,
-  payload
-) {
-  const imageSet =
-    await getListingImageSet(
-      listingId
-    );
+/* =========================================================
+   PUBLIC DETECTOR OVERLAYS
+========================================================= */
 
-  if (
-    String(
-      imageSet
-        .rank1
-        .imageId
-    ) !==
-    String(
-      payload
-        .sourceImageId
-    )
-  ) {
-    const err =
-      new Error(
-        'Current rank 1 image changed after preview was created'
+app.get(
+  '/preview/thumbnail-repair/:token/hero-detection',
+  async (
+    req,
+    res
+  ) => {
+    try {
+      const payload =
+        verifyToken(
+          req.params.token,
+          'thumbnail_detector_v51'
+        );
+
+      const listingId =
+        asListingId(
+          payload.listingId
+        );
+
+      const imageSet =
+        await getListingImageSet(
+          listingId
+        );
+
+      if (
+        String(
+          imageSet
+            .rank1
+            .imageId
+        ) !==
+        String(
+          payload
+            .sourceImageId
+        )
+      ) {
+        return res
+          .status(409)
+          .send(
+            'Rank 1 changed after detector preview.'
+          );
+      }
+
+      const {
+        buffer
+      } =
+        await downloadImage(
+          imageSet
+            .rank1
+            .imageUrl
+        );
+
+      const detection =
+        await detectCentralFrame(
+          buffer,
+          'hero'
+        );
+
+      const overlay =
+        await makeDetectorOverlay(
+          buffer,
+          detection,
+          `HERO FRAME ${detection.confidence}`
+        );
+
+      res.setHeader(
+        'content-type',
+        'image/jpeg'
       );
 
-    err.status =
-      409;
+      res.send(overlay);
 
-    throw err;
-  }
+    } catch (err) {
+      console.error(err);
 
-  if (
-    !imageSet.rank2 ||
-    String(
-      imageSet
-        .rank2
-        .imageId
-    ) !==
-    String(
-      payload
-        .rank2ImageId
-    )
-  ) {
-    const err =
-      new Error(
-        'Image 2 reference changed after preview was created'
-      );
-
-    err.status =
-      409;
-
-    throw err;
-  }
-
-  const [
-    {
-      buffer:
-        heroBuffer
-    },
-
-    {
-      buffer:
-        referenceBuffer
+      res
+        .status(
+          err.status ||
+          400
+        )
+        .json({
+          error:
+            err.message
+        });
     }
-  ] =
-    await Promise.all([
-      downloadImage(
-        imageSet
-          .rank1
-          .imageUrl
-      ),
+  }
+);
 
-      downloadImage(
-        imageSet
-          .rank2
-          .imageUrl
-      )
-    ]);
 
-  const rendered =
-    await renderReferenceFrameTransfer(
-      heroBuffer,
-      referenceBuffer
-    );
+app.get(
+  '/preview/thumbnail-repair/:token/image2-detection',
+  async (
+    req,
+    res
+  ) => {
+    try {
+      const payload =
+        verifyToken(
+          req.params.token,
+          'thumbnail_detector_v51'
+        );
 
-  if (
-    rectDistance(
-      rendered
-        .heroFrame
-        .normalized,
-      payload.heroFrame
-    ) >
-      0.025 ||
-    rectDistance(
-      rendered
-        .referenceFrame
-        .normalized,
-      payload.referenceFrame
-    ) >
-      0.025
-  ) {
-    const err =
-      new Error(
-        'Frame detection changed after preview; create a new preview'
+      const listingId =
+        asListingId(
+          payload.listingId
+        );
+
+      const imageSet =
+        await getListingImageSet(
+          listingId
+        );
+
+      if (
+        !imageSet.rank2 ||
+        String(
+          imageSet
+            .rank2
+            .imageId
+        ) !==
+        String(
+          payload
+            .rank2ImageId
+        )
+      ) {
+        return res
+          .status(409)
+          .send(
+            'Image 2 changed after detector preview.'
+          );
+      }
+
+      const {
+        buffer
+      } =
+        await downloadImage(
+          imageSet
+            .rank2
+            .imageUrl
+        );
+
+      const detection =
+        await detectCentralFrame(
+          buffer,
+          'image2'
+        );
+
+      const overlay =
+        await makeDetectorOverlay(
+          buffer,
+          detection,
+          `IMAGE 2 FRAME ${detection.confidence}`
+        );
+
+      res.setHeader(
+        'content-type',
+        'image/jpeg'
       );
 
-    err.status =
-      409;
+      res.send(overlay);
 
-    throw err;
+    } catch (err) {
+      console.error(err);
+
+      res
+        .status(
+          err.status ||
+          400
+        )
+        .json({
+          error:
+            err.message
+        });
+    }
   }
-
-  return {
-    imageSet,
-    heroBuffer,
-    referenceBuffer,
-    rendered
-  };
-}
+);
 
 
 /* =========================================================
-   WORKER HELPERS
+   PUBLIC DETECTOR COMPARE
 ========================================================= */
 
-async function mapLimit(
-  items,
-  concurrency,
-  mapper
-) {
-  const results =
-    new Array(
-      items.length
-    );
+app.get(
+  '/preview/thumbnail-repair/:token/compare',
+  async (
+    req,
+    res
+  ) => {
+    try {
+      const payload =
+        verifyToken(
+          req.params.token,
+          'thumbnail_detector_v51'
+        );
 
-  let cursor = 0;
+      const listingId =
+        asListingId(
+          payload.listingId
+        );
 
-  async function worker() {
-    while (true) {
-      const index =
-        cursor;
+      const listing =
+        await etsyRequest(
+          `/listings/${listingId}`
+        );
 
-      cursor +=
-        1;
+      const imageSet =
+        await getListingImageSet(
+          listingId
+        );
 
       if (
-        index >=
-        items.length
+        String(
+          imageSet
+            .rank1
+            .imageId
+        ) !==
+        String(
+          payload
+            .sourceImageId
+        )
       ) {
-        return;
+        return res
+          .status(409)
+          .send(
+            'Rank 1 changed after detector preview.'
+          );
       }
 
-      results[index] =
-        await mapper(
-          items[index],
-          index
+      if (
+        !imageSet.rank2 ||
+        String(
+          imageSet
+            .rank2
+            .imageId
+        ) !==
+        String(
+          payload
+            .rank2ImageId
+        )
+      ) {
+        return res
+          .status(409)
+          .send(
+            'Image 2 changed after detector preview.'
+          );
+      }
+
+      const token =
+        encodeURIComponent(
+          req.params.token
+        );
+
+      const heroOverlayUrl =
+        `${publicBase()}/preview/thumbnail-repair/${token}/hero-detection`;
+
+      const image2OverlayUrl =
+        `${publicBase()}/preview/thumbnail-repair/${token}/image2-detection`;
+
+      const esc =
+        (value) =>
+          String(
+            value ?? ''
+          )
+            .replaceAll(
+              '&',
+              '&amp;'
+            )
+            .replaceAll(
+              '<',
+              '&lt;'
+            )
+            .replaceAll(
+              '>',
+              '&gt;'
+            )
+            .replaceAll(
+              '"',
+              '&quot;'
+            );
+
+      res
+        .type('html')
+        .send(`
+<!doctype html>
+
+<html lang="tr">
+
+<head>
+
+<meta charset="utf-8">
+
+<meta
+  name="viewport"
+  content="width=device-width, initial-scale=1"
+>
+
+<title>
+VAELONS Frame Detector
+</title>
+
+<style>
+
+body {
+  margin: 0;
+  background: #111;
+  color: #f4f4f4;
+  font-family:
+    system-ui,
+    -apple-system,
+    sans-serif;
+}
+
+main {
+  max-width: 1300px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+h1 {
+  font-size: 21px;
+  margin: 0 0 8px;
+}
+
+.sub {
+  color: #bbb;
+  margin-bottom: 20px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns:
+    repeat(
+      2,
+      minmax(0, 1fr)
+    );
+  gap: 18px;
+}
+
+.card {
+  background: #1b1b1b;
+  border: 1px solid #333;
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.label {
+  padding: 12px 14px;
+  font-weight: 700;
+}
+
+img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.note {
+  margin-top: 18px;
+  padding: 15px;
+  background: #191919;
+  border-radius: 12px;
+  line-height: 1.5;
+}
+
+.warning {
+  color: #ffd369;
+  font-weight: 700;
+}
+
+@media (
+  max-width: 850px
+) {
+  .grid {
+    grid-template-columns:
+      1fr;
+  }
+}
+
+</style>
+
+</head>
+
+<body>
+
+<main>
+
+<h1>
+${esc(
+  listing?.title ||
+  `Listing ${listingId}`
+)}
+</h1>
+
+<div class="sub">
+Listing ${esc(listingId)}
+· Rank 1 ${esc(
+  imageSet.rank1.imageId
+)}
+· Image 2 ${esc(
+  imageSet.rank2.imageId
+)}
+</div>
+
+<div class="grid">
+
+<div class="card">
+
+<div class="label">
+RANK 1 — algılanan hero çerçevesi
+</div>
+
+<img
+  src="${esc(heroOverlayUrl)}"
+  alt="Hero frame detection"
+>
+
+</div>
+
+<div class="card">
+
+<div class="label">
+IMAGE 2 — algılanan artwork çerçevesi
+</div>
+
+<img
+  src="${esc(image2OverlayUrl)}"
+  alt="Image 2 frame detection"
+>
+
+</div>
+
+</div>
+
+<div class="note">
+
+<span class="warning">
+DETECTOR-ONLY MODE
+</span>
+
+<br><br>
+
+Yeşil kutular sistemin artwork alanı olduğunu düşündüğü bölgeleri gösterir.
+
+Bu sürüm artwork değiştirmez, görsel üretmez ve Etsy'ye yükleme yapmaz.
+
+Bir sonraki aşamaya ancak iki kutu da gerçek tablo/artwork alanını doğru çevreliyorsa geçilmelidir.
+
+</div>
+
+</main>
+
+</body>
+
+</html>
+        `);
+
+    } catch (err) {
+      console.error(err);
+
+      res
+        .status(
+          err.status ||
+          400
+        )
+        .send(
+          err.message
         );
     }
   }
-
-  await Promise.all(
-    Array.from(
-      {
-        length:
-          Math.min(
-            concurrency,
-            items.length
-          )
-      },
-      () =>
-        worker()
-    )
-  );
-
-  return results;
-}
-
-
-function listingAgeDays(
-  listing
-) {
-  const ts =
-    listing
-      ?.original_creation_timestamp ??
-    listing
-      ?.creation_timestamp ??
-    listing
-      ?.created_timestamp ??
-    null;
-
-  if (!ts) {
-    return null;
-  }
-
-  const age =
-    Math.floor(
-      (
-        Date.now() /
-        1000 -
-        Number(ts)
-      ) /
-      86400
-    );
-
-  return Number.isFinite(
-    age
-  )
-    ? Math.max(
-        0,
-        age
-      )
-    : null;
-}
-
-
-function performanceSignal(
-  listing
-) {
-  const ageDays =
-    listingAgeDays(
-      listing
-    );
-
-  const favorites =
-    Number(
-      listing
-        ?.num_favorers ??
-      0
-    );
-
-  if (
-    ageDays ===
-    null
-  ) {
-    return {
-      age_days:
-        null,
-
-      num_favorers:
-        favorites,
-
-      signal:
-        'insufficient_data'
-    };
-  }
-
-  let signal =
-    'insufficient_data';
-
-  if (
-    ageDays >= 90 &&
-    favorites === 0
-  ) {
-    signal =
-      'weak_favorite_signal';
-
-  } else if (
-    ageDays >= 60 &&
-    favorites <= 1
-  ) {
-    signal =
-      'low_favorite_signal';
-
-  } else if (
-    favorites >= 5
-  ) {
-    signal =
-      'established_favorite_signal';
-  }
-
-  return {
-    age_days:
-      ageDays,
-
-    num_favorers:
-      favorites,
-
-    signal
-  };
-}
-
-
-function compactImageList(
-  data
-) {
-  return (
-    data?.results ||
-    []
-  ).map(
-    (img) => ({
-      image_id:
-        getImageId(
-          img
-        ),
-
-      rank:
-        img.rank ??
-        null,
-
-      image_url:
-        getImageUrl(
-          img
-        )
-    })
-  );
-}
+);
 
 
 /* =========================================================
@@ -2856,19 +2262,18 @@ function compactImageList(
 
 app.get(
   '/health',
-  (
-    _req,
-    res
-  ) => {
+  (_req, res) => {
     res.json({
-      ok:
-        true,
+      ok: true,
 
       service:
         'vaelons-etsy-seller-bridge',
 
       thumbnail_engine:
-        'image2_reference_frame_transfer_v5'
+        'frame_detector_only_v5_1',
+
+      publishing_enabled:
+        false
     });
   }
 );
@@ -2880,16 +2285,10 @@ app.get(
 
 app.get(
   '/oauth/etsy/start',
-  (
-    req,
-    res
-  ) => {
+  (req, res) => {
     if (
-      req.query
-        .setup_secret !==
-      required(
-        'SETUP_SECRET'
-      )
+      req.query.setup_secret !==
+      required('SETUP_SECRET')
     ) {
       return res
         .status(401)
@@ -2899,14 +2298,10 @@ app.get(
     }
 
     const state =
-      randomBase64Url(
-        24
-      );
+      randomBase64Url(24);
 
     const verifier =
-      randomBase64Url(
-        48
-      );
+      randomBase64Url(48);
 
     const challenge =
       pkceChallenge(
@@ -2928,15 +2323,9 @@ app.get(
       'etsy_oauth',
       capsule,
       {
-        httpOnly:
-          true,
-
-        secure:
-          true,
-
-        sameSite:
-          'lax',
-
+        httpOnly: true,
+        secure: true,
+        sameSite: 'lax',
         maxAge:
           10 *
           60 *
@@ -2998,25 +2387,20 @@ app.get(
     res
   ) => {
     try {
-      if (
-        req.query.error
-      ) {
+      if (req.query.error) {
         return res
           .status(400)
           .send(
             `Etsy authorization failed: ${
-              req.query
-                .error_description ||
-              req.query
-                .error
+              req.query.error_description ||
+              req.query.error
             }`
           );
       }
 
       const cookie =
-        parseCookies(
-          req
-        ).etsy_oauth;
+        parseCookies(req)
+          .etsy_oauth;
 
       if (!cookie) {
         return res
@@ -3027,9 +2411,7 @@ app.get(
       }
 
       const flow =
-        openJson(
-          cookie
-        );
+        openJson(cookie);
 
       if (
         !req.query.state ||
@@ -3064,8 +2446,7 @@ app.get(
 
           code:
             String(
-              req.query
-                .code ||
+              req.query.code ||
               ''
             ),
 
@@ -3077,8 +2458,7 @@ app.get(
         await fetch(
           'https://api.etsy.com/v3/public/oauth/token',
           {
-            method:
-              'POST',
+            method: 'POST',
 
             headers: {
               'content-type':
@@ -3092,9 +2472,7 @@ app.get(
       const token =
         await tokenRes.json();
 
-      if (
-        !tokenRes.ok
-      ) {
+      if (!tokenRes.ok) {
         return res
           .status(400)
           .send(
@@ -3113,11 +2491,8 @@ app.get(
         `/shops/${shopId}/listings`,
         {
           params: {
-            limit:
-              1,
-
-            state:
-              'active'
+            limit: 1,
+            state: 'active'
           }
         }
       );
@@ -3125,8 +2500,7 @@ app.get(
       const encryptedCapsule =
         sealJson({
           refresh_token:
-            token
-              .refresh_token,
+            token.refresh_token,
 
           shop_id:
             shopId
@@ -3137,12 +2511,9 @@ app.get(
       );
 
       res
-        .type(
-          'html'
-        )
+        .type('html')
         .send(`
 <!doctype html>
-
 <meta charset="utf-8">
 
 <title>
@@ -3170,26 +2541,19 @@ VAELONS Etsy Seller bağlantısı doğrulandı.
 </h2>
 
 <p>
-Aşağıdaki şifreli değeri Vercel Environment Variables bölümüne
+Aşağıdaki şifreli değeri
 <b>ETSY_TOKEN_CAPSULE</b>
-adıyla ekleyin.
+olarak Vercel Environment Variables bölümüne ekleyin.
 </p>
 
 <textarea
   readonly
   onclick="this.select()"
 >${encryptedCapsule}</textarea>
-
-<p>
-Production + Preview seçin, kaydedin ve redeploy yapın.
-Bu değeri gizli tutun.
-</p>
         `);
 
     } catch (err) {
-      console.error(
-        err
-      );
+      console.error(err);
 
       res
         .status(
@@ -3204,366 +2568,6 @@ Bu değeri gizli tutun.
             err.details ||
             null
         });
-    }
-  }
-);
-
-
-/* =========================================================
-   PUBLIC PREVIEW IMAGE V5
-========================================================= */
-
-app.get(
-  '/preview/thumbnail-repair/:token',
-  async (
-    req,
-    res
-  ) => {
-    try {
-      const payload =
-        verifyToken(
-          req.params.token,
-          'thumbnail_preview_v5'
-        );
-
-      const listingId =
-        asListingId(
-          payload
-            .listingId
-        );
-
-      const rebuilt =
-        await rebuildFromToken(
-          listingId,
-          payload
-        );
-
-      res.setHeader(
-        'content-type',
-        'image/jpeg'
-      );
-
-      res.setHeader(
-        'content-disposition',
-        'inline; filename="thumbnail-image2-reference-frame-v5.jpg"'
-      );
-
-      res.setHeader(
-        'cache-control',
-        'private, max-age=300'
-      );
-
-      res.send(
-        rebuilt
-          .rendered
-          .composed
-      );
-
-    } catch (err) {
-      console.error(
-        err
-      );
-
-      res
-        .status(
-          err.status ||
-          400
-        )
-        .json({
-          error:
-            err.message,
-
-          details:
-            err.details ||
-            null
-        });
-    }
-  }
-);
-
-
-/* =========================================================
-   PUBLIC THREE-WAY COMPARE V5
-========================================================= */
-
-app.get(
-  '/preview/thumbnail-repair/:token/compare',
-  async (
-    req,
-    res
-  ) => {
-    try {
-      const payload =
-        verifyToken(
-          req.params.token,
-          'thumbnail_preview_v5'
-        );
-
-      const listingId =
-        asListingId(
-          payload
-            .listingId
-        );
-
-      const listing =
-        await etsyRequest(
-          `/listings/${listingId}`
-        );
-
-      const rebuilt =
-        await rebuildFromToken(
-          listingId,
-          payload
-        );
-
-      const imageSet =
-        rebuilt.imageSet;
-
-      const token =
-        encodeURIComponent(
-          req.params.token
-        );
-
-      const beforeUrl =
-        imageSet
-          .rank1
-          .imageUrl;
-
-      const referenceUrl =
-        imageSet
-          .rank2
-          .imageUrl;
-
-      const afterUrl =
-        `${publicBase()}/preview/thumbnail-repair/${token}`;
-
-      const esc =
-        (value) =>
-          String(
-            value ??
-            ''
-          )
-            .replaceAll(
-              '&',
-              '&amp;'
-            )
-            .replaceAll(
-              '<',
-              '&lt;'
-            )
-            .replaceAll(
-              '>',
-              '&gt;'
-            )
-            .replaceAll(
-              '"',
-              '&quot;'
-            );
-
-      res
-        .type(
-          'html'
-        )
-        .send(`
-<!doctype html>
-
-<html lang="tr">
-
-<head>
-
-<meta charset="utf-8">
-
-<meta
-  name="viewport"
-  content="width=device-width, initial-scale=1"
->
-
-<title>
-VAELONS Thumbnail Compare
-</title>
-
-<style>
-
-body {
-  font-family:
-    system-ui,
-    -apple-system,
-    sans-serif;
-
-  margin: 0;
-  background: #111;
-  color: #f5f5f5;
-}
-
-main {
-  max-width: 1500px;
-  margin: 0 auto;
-  padding: 24px;
-}
-
-h1 {
-  font-size: 20px;
-  margin: 0 0 8px;
-}
-
-p {
-  color: #bbb;
-  margin: 0 0 20px;
-}
-
-.grid {
-  display: grid;
-
-  grid-template-columns:
-    repeat(
-      3,
-      minmax(0, 1fr)
-    );
-
-  gap: 18px;
-}
-
-.card {
-  background: #1b1b1b;
-  border: 1px solid #333;
-  border-radius: 14px;
-  overflow: hidden;
-}
-
-.label {
-  padding: 12px 14px;
-  font-weight: 700;
-}
-
-img {
-  display: block;
-  width: 100%;
-  height: auto;
-  background: #000;
-}
-
-.note {
-  margin-top: 18px;
-  padding: 14px;
-  border-radius: 12px;
-  background: #191919;
-  color: #ccc;
-}
-
-@media (
-  max-width: 980px
-) {
-  .grid {
-    grid-template-columns:
-      1fr;
-  }
-}
-
-</style>
-
-</head>
-
-<body>
-
-<main>
-
-<h1>
-${esc(
-  listing?.title ||
-  `Listing ${listingId}`
-)}
-</h1>
-
-<p>
-Listing ID:
-${esc(listingId)}
-·
-Rank 1:
-${esc(
-  imageSet
-    .rank1
-    .imageId
-)}
-·
-Image 2:
-${esc(
-  imageSet
-    .rank2
-    .imageId
-)}
-</p>
-
-<div class="grid">
-
-<div class="card">
-
-<div class="label">
-ÖNCE — mevcut Etsy rank 1
-</div>
-
-<img
-  src="${esc(beforeUrl)}"
-  alt="Before"
->
-
-</div>
-
-<div class="card">
-
-<div class="label">
-REFERANS — Etsy Image 2
-</div>
-
-<img
-  src="${esc(referenceUrl)}"
-  alt="Image 2 reference"
->
-
-</div>
-
-<div class="card">
-
-<div class="label">
-SONRA — Image 2 artwork + mevcut hero mockup
-</div>
-
-<img
-  src="${esc(afterUrl)}"
-  alt="After"
->
-
-</div>
-
-</div>
-
-<div class="note">
-V5 generative redraw kullanmaz.
-Image 2'de algılanan artwork piksellerini,
-mevcut rank-1 hero sahnesindeki algılanan çerçeve iç alanına yerleştirir.
-Çerçeve tespiti güvenilir değilse sistem işlemi bloklar.
-Bu sayfa Etsy'de hiçbir değişiklik yapmaz.
-</div>
-
-</main>
-
-</body>
-
-</html>
-        `);
-
-    } catch (err) {
-      console.error(
-        err
-      );
-
-      res
-        .status(
-          err.status ||
-          400
-        )
-        .send(
-          err.message
-        );
     }
   }
 );
@@ -3596,9 +2600,7 @@ app.get(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
@@ -3623,9 +2625,7 @@ app.get(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
@@ -3639,14 +2639,13 @@ app.patch(
     next
   ) => {
     try {
-      const allowed =
-        [
-          'title',
-          'announcement',
-          'sale_message',
-          'digital_sale_message',
-          'policy_additional'
-        ];
+      const allowed = [
+        'title',
+        'announcement',
+        'sale_message',
+        'digital_sale_message',
+        'policy_additional'
+      ];
 
       const body =
         Object.fromEntries(
@@ -3654,9 +2653,7 @@ app.patch(
             req.body ||
             {}
           ).filter(
-            (
-              [key]
-            ) =>
+            ([key]) =>
               allowed.includes(
                 key
               )
@@ -3680,18 +2677,14 @@ app.patch(
         await etsyRequest(
           `/shops/${await sid()}`,
           {
-            method:
-              'PUT',
-
+            method: 'PUT',
             body
           }
         )
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
@@ -3714,8 +2707,7 @@ app.get(
           1,
           Math.min(
             Number(
-              req.query
-                .limit ||
+              req.query.limit ||
               25
             ),
             25
@@ -3726,15 +2718,13 @@ app.get(
         Math.max(
           0,
           Number(
-            req.query
-              .offset ||
+            req.query.offset ||
             0
           )
         );
 
       const state =
-        req.query
-          .state ||
+        req.query.state ||
         'active';
 
       const data =
@@ -3764,45 +2754,34 @@ app.get(
           ).map(
             (listing) => ({
               listing_id:
-                listing
-                  .listing_id,
+                listing.listing_id,
 
               title:
-                listing
-                  .title,
+                listing.title,
 
               state:
-                listing
-                  .state,
+                listing.state,
 
               num_favorers:
-                listing
-                  .num_favorers ??
+                listing.num_favorers ??
                 0,
 
               created_timestamp:
-                listing
-                  .original_creation_timestamp ??
-                listing
-                  .creation_timestamp ??
-                listing
-                  .created_timestamp ??
+                listing.original_creation_timestamp ??
+                listing.creation_timestamp ??
+                listing.created_timestamp ??
                 null,
 
               updated_timestamp:
-                listing
-                  .updated_timestamp ??
-                listing
-                  .last_modified_timestamp ??
+                listing.updated_timestamp ??
+                listing.last_modified_timestamp ??
                 null
             })
           )
       });
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
@@ -3818,8 +2797,7 @@ app.get(
     try {
       const listingId =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       res.json(
@@ -3829,9 +2807,7 @@ app.get(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
@@ -3847,25 +2823,23 @@ app.patch(
     try {
       const listingId =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
-      const allowed =
-        [
-          'title',
-          'description',
-          'tags',
-          'materials',
-          'shop_section_id',
-          'section_id',
-          'state',
-          'is_customizable',
-          'is_personalizable',
-          'personalization_is_required',
-          'personalization_char_count_max',
-          'personalization_instructions'
-        ];
+      const allowed = [
+        'title',
+        'description',
+        'tags',
+        'materials',
+        'shop_section_id',
+        'section_id',
+        'state',
+        'is_customizable',
+        'is_personalizable',
+        'personalization_is_required',
+        'personalization_char_count_max',
+        'personalization_instructions'
+      ];
 
       const body =
         Object.fromEntries(
@@ -3873,9 +2847,7 @@ app.patch(
             req.body ||
             {}
           ).filter(
-            (
-              [key]
-            ) =>
+            ([key]) =>
               allowed.includes(
                 key
               )
@@ -3899,18 +2871,14 @@ app.patch(
         await etsyRequest(
           `/shops/${await sid()}/listings/${listingId}`,
           {
-            method:
-              'PATCH',
-
+            method: 'PATCH',
             body
           }
         )
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
@@ -3930,8 +2898,7 @@ app.get(
     try {
       const listingId =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       res.json(
@@ -3941,9 +2908,7 @@ app.get(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
@@ -3959,20 +2924,15 @@ app.post(
     try {
       const listingId =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       const refs =
-        req.body
-          ?.openaiFileIdRefs;
+        req.body?.openaiFileIdRefs;
 
       if (
-        !Array.isArray(
-          refs
-        ) ||
-        refs.length !==
-          1
+        !Array.isArray(refs) ||
+        refs.length !== 1
       ) {
         return res
           .status(400)
@@ -3989,8 +2949,7 @@ app.post(
         !fileRef ||
         typeof fileRef !==
           'object' ||
-        typeof fileRef
-          .download_link !==
+        typeof fileRef.download_link !==
           'string'
       ) {
         return res
@@ -4003,8 +2962,7 @@ app.post(
 
       const fileUrl =
         new URL(
-          fileRef
-            .download_link
+          fileRef.download_link
         );
 
       if (
@@ -4021,13 +2979,10 @@ app.post(
 
       const response =
         await fetch(
-          fileRef
-            .download_link
+          fileRef.download_link
         );
 
-      if (
-        !response.ok
-      ) {
+      if (!response.ok) {
         return res
           .status(400)
           .json({
@@ -4038,13 +2993,11 @@ app.post(
 
       const imageBuffer =
         Buffer.from(
-          await response
-            .arrayBuffer()
+          await response.arrayBuffer()
         );
 
       const contentType =
-        fileRef
-          .mime_type ||
+        fileRef.mime_type ||
         response.headers.get(
           'content-type'
         ) ||
@@ -4081,9 +3034,7 @@ app.post(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
@@ -4103,8 +3054,7 @@ app.get(
     try {
       const listingId =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       const listing =
@@ -4121,9 +3071,7 @@ app.get(
         buffer
       } =
         await downloadImage(
-          imageSet
-            .rank1
-            .imageUrl
+          imageSet.rank1.imageUrl
         );
 
       const analysis =
@@ -4133,42 +3081,28 @@ app.get(
 
       res.json({
         listing_id:
-          Number(
-            listingId
-          ),
+          Number(listingId),
 
         exact_title:
-          listing
-            ?.title ??
+          listing?.title ??
           null,
 
         image_id:
-          imageSet
-            .rank1
-            .imageId,
+          imageSet.rank1.imageId,
 
         rank:
-          imageSet
-            .rank1
-            .image
-            .rank ??
+          imageSet.rank1.image.rank ??
           null,
 
         image_url:
-          imageSet
-            .rank1
-            .imageUrl,
+          imageSet.rank1.imageUrl,
 
         image2_reference_id:
-          imageSet
-            .rank2
-            ?.imageId ??
+          imageSet.rank2?.imageId ??
           null,
 
         image2_reference_url:
-          imageSet
-            .rank2
-            ?.imageUrl ??
+          imageSet.rank2?.imageUrl ??
           null,
 
         analysis,
@@ -4183,18 +3117,66 @@ app.get(
       });
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
 
 
 /* =========================================================
-   WORKER SCAN
-   READ ONLY
+   WORKER
 ========================================================= */
+
+async function mapLimit(
+  items,
+  concurrency,
+  mapper
+) {
+  const results =
+    new Array(
+      items.length
+    );
+
+  let cursor = 0;
+
+  async function worker() {
+    while (true) {
+      const index =
+        cursor;
+
+      cursor += 1;
+
+      if (
+        index >=
+        items.length
+      ) {
+        return;
+      }
+
+      results[index] =
+        await mapper(
+          items[index],
+          index
+        );
+    }
+  }
+
+  await Promise.all(
+    Array.from(
+      {
+        length:
+          Math.min(
+            concurrency,
+            items.length
+          )
+      },
+      () => worker()
+    )
+  );
+
+  return results;
+}
+
 
 app.get(
   '/api/worker/scan',
@@ -4208,8 +3190,7 @@ app.get(
         Math.max(
           0,
           Number(
-            req.query
-              .offset ||
+            req.query.offset ||
             0
           )
         );
@@ -4219,8 +3200,7 @@ app.get(
           1,
           Math.min(
             Number(
-              req.query
-                .limit ||
+              req.query.limit ||
               8
             ),
             SCAN_MAX_LIMIT
@@ -4234,9 +3214,7 @@ app.get(
             params: {
               limit,
               offset,
-
-              state:
-                'active'
+              state: 'active'
             }
           }
         );
@@ -4249,14 +3227,11 @@ app.get(
         await mapLimit(
           listings,
           3,
-          async (
-            listing
-          ) => {
+          async (listing) => {
             try {
               const listingId =
                 String(
-                  listing
-                    .listing_id
+                  listing.listing_id
                 );
 
               const imageSet =
@@ -4268,9 +3243,7 @@ app.get(
                 buffer
               } =
                 await downloadImage(
-                  imageSet
-                    .rank1
-                    .imageUrl
+                  imageSet.rank1.imageUrl
                 );
 
               const analysis =
@@ -4280,37 +3253,23 @@ app.get(
 
               return {
                 listing_id:
-                  listing
-                    .listing_id,
+                  listing.listing_id,
 
                 exact_title:
-                  listing
-                    .title,
-
-                state:
-                  listing
-                    .state,
+                  listing.title,
 
                 rank1_image_id:
-                  imageSet
-                    .rank1
-                    .imageId,
+                  imageSet.rank1.imageId,
 
                 rank1_image_url:
-                  imageSet
-                    .rank1
-                    .imageUrl,
+                  imageSet.rank1.imageUrl,
 
                 image2_reference_id:
-                  imageSet
-                    .rank2
-                    ?.imageId ??
+                  imageSet.rank2?.imageId ??
                   null,
 
                 image2_reference_url:
-                  imageSet
-                    .rank2
-                    ?.imageUrl ??
+                  imageSet.rank2?.imageUrl ??
                   null,
 
                 analysis,
@@ -4318,103 +3277,23 @@ app.get(
                 assessment:
                   assessThumbnail(
                     analysis
-                  ),
-
-                available_performance_signal:
-                  performanceSignal(
-                    listing
-                  ),
-
-                note:
-                  'Only available Etsy listing signals are used. Missing CTR, conversion or view data is never invented.'
+                  )
               };
 
             } catch (err) {
               return {
                 listing_id:
-                  listing
-                    .listing_id,
+                  listing.listing_id,
 
                 exact_title:
-                  listing
-                    .title,
+                  listing.title,
 
                 error:
-                  err.message,
-
-                assessment: {
-                  priority:
-                    'review',
-
-                  recommended_action:
-                    'manual_review'
-                }
+                  err.message
               };
             }
           }
         );
-
-      const order = {
-        urgent:
-          0,
-
-        high:
-          1,
-
-        review:
-          2,
-
-        none:
-          3
-      };
-
-      scanned.sort(
-        (
-          a,
-          b
-        ) => {
-          const pa =
-            order[
-              a
-                ?.assessment
-                ?.priority
-            ] ??
-            9;
-
-          const pb =
-            order[
-              b
-                ?.assessment
-                ?.priority
-            ] ??
-            9;
-
-          if (
-            pa !==
-            pb
-          ) {
-            return (
-              pa -
-              pb
-            );
-          }
-
-          return (
-            (
-              a
-                ?.assessment
-                ?.readability_score_0_100 ??
-              100
-            ) -
-            (
-              b
-                ?.assessment
-                ?.readability_score_0_100 ??
-              100
-            )
-          );
-        }
-      );
 
       const total =
         Number(
@@ -4443,31 +3322,26 @@ app.get(
           scanned.length,
 
         next_offset:
-          nextOffset <
-          total
+          nextOffset < total
             ? nextOffset
             : null,
 
         has_more:
-          nextOffset <
-          total,
+          nextOffset < total,
 
         results:
           scanned
       });
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
 
 
 /* =========================================================
-   PREVIEW V5
-   READ ONLY
+   DETECTOR PREVIEW V5.1
 ========================================================= */
 
 app.post(
@@ -4480,470 +3354,117 @@ app.post(
     try {
       const listingId =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       const preview =
-        await buildFramePreview(
+        await buildDetectorPreview(
           listingId
         );
 
+      const bothHigh =
+        preview.heroDetection.status ===
+          'high_confidence' &&
+        preview.image2Detection.status ===
+          'high_confidence';
+
       res.json({
         listing_id:
-          Number(
-            listingId
-          ),
+          Number(listingId),
 
         exact_title:
-          preview
-            .listing
-            ?.title ??
+          preview.listing?.title ??
           null,
 
         source_image_id:
-          preview
-            .imageSet
-            .rank1
-            .imageId,
+          preview.imageSet.rank1.imageId,
 
         source_image_url:
-          preview
-            .imageSet
-            .rank1
-            .imageUrl,
+          preview.imageSet.rank1.imageUrl,
 
         image2_reference_id:
-          preview
-            .imageSet
-            .rank2
-            .imageId,
+          preview.imageSet.rank2.imageId,
 
         image2_reference_url:
-          preview
-            .imageSet
-            .rank2
-            .imageUrl,
+          preview.imageSet.rank2.imageUrl,
 
-        preview_file_name:
-          `etsy-${listingId}-image2-reference-frame-v5.jpg`,
+        detector_mode:
+          'detector_only_v5_1',
 
-        preview_url:
-          `${publicBase()}/preview/thumbnail-repair/${preview.token}`,
+        hero_frame:
+          preview.heroDetection,
+
+        image2_frame:
+          preview.image2Detection,
+
+        visual_consistency: {
+          passed:
+            false,
+
+          reason:
+            'Detector-only mode requires human visual confirmation before frame transfer is enabled.',
+
+          both_frames_high_confidence:
+            bothHigh
+        },
 
         compare_url:
           `${publicBase()}/preview/thumbnail-repair/${preview.token}/compare`,
 
-        before:
-          preview.before,
-
-        after:
-          preview.after,
-
-        image2_reference_analysis:
-          preview
-            .image2Analysis,
-
-        assessment:
-          assessThumbnail(
-            preview.before
-          ),
-
-        frame_detection: {
-          hero:
-            preview
-              .rendered
-              .heroFrame,
-
-          image2:
-            preview
-              .rendered
-              .referenceFrame
-        },
-
-        visual_consistency:
-          preview
-            .transferSafety,
-
-        repair: {
-          type:
-            'image2_reference_frame_transfer_v5',
-
-          generative_redraw_used:
-            false,
-
-          image2_reference_pixels_reused:
-            true,
-
-          hero_outer_scene_edit_operation:
-            false,
-
-          hero_whole_image_crop_changed:
-            false,
-
-          hero_whole_image_geometry_changed:
-            false,
-
-          artwork_content_source:
-            'etsy_image_2',
-
-          target_region:
-            preview
-              .rendered
-              .heroInnerNorm,
-
-          reference_region:
-            preview
-              .rendered
-              .referenceInnerNorm,
-
-          note:
-            'The current hero remains the scene base. Only the detected frame interior is replaced with detected Image 2 artwork pixels.'
-        },
-
         preview_token:
           preview.token,
 
-        expires_in_seconds:
-          Math.round(
-            PREVIEW_TTL_MS /
-            1000
-          ),
-
-        approval_required_for_upload:
-          'ONAYLIYORUM',
-
         upload_blocked_by_consistency:
-          !preview
-            .transferSafety
-            .passed,
+          true,
+
+        artwork_transfer_performed:
+          false,
 
         etsy_modified:
           false
       });
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
 
 
 /* =========================================================
-   APPLY V5
-   EXACT ONAYLIYORUM REQUIRED
+   APPLY IS DISABLED IN V5.1
 ========================================================= */
 
 app.post(
   '/api/listings/:listingId/thumbnail-repair/apply',
   async (
     req,
-    res,
-    next
+    res
   ) => {
-    try {
-      const listingId =
-        asListingId(
-          req.params
-            .listingId
-        );
+    return res
+      .status(409)
+      .json({
+        error:
+          'detector_only_mode_upload_blocked',
 
-      const approval =
-        String(
-          req.body
-            ?.approval ||
-          ''
-        ).trim();
-
-      const previewToken =
-        String(
-          req.body
-            ?.preview_token ||
-          ''
-        ).trim();
-
-      if (
-        approval !==
-        'ONAYLIYORUM'
-      ) {
-        return res
-          .status(400)
-          .json({
-            error:
-              'Exact approval text ONAYLIYORUM is required'
-          });
-      }
-
-      const payload =
-        verifyToken(
-          previewToken,
-          'thumbnail_preview_v5'
-        );
-
-      if (
-        String(
-          payload
-            .listingId
-        ) !==
-        listingId
-      ) {
-        return res
-          .status(409)
-          .json({
-            error:
-              'Preview token belongs to another listing'
-          });
-      }
-
-      const listing =
-        await etsyRequest(
-          `/listings/${listingId}`
-        );
-
-      const rebuilt =
-        await rebuildFromToken(
-          listingId,
-          payload
-        );
-
-      const imageSet =
-        rebuilt
-          .imageSet;
-
-      const transferSafety =
-        assessFrameTransfer(
-          rebuilt
-            .rendered
-        );
-
-      if (
-        !transferSafety
-          .passed
-      ) {
-        return res
-          .status(409)
-          .json({
-            error:
-              'Visual consistency safety check failed before upload',
-
-            visual_consistency:
-              transferSafety,
-
-            etsy_modified:
-              false
-          });
-      }
-
-      const uploadResult =
-        await uploadListingImage({
-          shopId:
-            await sid(),
-
-          listingId,
-
-          imageBuffer:
-            rebuilt
-              .rendered
-              .composed,
-
-          filename:
-            `etsy-${listingId}-image2-reference-frame-v5.jpg`,
-
-          contentType:
-            'image/jpeg'
-        });
-
-      const uploadedRecord =
-        extractUploadedImage(
-          uploadResult
-        );
-
-      const uploadedImageId =
-        getImageId(
-          uploadedRecord
-        );
-
-      const postImagesData =
-        await getListingImages(
-          listingId
-        );
-
-      const postImages =
-        postImagesData
-          ?.results ||
-        [];
-
-      const currentRank1 =
-        postImages.find(
-          (img) =>
-            Number(
-              img.rank
-            ) ===
-            1
-        ) ||
-        [...postImages]
-          .sort(
-            (
-              a,
-              b
-            ) =>
-              Number(
-                a.rank ??
-                9999
-              ) -
-              Number(
-                b.rank ??
-                9999
-              )
-          )[0] ||
-        null;
-
-      const currentRank1Id =
-        getImageId(
-          currentRank1
-        );
-
-      const newImageExists =
-        uploadedImageId
-          ? postImages.some(
-              (img) =>
-                String(
-                  getImageId(
-                    img
-                  )
-                ) ===
-                String(
-                  uploadedImageId
-                )
-            )
-          : false;
-
-      const newImageIsRank1 =
-        Boolean(
-          uploadedImageId &&
-          String(
-            currentRank1Id
-          ) ===
-          String(
-            uploadedImageId
-          )
-        );
-
-      let cleanupToken =
-        null;
-
-      if (
-        newImageExists &&
-        newImageIsRank1
-      ) {
-        cleanupToken =
-          signToken({
-            type:
-              'thumbnail_cleanup_v1',
-
-            listingId,
-
-            sourceImageId:
-              String(
-                imageSet
-                  .rank1
-                  .imageId
-              ),
-
-            replacementImageId:
-              String(
-                uploadedImageId
-              ),
-
-            exp:
-              Date.now() +
-              CLEANUP_TTL_MS
-          });
-      }
-
-      res.json({
-        success:
-          Boolean(
-            newImageExists &&
-            newImageIsRank1
-          ),
-
-        exact_title:
-          listing
-            ?.title ??
-          null,
+        message:
+          'V5.1 only verifies frame detection. Artwork transfer and Etsy upload are intentionally disabled.',
 
         listing_id:
           Number(
-            listingId
+            req.params.listingId
           ),
 
-        source_image_id:
-          imageSet
-            .rank1
-            .imageId,
-
-        image2_reference_id:
-          imageSet
-            .rank2
-            .imageId,
-
-        uploaded_image_id:
-          uploadedImageId,
-
-        current_rank1_image_id:
-          currentRank1Id,
-
-        replacement_verified_as_rank1:
-          newImageIsRank1,
-
-        visual_consistency:
-          transferSafety,
-
-        existing_images_deleted:
-          false,
-
-        listing_fields_changed:
-          false,
-
-        current_images:
-          compactImageList(
-            postImagesData
-          ),
-
-        cleanup_available:
-          Boolean(
-            cleanupToken
-          ),
-
-        cleanup_token:
-          cleanupToken,
-
-        cleanup_requires_exact_approval:
-          cleanupToken
-            ? 'TEMIZLIGI_ONAYLIYORUM'
-            : null,
-
-        warning:
-          newImageIsRank1
-            ? 'Replacement is verified as rank 1. Old source image remains until separate cleanup approval.'
-            : 'Upload returned, but replacement was not verified as rank 1. Cleanup is blocked.'
+        etsy_modified:
+          false
       });
-
-    } catch (err) {
-      next(
-        err
-      );
-    }
   }
 );
 
 
 /* =========================================================
    CLEANUP
-   SEPARATE APPROVAL REQUIRED
+   KEPT FOR EXISTING VERIFIED REPLACEMENTS
 ========================================================= */
 
 app.post(
@@ -4956,21 +3477,18 @@ app.post(
     try {
       const listingId =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       const approval =
         String(
-          req.body
-            ?.approval ||
+          req.body?.approval ||
           ''
         ).trim();
 
       const cleanupToken =
         String(
-          req.body
-            ?.cleanup_token ||
+          req.body?.cleanup_token ||
           ''
         ).trim();
 
@@ -4994,8 +3512,7 @@ app.post(
 
       if (
         String(
-          payload
-            .listingId
+          payload.listingId
         ) !==
         listingId
       ) {
@@ -5013,13 +3530,11 @@ app.post(
         );
 
       const images =
-        beforeData
-          ?.results ||
+        beforeData?.results ||
         [];
 
       if (
-        images.length <
-        2
+        images.length < 2
       ) {
         return res
           .status(409)
@@ -5033,13 +3548,10 @@ app.post(
         images.find(
           (img) =>
             String(
-              getImageId(
-                img
-              )
+              getImageId(img)
             ) ===
             String(
-              payload
-                .sourceImageId
+              payload.sourceImageId
             )
         );
 
@@ -5047,23 +3559,17 @@ app.post(
         images.find(
           (img) =>
             String(
-              getImageId(
-                img
-              )
+              getImageId(img)
             ) ===
             String(
-              payload
-                .replacementImageId
+              payload.replacementImageId
             )
         );
 
       const rank1 =
         images.find(
           (img) =>
-            Number(
-              img.rank
-            ) ===
-            1
+            Number(img.rank) === 1
         ) ||
         null;
 
@@ -5076,9 +3582,7 @@ app.post(
           });
       }
 
-      if (
-        !replacement
-      ) {
+      if (!replacement) {
         return res
           .status(409)
           .json({
@@ -5089,13 +3593,10 @@ app.post(
 
       if (
         String(
-          getImageId(
-            rank1
-          )
+          getImageId(rank1)
         ) !==
         String(
-          payload
-            .replacementImageId
+          payload.replacementImageId
         )
       ) {
         return res
@@ -5106,40 +3607,18 @@ app.post(
           });
       }
 
-      if (
-        String(
-          getImageId(
-            source
-          )
-        ) ===
-        String(
-          getImageId(
-            rank1
-          )
-        )
-      ) {
-        return res
-          .status(409)
-          .json({
-            error:
-              'Source image is still rank 1; cleanup blocked'
-          });
-      }
-
       const variationData =
         await etsyRequest(
           `/shops/${await sid()}/listings/${listingId}/variation-images`
         ).catch(
           () => ({
-            results:
-              []
+            results: []
           })
         );
 
-      const sourceUsedByVariation =
+      const usedByVariation =
         (
-          variationData
-            ?.results ||
+          variationData?.results ||
           []
         ).some(
           (item) =>
@@ -5147,149 +3626,47 @@ app.post(
               item?.image_id
             ) ===
             String(
-              payload
-                .sourceImageId
+              payload.sourceImageId
             )
         );
 
-      if (
-        sourceUsedByVariation
-      ) {
+      if (usedByVariation) {
         return res
           .status(409)
           .json({
             error:
-              'Old source image is used by a listing variation; cleanup blocked for safety'
+              'Old source image is used by a listing variation; cleanup blocked'
           });
       }
 
-      try {
-        await etsyRequest(
-          `/shops/${await sid()}/listings/${listingId}/images/${payload.sourceImageId}`,
-          {
-            method:
-              'DELETE'
-          }
-        );
-
-      } catch (deleteErr) {
-        const probe =
-          await getListingImages(
-            listingId
-          ).catch(
-            () =>
-              null
-          );
-
-        const stillExists =
-          (
-            probe
-              ?.results ||
-            []
-          ).some(
-            (img) =>
-              String(
-                getImageId(
-                  img
-                )
-              ) ===
-              String(
-                payload
-                  .sourceImageId
-              )
-          );
-
-        if (
-          !probe ||
-          stillExists
-        ) {
-          throw deleteErr;
+      await etsyRequest(
+        `/shops/${await sid()}/listings/${listingId}/images/${payload.sourceImageId}`,
+        {
+          method: 'DELETE'
         }
-      }
+      );
 
       const afterData =
         await getListingImages(
           listingId
         );
 
-      const afterImages =
-        afterData
-          ?.results ||
-        [];
-
-      const sourceStillExists =
-        afterImages.some(
-          (img) =>
-            String(
-              getImageId(
-                img
-              )
-            ) ===
-            String(
-              payload
-                .sourceImageId
-            )
-        );
-
-      const replacementAfter =
-        afterImages.find(
-          (img) =>
-            String(
-              getImageId(
-                img
-              )
-            ) ===
-            String(
-              payload
-                .replacementImageId
-            )
-        );
-
       res.json({
-        success:
-          Boolean(
-            !sourceStillExists &&
-            Number(
-              replacementAfter
-                ?.rank
-            ) ===
-            1
-          ),
+        success: true,
 
         listing_id:
-          Number(
-            listingId
-          ),
-
-        deleted_old_source_image_id:
-          payload
-            .sourceImageId,
-
-        replacement_image_id:
-          payload
-            .replacementImageId,
-
-        replacement_rank_after_cleanup:
-          replacementAfter
-            ?.rank ??
-          null,
-
-        old_source_still_present:
-          sourceStillExists,
+          Number(listingId),
 
         current_images:
-          compactImageList(
-            afterData
-          ),
+          afterData?.results ||
+          [],
 
         listing_fields_changed:
           false
       });
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
@@ -5314,9 +3691,7 @@ app.get(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
@@ -5332,8 +3707,7 @@ app.post(
     try {
       const title =
         String(
-          req.body
-            ?.title ||
+          req.body?.title ||
           ''
         ).trim();
 
@@ -5350,8 +3724,7 @@ app.post(
         await etsyRequest(
           `/shops/${await sid()}/sections`,
           {
-            method:
-              'POST',
+            method: 'POST',
 
             body: {
               title
@@ -5361,9 +3734,7 @@ app.post(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
@@ -5379,14 +3750,12 @@ app.put(
     try {
       const sectionId =
         asSectionId(
-          req.params
-            .sectionId
+          req.params.sectionId
         );
 
       const title =
         String(
-          req.body
-            ?.title ||
+          req.body?.title ||
           ''
         ).trim();
 
@@ -5403,8 +3772,7 @@ app.put(
         await etsyRequest(
           `/shops/${await sid()}/sections/${sectionId}`,
           {
-            method:
-              'PUT',
+            method: 'PUT',
 
             body: {
               title
@@ -5414,16 +3782,14 @@ app.put(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
 
 
 /* =========================================================
-   ERROR HANDLER
+   ERROR
 ========================================================= */
 
 app.use(
@@ -5433,9 +3799,7 @@ app.use(
     res,
     _next
   ) => {
-    console.error(
-      err
-    );
+    console.error(err);
 
     res
       .status(
@@ -5458,9 +3822,7 @@ app.use(
 export default app;
 
 
-if (
-  !process.env.VERCEL
-) {
+if (!process.env.VERCEL) {
   const port =
     Number(
       process.env.PORT ||
