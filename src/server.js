@@ -227,7 +227,91 @@ app.post('/api/listings/:listingId/images', bridgeAuth, async (req, res, next) =
   } catch (err) {
     next(err);
   }
+  app.get('/api/listings/:listingId/thumbnail-analysis', bridgeAuth, async (req, res, next) => {
+  try {
+    const imagesData = await getListingImages(req.params.listingId);
+    const images = imagesData?.results || [];
+
+    if (!images.length) {
+      return res.status(404).json({
+        error: 'No listing images found'
+      });
+    }
+
+    const rank1 =
+      images.find((img) => Number(img.rank) === 1) ||
+      [...images].sort((a, b) => Number(a.rank || 999) - Number(b.rank || 999))[0];
+
+    const imageUrl =
+      rank1.url_fullxfull ||
+      rank1.url_570xN ||
+      rank1.url_300x300 ||
+      rank1.url_75x75;
+
+    if (!imageUrl) {
+      return res.status(404).json({
+        error: 'No usable image URL found'
+      });
+    }
+
+    const imageResponse = await fetch(imageUrl);
+
+    if (!imageResponse.ok) {
+      return res.status(502).json({
+        error: `Could not download Etsy image (${imageResponse.status})`
+      });
+    }
+
+    const imageBuffer = Buffer.from(
+      await imageResponse.arrayBuffer()
+    );
+
+    const metadata = await sharp(imageBuffer).metadata();
+
+    const stats = await sharp(imageBuffer)
+      .resize({
+        width: 400,
+        height: 400,
+        fit: 'inside',
+        withoutEnlargement: true
+      })
+      .greyscale()
+      .stats();
+
+    const brightness = Math.round(
+      stats.channels?.[0]?.mean ?? 0
+    );
+
+    const contrast = Math.round(
+      stats.channels?.[0]?.stdev ?? 0
+    );
+
+    let darkness_label = 'good';
+
+    if (brightness < 70) {
+      darkness_label = 'very_dark';
+    } else if (brightness < 95) {
+      darkness_label = 'dark';
+    } else if (brightness < 120) {
+      darkness_label = 'slightly_dark';
+    }
+
+    res.json({
+      listing_id: Number(req.params.listingId),
+      image_id: rank1.listing_image_id || rank1.image_id || null,
+      rank: rank1.rank ?? null,
+      image_url: imageUrl,
+      width: metadata.width ?? null,
+      height: metadata.height ?? null,
+      brightness_0_255: brightness,
+      contrast_stdev: contrast,
+      darkness_label
+    });
+  } catch (err) {
+    next(err);
+  }
 });
+
 app.post('/api/sections', async (req, res, next) => {
   try {
     if (!req.body?.title) return res.status(400).json({ error: 'title is required' });
