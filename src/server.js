@@ -75,7 +75,7 @@ app.get('/oauth/etsy/callback', async (req, res) => {
     await setInitialToken(token);
     // Verify the token can read this exact VAELONS shop's private listing collection.
     const sid = await getShopId();
-    await etsyRequest(`/application/shops/${sid}/listings`, { params: { limit: 1 } });
+    await etsyRequest(`/shops/${shopId}/listings`, ...){ params: { limit: 1 } });
     const capsule = sealJson({ refresh_token: token.refresh_token, shop_id: sid });
     res.clearCookie('etsy_oauth');
     res.type('html').send(`<!doctype html><meta charset="utf-8"><title>VAELONS Etsy Connected</title><style>body{font-family:system-ui;max-width:800px;margin:60px auto;padding:0 20px;line-height:1.5}code,textarea{width:100%;word-break:break-all}textarea{height:150px}</style><h2>VAELONS Etsy Seller bağlantısı doğrulandı.</h2><p>Son güvenli adım: aşağıdaki şifreli token kapsülünü Vercel Environment Variables bölümüne <b>ETSY_TOKEN_CAPSULE</b> adıyla ekleyin. Bu değer Etsy refresh tokenını AES-256-GCM ile şifrelenmiş halde içerir.</p><textarea readonly onclick="this.select()">${capsule}</textarea><p>Production + Preview seçin, kaydedin ve Redeploy yapın. Bu kapsül ham Etsy tokenı değildir; yine de gizli tutun.</p>`);
