@@ -312,7 +312,78 @@ app.post('/api/listings/:listingId/images', bridgeAuth, async (req, res, next) =
     next(err);
   }
 });
+app.get('/api/listings/:listingId/rank1-file', bridgeAuth, async (req, res, next) => {
+  try {
+    const listingId = req.params.listingId;
 
+    const imagesData = await getListingImages(listingId);
+    const images = imagesData?.results || [];
+
+    if (!images.length) {
+      return res.status(404).json({
+        error: 'No listing images found'
+      });
+    }
+
+    const rank1 =
+      images.find((img) => Number(img.rank) === 1) ||
+      [...images].sort(
+        (a, b) => Number(a.rank || 999) - Number(b.rank || 999)
+      )[0];
+
+    const imageUrl =
+      rank1.url_fullxfull ||
+      rank1.url_570xN ||
+      rank1.url_300x300 ||
+      rank1.url_75x75;
+
+    if (!imageUrl) {
+      return res.status(404).json({
+        error: 'No usable rank 1 image URL found'
+      });
+    }
+
+    const imageResponse = await fetch(imageUrl);
+
+    if (!imageResponse.ok) {
+      return res.status(502).json({
+        error: `Could not download Etsy rank 1 image (${imageResponse.status})`
+      });
+    }
+
+    const arrayBuffer = await imageResponse.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    const contentType =
+      imageResponse.headers.get('content-type') || 'image/jpeg';
+
+    let extension = 'jpg';
+
+    if (contentType.includes('png')) {
+      extension = 'png';
+    } else if (contentType.includes('webp')) {
+      extension = 'webp';
+    }
+
+    const fileName =
+      `etsy-listing-${listingId}-rank1-${rank1.listing_image_id || rank1.image_id || 'image'}.${extension}`;
+
+    res.json({
+      openaiFileResponse: [
+        {
+          name: fileName,
+          mime_type: contentType,
+          content: buffer.toString('base64')
+        }
+      ],
+      listing_id: Number(listingId),
+      image_id: rank1.listing_image_id || rank1.image_id || null,
+      rank: rank1.rank ?? null
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 app.post('/api/sections', async (req, res, next) => {
   try {
     if (!req.body?.title) return res.status(400).json({ error: 'title is required' });
