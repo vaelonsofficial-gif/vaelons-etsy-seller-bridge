@@ -1,16 +1,18 @@
 {
-  "name": "vaelons-etsy-seller-bridge",
+  "name": "vaelons-thumbnail-worker",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "scripts": {
-    "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+  "engines": {
+    "node": ">=22"
   },
-  "engines": {"node": ">=20"},
+  "scripts": {
+    "start": "node src/server.js"
+  },
   "dependencies": {
-    "express": "^5.1.0",
-    "multer": "^2.0.2",
-    "sharp": "^0.33.5"
+    "@upstash/redis": "1.38.2",
+    "express": "5.1.0",
+    "openai": "7.5.0",
+    "sharp": "0.33.5"
   }
 }
