@@ -1,9 +1,16 @@
 {
+  "version": 2,
   "functions": {
-    "src/server.js": {
+    "api/index.js": {
       "maxDuration": 300
     }
   },
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "api/index.js"
+    }
+  ],
   "crons": [
     {
       "path": "/api/worker/run",
