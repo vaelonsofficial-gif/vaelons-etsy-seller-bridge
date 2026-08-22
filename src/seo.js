@@ -1,21 +1,25 @@
 import express from 'express';
 import OpenAI from 'openai';
+import sharp from 'sharp';
 import { Redis } from '@upstash/redis';
 import { randomBytes, createHash } from 'node:crypto';
 
 import {
   etsyRequest,
-  getShopId
+  getShopId,
+  getListingImages
 } from './etsy.js';
 
 const router = express.Router();
 
-const PREFIX = 'vaelons:seo:v1';
+const PREFIX = 'vaelons:seo:v2';
 const PREVIEW_TTL_SECONDS = 24 * 60 * 60;
 const HISTORY_LIMIT = 50;
 
-const SECTION_CONFIDENCE_THRESHOLD = 0.78;
-const SECTION_CLASSIFY_BATCH = 20;
+const SECTION_CONFIDENCE_THRESHOLD = 0.8;
+const SECTION_CLASSIFY_BATCH = 4;
+const SECTION_IMAGE_COUNT = 2;
+const SECTION_HYDRATE_CONCURRENCY = 3;
 
 const SEO_MODEL =
   process.env.OPENAI_SEO_MODEL ||
@@ -31,8 +35,7 @@ let redisClient = null;
 ========================================================= */
 
 function required(name) {
-  const value =
-    process.env[name];
+  const value = process.env[name];
 
   if (!value) {
     throw new Error(
@@ -71,10 +74,7 @@ function redis() {
       process.env
         .UPSTASH_REDIS_REST_TOKEN;
 
-    if (
-      !url ||
-      !token
-    ) {
+    if (!url || !token) {
       throw new Error(
         'Missing Upstash Redis environment variables'
       );
@@ -259,9 +259,7 @@ function normalizeTags(
         )
         .trim();
 
-    if (
-      !tag
-    ) {
+    if (!tag) {
       continue;
     }
 
@@ -316,16 +314,117 @@ function sameArray(
         value
       ) ===
       String(
-        b[
-          index
-        ]
+        b[index]
       )
   );
 }
 
+function getListingSectionId(
+  listing
+) {
+  const raw =
+    listing
+      ?.shop_section_id ??
+    listing
+      ?.section_id ??
+    null;
+
+  if (
+    raw == null ||
+    raw ===
+      '' ||
+    Number(
+      raw
+    ) <=
+      0
+  ) {
+    return null;
+  }
+
+  return Number(
+    raw
+  );
+}
+
+function getImageUrl(
+  image
+) {
+  return (
+    image
+      ?.url_fullxfull ||
+    image
+      ?.url_570xN ||
+    image
+      ?.url_300x300 ||
+    image
+      ?.url_170x135 ||
+    null
+  );
+}
+
+async function mapWithConcurrency(
+  items,
+  concurrency,
+  mapper
+) {
+  const results =
+    new Array(
+      items.length
+    );
+
+  let index =
+    0;
+
+  async function worker() {
+    while (
+      true
+    ) {
+      const current =
+        index;
+
+      index +=
+        1;
+
+      if (
+        current >=
+        items.length
+      ) {
+        return;
+      }
+
+      results[
+        current
+      ] =
+        await mapper(
+          items[current],
+          current
+        );
+    }
+  }
+
+  await Promise.all(
+    Array.from(
+      {
+        length:
+          Math.min(
+            concurrency,
+            Math.max(
+              1,
+              items.length
+            )
+          )
+      },
+      () =>
+        worker()
+    )
+  );
+
+  return results;
+}
+
 
 /* =========================================================
-   REDIS KEYS
+   REDIS
 ========================================================= */
 
 function previewKey(
@@ -472,34 +571,6 @@ function snapshotHash(
     );
 }
 
-function getListingSectionId(
-  listing
-) {
-  const raw =
-    listing
-      ?.shop_section_id ??
-    listing
-      ?.section_id ??
-    null;
-
-  if (
-    raw ==
-      null ||
-    raw ===
-      '' ||
-    Number(
-      raw
-    ) <=
-      0
-  ) {
-    return null;
-  }
-
-  return Number(
-    raw
-  );
-}
-
 
 /* =========================================================
    SEO VALIDATION
@@ -529,9 +600,7 @@ function validateProposal(
         .proposed_description
     );
 
-  if (
-    !title
-  ) {
+  if (!title) {
     errors.push(
       'title_empty'
     );
@@ -1094,7 +1163,8 @@ async function savePreview(
 
     setJson(
       stateKey(
-        preview.listing_id
+        preview
+          .listing_id
       ),
       {
         status:
@@ -1104,13 +1174,16 @@ async function savePreview(
           token,
 
         original_hash:
-          preview.original_hash,
+          preview
+            .original_hash,
 
         created_at:
-          value.created_at,
+          value
+            .created_at,
 
         qa:
-          preview.qa
+          preview
+            .qa
       }
     )
   ]);
@@ -1347,7 +1420,8 @@ async function getShopSections() {
         section
           .shop_section_id >
         0 &&
-        section.title
+        section
+          .title
     )
     .sort(
       (
@@ -1361,7 +1435,7 @@ async function getShopSections() {
 
 
 /* =========================================================
-   ALL ACTIVE LISTINGS
+   ACTIVE LISTINGS
 ========================================================= */
 
 async function fetchAllActiveListings() {
@@ -1439,6 +1513,364 @@ async function fetchAllActiveListings() {
 
 
 /* =========================================================
+   VISUAL SECTION EVIDENCE
+========================================================= */
+
+async function imageToDataUrl(
+  url
+) {
+  if (!url) {
+    return null;
+  }
+
+  const parsed =
+    new URL(
+      url
+    );
+
+  if (
+    parsed.protocol !==
+    'https:'
+  ) {
+    return null;
+  }
+
+  const response =
+    await fetch(
+      url
+    );
+
+  if (
+    !response.ok
+  ) {
+    return null;
+  }
+
+  const input =
+    Buffer.from(
+      await response
+        .arrayBuffer()
+    );
+
+  if (
+    input.length >
+    20 *
+    1024 *
+    1024
+  ) {
+    return null;
+  }
+
+  const jpeg =
+    await sharp(
+      input
+    )
+      .rotate()
+      .removeAlpha()
+      .toColourspace(
+        'srgb'
+      )
+      .resize({
+        width:
+          900,
+
+        height:
+          900,
+
+        fit:
+          'inside',
+
+        withoutEnlargement:
+          true
+      })
+      .jpeg({
+        quality:
+          80,
+
+        chromaSubsampling:
+          '4:2:0'
+      })
+      .toBuffer();
+
+  return (
+    `data:image/jpeg;base64,${jpeg.toString('base64')}`
+  );
+}
+
+async function hydrateListingForSection(
+  listing
+) {
+  const listingId =
+    asListingId(
+      listing
+        ?.listing_id ||
+      listing
+    );
+
+  let fullListing =
+    listing;
+
+  try {
+    fullListing =
+      await etsyRequest(
+        `/listings/${listingId}`
+      );
+
+  } catch {
+    fullListing =
+      listing;
+  }
+
+  let images =
+    [];
+
+  try {
+    const imageData =
+      await getListingImages(
+        listingId
+      );
+
+    const rawImages =
+      Array.isArray(
+        imageData
+          ?.results
+      )
+        ? imageData.results
+        : [];
+
+    const ordered =
+      [
+        ...rawImages
+      ]
+        .filter(
+          (
+            image
+          ) =>
+            getImageUrl(
+              image
+            )
+        )
+        .sort(
+          (
+            a,
+            b
+          ) =>
+            Number(
+              a.rank ??
+              9999
+            ) -
+            Number(
+              b.rank ??
+              9999
+            )
+        )
+        .slice(
+          0,
+          SECTION_IMAGE_COUNT
+        );
+
+    images =
+      (
+        await Promise.all(
+          ordered.map(
+            async (
+              image
+            ) => {
+              const url =
+                getImageUrl(
+                  image
+                );
+
+              try {
+                const dataUrl =
+                  await imageToDataUrl(
+                    url
+                  );
+
+                return dataUrl
+                  ? {
+                      rank:
+                        Number(
+                          image
+                            .rank ??
+                          0
+                        ),
+
+                      data_url:
+                        dataUrl
+                    }
+                  : null;
+
+              } catch {
+                return null;
+              }
+            }
+          )
+        )
+      ).filter(
+        Boolean
+      );
+
+  } catch {
+    images =
+      [];
+  }
+
+  return {
+    listing_id:
+      listingId,
+
+    title:
+      normalizeTitle(
+        fullListing
+          ?.title ||
+        listing
+          ?.title ||
+        ''
+      ),
+
+    tags:
+      normalizeTags(
+        fullListing
+          ?.tags ||
+        listing
+          ?.tags ||
+        []
+      ),
+
+    description:
+      normalizeDescription(
+        fullListing
+          ?.description ||
+        listing
+          ?.description ||
+        ''
+      ).slice(
+        0,
+        1200
+      ),
+
+    current_section_id:
+      getListingSectionId(
+        fullListing
+      ) ||
+      getListingSectionId(
+        listing
+      ),
+
+    images
+  };
+}
+
+
+/* =========================================================
+   SECTION CLASSIFIER PROMPT
+========================================================= */
+
+function buildSectionClassifierInstructions(
+  sections
+) {
+  const sectionText =
+    sections
+      .map(
+        (
+          section
+        ) =>
+          `${section.shop_section_id} = ${section.title}`
+      )
+      .join(
+        '\n'
+      );
+
+  return `
+You organize Etsy listings into EXISTING shop sections.
+
+You MUST choose only from the section IDs below.
+Never create a new section.
+If none is a confident fit, return section_id null.
+
+IMPORTANT:
+Use BOTH listing text and supplied listing images.
+
+The images are evidence of the REAL artwork/product.
+
+Do not blindly trust the title if the artwork visibly shows something different.
+
+Do not classify based on room furniture, books, plants, walls, frames or mockup styling.
+
+Inspect the actual artwork/product shown inside the mockup.
+
+If the text and visuals materially conflict, return section_id null and lower confidence.
+
+CLASSIFICATION RULES
+
+1. WILDLIFE & COUNTRY
+
+If a REAL animal, bird, wildlife subject, horse, lion, wolf, owl, swan, eagle, tiger, fox, deer, reindeer, kangaroo or similar animal is a major subject of the actual artwork, prefer Wildlife & Country.
+
+A city or landmark in the background does NOT override a major animal subject.
+
+Examples:
+Lion + Prague = Wildlife & Country
+Horse + Lisbon = Wildlife & Country
+Owl + Acropolis = Wildlife & Country
+Swan + Amsterdam = Wildlife & Country
+Wolf + Prague = Wildlife & Country
+Tiger + India Gate = Wildlife & Country
+Fox + London = Wildlife & Country
+Kangaroo + Canberra = Wildlife & Country
+
+But do NOT force Wildlife only because an animal word exists in the title.
+The artwork itself should support the animal subject.
+
+Rural, farm and country scenes may also fit Wildlife & Country.
+
+2. FLORAL & COTTAGECORE
+
+Use Floral & Cottagecore when flowers, roses, tulips, gardens, botanical arrangements or cottage garden imagery are the main artwork subject.
+
+Do not classify as Floral because a small vase or plant appears in the room mockup.
+
+3. EUROPE & MED TRAVEL
+
+Use Europe & Med Travel when the artwork is mainly about a city, landmark, architecture, coast or travel destination AND there is no major animal subject.
+
+If this is the shop's only travel section, it may also contain strong non-European travel landmarks when no better existing section exists.
+
+Do not choose Travel only because a city name appears in the title.
+
+4. DARK GOTHIC MOODY
+
+Use Dark Gothic Moody when the actual artwork is primarily gothic, dark, eerie, nocturnal or moody and there is no stronger wildlife rule.
+
+Do not use it merely because the mockup room is dark.
+
+5. LUXURY PALACE FANTASY
+
+Use Luxury Palace Fantasy for palace, royal, luxury, fantasy, mythical or opulent artwork when there is no stronger wildlife rule.
+
+6. ABSTRACT MODERN RUSTIC
+
+Use Abstract Modern Rustic for primarily abstract, modern, minimalist, rustic or stylized landscape artwork when none of the stronger rules apply.
+
+GENERAL RULES
+
+- Classify the PRODUCT/ARTWORK, not its room presentation.
+- Different listings can have completely different artwork styles.
+- Evaluate every listing independently.
+- If image 1 is only a mockup and image 2 reveals the artwork more clearly, use the clearer evidence.
+- If images disagree about the real product, return null unless the listing text resolves the conflict with high confidence.
+- Ignore generic words such as canvas, wall art, print, decor, gift and home decor.
+- Never create a new section.
+- Confidence must reflect both visual and textual evidence.
+
+EXISTING SECTIONS:
+${sectionText}
+`.trim();
+}
+
+
+/* =========================================================
    SECTION AI CLASSIFIER
 ========================================================= */
 
@@ -1486,6 +1918,9 @@ async function classifySectionChunk(
             'listing_id',
             'section_id',
             'confidence',
+            'primary_visual_theme',
+            'animal_major_subject',
+            'visual_text_conflict',
             'reason'
           ],
 
@@ -1513,6 +1948,21 @@ async function classifySectionChunk(
                 1
             },
 
+            primary_visual_theme: {
+              type:
+                'string'
+            },
+
+            animal_major_subject: {
+              type:
+                'boolean'
+            },
+
+            visual_text_conflict: {
+              type:
+                'boolean'
+            },
+
             reason: {
               type:
                 'string'
@@ -1523,68 +1973,66 @@ async function classifySectionChunk(
     }
   };
 
-  const sectionText =
-    sections
-      .map(
-        (
-          section
-        ) =>
-          `${section.shop_section_id} = ${section.title}`
-      )
-      .join(
-        '\n'
-      );
+  const content = [
+    {
+      type:
+        'input_text',
 
-  const listingText =
+      text:
+        buildSectionClassifierInstructions(
+          sections
+        )
+    }
+  ];
+
+  for (
+    const listing of
     listings
-      .map(
-        (
-          listing
-        ) => {
-          const id =
-            String(
-              listing
-                .listing_id
-            );
+  ) {
+    content.push({
+      type:
+        'input_text',
 
-          const title =
-            normalizeTitle(
-              listing
-                .title ||
-              ''
-            );
+      text:
+`LISTING ${listing.listing_id}
+TITLE: ${listing.title}
+TAGS: ${JSON.stringify(listing.tags)}
+DESCRIPTION: ${listing.description || '(empty)'}
+IMAGES FOLLOW: ${listing.images.length}`
+    });
 
-          const tags =
-            normalizeTags(
-              listing
-                .tags ||
-              []
-            ).slice(
-              0,
-              13
-            );
+    for (
+      const image of
+      listing.images
+    ) {
+      content.push({
+        type:
+          'input_text',
 
-          const description =
-            normalizeDescription(
-              listing
-                .description ||
-              ''
-            ).slice(
-              0,
-              700
-            );
+        text:
+          `Listing ${listing.listing_id} image rank ${image.rank}`
+      });
 
-          return `
-LISTING ${id}
-TITLE: ${title}
-TAGS: ${JSON.stringify(tags)}
-DESCRIPTION: ${description}
-`.trim();
-        }
-      )
-      .join(
-        '\n\n'
-      );
+      content.push({
+        type:
+          'input_image',
+
+        image_url:
+          image.data_url,
+
+        detail:
+          'high'
+      });
+    }
+  }
+
+  content.push({
+    type:
+      'input_text',
+
+    text:
+      'Return exactly one assignment for every listing above.'
+  });
 
   const response =
     await openai()
@@ -1601,42 +2049,7 @@ DESCRIPTION: ${description}
             role:
               'user',
 
-            content: [
-              {
-                type:
-                  'input_text',
-
-                text:
-`You organize Etsy listings into EXISTING shop sections.
-
-You MUST choose only from the section IDs below.
-
-Never create a new section.
-
-If none is a confident fit, return section_id null.
-
-Use:
-- product subject
-- visual style
-- location or theme
-- buyer intent
-
-Ignore generic phrases such as:
-wall art, canvas, decor, gift, print.
-
-Be conservative.
-
-EXISTING SECTIONS:
-
-${sectionText}
-
-UNGROUPED LISTINGS:
-
-${listingText}
-
-Return exactly one assignment for every listing.`
-              }
-            ]
+            content
           }
         ],
 
@@ -1726,35 +2139,59 @@ Return exactly one assignment for every listing.`
           0
         );
 
+      const visualTextConflict =
+        raw
+          ?.visual_text_conflict ===
+        true;
+
+      const ready =
+        validSection &&
+        confidence >=
+          SECTION_CONFIDENCE_THRESHOLD &&
+        !visualTextConflict;
+
       return {
         listing_id:
           listingId,
 
         title:
-          normalizeTitle(
-            listing
-              .title ||
-            ''
-          ),
+          listing.title,
 
         current_section_id:
-          getListingSectionId(
-            listing
-          ),
+          listing
+            .current_section_id,
 
         proposed_section_id:
-          validSection
+          ready
             ? sectionId
             : null,
 
         confidence,
 
         status:
-          validSection &&
-          confidence >=
-            SECTION_CONFIDENCE_THRESHOLD
+          ready
             ? 'ready'
             : 'needs_review',
+
+        primary_visual_theme:
+          String(
+            raw
+              ?.primary_visual_theme ||
+            ''
+          ),
+
+        animal_major_subject:
+          raw
+            ?.animal_major_subject ===
+          true,
+
+        visual_text_conflict:
+          visualTextConflict,
+
+        image_evidence_count:
+          listing
+            .images
+            .length,
 
         reason:
           String(
@@ -1771,18 +2208,25 @@ async function classifyUngroupedListings(
   sections,
   listings
 ) {
+  const hydrated =
+    await mapWithConcurrency(
+      listings,
+      SECTION_HYDRATE_CONCURRENCY,
+      hydrateListingForSection
+    );
+
   const results =
     [];
 
   for (
     let i = 0;
     i <
-    listings.length;
+    hydrated.length;
     i +=
       SECTION_CLASSIFY_BATCH
   ) {
     const chunk =
-      listings.slice(
+      hydrated.slice(
         i,
         i +
           SECTION_CLASSIFY_BATCH
@@ -1842,7 +2286,7 @@ async function saveSectionPreview(
 
 
 /* =========================================================
-   SAFE SECTION ASSIGNMENT
+   SECTION ASSIGNMENT
 ========================================================= */
 
 async function assignListingToSection(
@@ -1955,7 +2399,7 @@ async function assignListingToSection(
 
 
 /* =========================================================
-   AUTH
+   ROUTER AUTH
 ========================================================= */
 
 router.use(
@@ -1981,7 +2425,7 @@ router.get(
         'vaelons-seo-engine',
 
       version:
-        '2.0.0',
+        '3.0.0',
 
       model:
         SEO_MODEL,
@@ -1996,7 +2440,13 @@ router.get(
         true,
 
       section_organizer:
-        true
+        true,
+
+      visual_section_classification:
+        true,
+
+      section_rule:
+        'classify artwork/product, not room mockup'
     });
   }
 );
@@ -2161,7 +2611,7 @@ router.get(
 
 
 /* =========================================================
-   LIST EXISTING SECTIONS
+   LIST SECTIONS
 ========================================================= */
 
 router.get(
@@ -2197,7 +2647,7 @@ router.get(
 
 
 /* =========================================================
-   SCAN UNGROUPED LISTINGS
+   SCAN UNGROUPED
 ========================================================= */
 
 router.post(
@@ -2380,7 +2830,8 @@ router.post(
           enriched,
 
         preview_token:
-          preview.token,
+          preview
+            .token,
 
         approval_required:
           'ONAYLIYORUM',
@@ -2401,7 +2852,7 @@ router.post(
 
 
 /* =========================================================
-   APPLY GROUP ASSIGNMENTS
+   APPLY SECTIONS
 ========================================================= */
 
 router.post(
@@ -2503,6 +2954,9 @@ router.post(
                     0
                   ) >=
                     SECTION_CONFIDENCE_THRESHOLD &&
+                  item
+                    .visual_text_conflict !==
+                    true &&
                   currentSectionIds.has(
                     Number(
                       item
@@ -2628,7 +3082,8 @@ router.post(
               null,
 
             error:
-              error.message
+              error
+                .message
           });
         }
       }
@@ -3012,7 +3467,8 @@ router.post(
         qa,
 
         preview_token:
-          preview.token,
+          preview
+            .token,
 
         approval_required:
           'ONAYLIYORUM',
@@ -3275,9 +3731,11 @@ router.post(
 
       const publishedOk =
         verifyPublished(
-          preview.proposed,
+          preview
+            .proposed,
           verified,
-          preview.proposal
+          preview
+            .proposal
         );
 
       await addHistory(
@@ -3293,19 +3751,23 @@ router.post(
             token,
 
           before:
-            preview.original,
+            preview
+              .original,
 
           after_expected:
-            preview.proposed,
+            preview
+              .proposed,
 
           after_verified:
             verified,
 
           change_flags:
-            preview.proposal,
+            preview
+              .proposal,
 
           qa:
-            preview.qa
+            preview
+              .qa
         }
       );
 
@@ -3361,7 +3823,8 @@ router.post(
             ),
 
           before:
-            preview.original,
+            preview
+              .original,
 
           after:
             verified,
@@ -3537,17 +4000,20 @@ router.post(
         );
 
       const rollbackOk =
-        verified.title ===
+        verified
+          .title ===
           lastPublish
             .before
             .title &&
         sameArray(
-          verified.tags,
+          verified
+            .tags,
           lastPublish
             .before
             .tags
         ) &&
-        verified.description ===
+        verified
+          .description ===
           lastPublish
             .before
             .description;
