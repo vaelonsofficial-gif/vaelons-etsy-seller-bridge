@@ -34,8 +34,33 @@ const PUBLISH_APPROVAL = 'ONAYLIYORUM';
 const CLEANUP_APPROVAL = 'TEMIZLIGI_ONAYLIYORUM';
 
 const MIN_MANUAL_FRAME_CONFIDENCE = 0.25;
-const MAX_ASPECT_LOG_MISMATCH = 0.055;
 
+/*
+  v5.4 COVER-FIT SETTINGS
+
+  Artwork is allowed to crop slightly in order to fill the hero frame.
+  No stretching is used.
+
+  > 12% crop = warning
+  > 22% crop = hard block
+*/
+const COVER_CROP_WARNING = 0.12;
+const COVER_CROP_HARD_LIMIT = 0.22;
+
+/*
+  Artwork extends nearly to the detected outer-frame edges.
+
+  The original frame border is then restored on top.
+  This prevents old Rank-1 artwork from remaining as a visible strip.
+*/
+const HERO_ARTWORK_BLEED_INSET = 0.012;
+
+/*
+  Amount of original Rank-1 frame restored over the transferred artwork.
+  Keep this deliberately narrow to avoid restoring old artwork pixels.
+*/
+const FRAME_RING_X_RATIO = 0.028;
+const FRAME_RING_Y_RATIO = 0.028;
 
 /* =========================================================
    BASIC
@@ -232,15 +257,13 @@ function extractUploadedImage(
     )
   ) {
     return (
-      uploadResult
-        .results[0] ||
+      uploadResult.results[0] ||
       null
     );
   }
 
   return uploadResult;
 }
-
 
 /* =========================================================
    LISTING IMAGES
@@ -261,17 +284,13 @@ async function getListingImageSet(
       ? data.results
       : [];
 
-  if (
-    !images.length
-  ) {
+  if (!images.length) {
     const err =
       new Error(
         'No listing images found'
       );
 
-    err.status =
-      404;
-
+    err.status = 404;
     throw err;
   }
 
@@ -322,17 +341,13 @@ async function getListingImageSet(
         )
       : null;
 
-  if (
-    !rank1Url
-  ) {
+  if (!rank1Url) {
     const err =
       new Error(
         'No usable rank 1 image URL found'
       );
 
-    err.status =
-      404;
-
+    err.status = 404;
     throw err;
   }
 
@@ -384,33 +399,26 @@ async function downloadImage(url) {
         'Image URL must use HTTPS'
       );
 
-    err.status =
-      400;
-
+    err.status = 400;
     throw err;
   }
 
   const response =
     await fetch(url);
 
-  if (
-    !response.ok
-  ) {
+  if (!response.ok) {
     const err =
       new Error(
         `Could not download image (${response.status})`
       );
 
-    err.status =
-      502;
-
+    err.status = 502;
     throw err;
   }
 
   const buffer =
     Buffer.from(
-      await response
-        .arrayBuffer()
+      await response.arrayBuffer()
     );
 
   if (
@@ -424,9 +432,7 @@ async function downloadImage(url) {
         'Image is larger than 20 MB'
       );
 
-    err.status =
-      413;
-
+    err.status = 413;
     throw err;
   }
 
@@ -441,7 +447,6 @@ async function downloadImage(url) {
   };
 }
 
-
 /* =========================================================
    IMAGE ANALYSIS
 ========================================================= */
@@ -450,9 +455,7 @@ function percentileFromSorted(
   values,
   fraction
 ) {
-  if (
-    !values.length
-  ) {
+  if (!values.length) {
     return 0;
   }
 
@@ -515,8 +518,7 @@ async function analyzeImage(
   const channels =
     info.channels;
 
-  const values =
-    [];
+  const values = [];
 
   let sumL = 0;
   let sumR = 0;
@@ -554,9 +556,7 @@ async function analyzeImage(
         0.0722 * b
       );
 
-    values.push(
-      y
-    );
+    values.push(y);
 
     sumL += y;
     sumR += r;
@@ -575,29 +575,19 @@ async function analyzeImage(
         b
       );
 
-    if (
-      y < 55
-    ) {
-      shadowCount +=
-        1;
+    if (y < 55) {
+      shadowCount += 1;
     }
 
-    if (
-      y < 28
-    ) {
-      deepShadowCount +=
-        1;
+    if (y < 28) {
+      deepShadowCount += 1;
     }
 
-    if (
-      y > 230
-    ) {
-      highlightCount +=
-        1;
+    if (y > 230) {
+      highlightCount += 1;
     }
 
-    count +=
-      1;
+    count += 1;
   }
 
   values.sort(
@@ -609,8 +599,7 @@ async function analyzeImage(
   );
 
   const safeCount =
-    count ||
-    1;
+    count || 1;
 
   const brightness =
     Math.round(
@@ -618,8 +607,7 @@ async function analyzeImage(
       safeCount
     );
 
-  let variance =
-    0;
+  let variance = 0;
 
   for (
     const value of
@@ -682,18 +670,6 @@ async function analyzeImage(
       'slightly_dark';
   }
 
-  const meanR =
-    sumR /
-    safeCount;
-
-  const meanG =
-    sumG /
-    safeCount;
-
-  const meanB =
-    sumB /
-    safeCount;
-
   return {
     width:
       metadata.width ??
@@ -746,17 +722,20 @@ async function analyzeImage(
     mean_rgb: {
       r:
         round1(
-          meanR
+          sumR /
+          safeCount
         ),
 
       g:
         round1(
-          meanG
+          sumG /
+          safeCount
         ),
 
       b:
         round1(
-          meanB
+          sumB /
+          safeCount
         )
     },
 
@@ -764,34 +743,14 @@ async function analyzeImage(
       round1(
         sumChroma /
         safeCount
-      ),
-
-    color_balance: {
-      r_minus_g:
-        round1(
-          meanR -
-          meanG
-        ),
-
-      b_minus_g:
-        round1(
-          meanB -
-          meanG
-        )
-    }
+      )
   };
 }
-
-
-/* =========================================================
-   THUMBNAIL SCORE
-========================================================= */
 
 function assessThumbnail(
   analysis
 ) {
-  let score =
-    100;
+  let score = 100;
 
   const b =
     analysis
@@ -813,112 +772,51 @@ function assessThumbnail(
     analysis
       .tonal_range_p10_p90;
 
-  if (
-    b < 50
-  ) {
-    score -=
-      34;
-
-  } else if (
-    b < 60
-  ) {
-    score -=
-      27;
-
-  } else if (
-    b < 70
-  ) {
-    score -=
-      19;
-
-  } else if (
-    b < 80
-  ) {
-    score -=
-      11;
-
-  } else if (
-    b < 90
-  ) {
-    score -=
-      5;
+  if (b < 50) {
+    score -= 34;
+  } else if (b < 60) {
+    score -= 27;
+  } else if (b < 70) {
+    score -= 19;
+  } else if (b < 80) {
+    score -= 11;
+  } else if (b < 90) {
+    score -= 5;
   }
 
-  if (
-    shadows > 60
-  ) {
-    score -=
-      24;
-
-  } else if (
-    shadows > 50
-  ) {
-    score -=
-      17;
-
-  } else if (
-    shadows > 40
-  ) {
-    score -=
-      10;
-
-  } else if (
-    shadows > 32
-  ) {
-    score -=
-      5;
+  if (shadows > 60) {
+    score -= 24;
+  } else if (shadows > 50) {
+    score -= 17;
+  } else if (shadows > 40) {
+    score -= 10;
+  } else if (shadows > 32) {
+    score -= 5;
   }
 
-  if (
-    deep > 38
-  ) {
-    score -=
-      14;
-
-  } else if (
-    deep > 28
-  ) {
-    score -=
-      9;
-
-  } else if (
-    deep > 20
-  ) {
-    score -=
-      4;
+  if (deep > 38) {
+    score -= 14;
+  } else if (deep > 28) {
+    score -= 9;
+  } else if (deep > 20) {
+    score -= 4;
   }
 
-  if (
-    highlights > 14
-  ) {
-    score -=
-      8;
-
-  } else if (
-    highlights > 8
-  ) {
-    score -=
-      4;
+  if (highlights > 14) {
+    score -= 8;
+  } else if (highlights > 8) {
+    score -= 4;
   }
 
-  if (
-    range < 55
-  ) {
-    score -=
-      12;
-
-  } else if (
-    range < 70
-  ) {
-    score -=
-      6;
+  if (range < 55) {
+    score -= 12;
+  } else if (range < 70) {
+    score -= 6;
   }
 
   score =
     clamp(
-      Math.round(
-        score
-      ),
+      Math.round(score),
       0,
       100
     );
@@ -971,7 +869,6 @@ function assessThumbnail(
   };
 }
 
-
 /* =========================================================
    FRAME DETECTOR
 ========================================================= */
@@ -1001,8 +898,7 @@ function buildIntegralImage(
     y < height;
     y += 1
   ) {
-    let rowSum =
-      0;
+    let rowSum = 0;
 
     for (
       let x = 0;
@@ -1056,9 +952,7 @@ function rectSum(
 ) {
   const x1 =
     clamp(
-      Math.round(
-        x
-      ),
+      Math.round(x),
       0,
       map.width -
       1
@@ -1066,9 +960,7 @@ function rectSum(
 
   const y1 =
     clamp(
-      Math.round(
-        y
-      ),
+      Math.round(y),
       0,
       map.height -
       1
@@ -1133,9 +1025,7 @@ function rectMean(
 ) {
   const x1 =
     clamp(
-      Math.round(
-        x
-      ),
+      Math.round(x),
       0,
       map.width -
       1
@@ -1143,9 +1033,7 @@ function rectMean(
 
   const y1 =
     clamp(
-      Math.round(
-        y
-      ),
+      Math.round(y),
       0,
       map.height -
       1
@@ -1198,8 +1086,7 @@ function generateFractions(
   end,
   step
 ) {
-  const values =
-    [];
+  const values = [];
 
   for (
     let value = start;
@@ -1211,9 +1098,7 @@ function generateFractions(
   ) {
     values.push(
       Number(
-        value.toFixed(
-          4
-        )
+        value.toFixed(4)
       )
     );
   }
@@ -1229,8 +1114,7 @@ function segmentMeansHorizontal(
   strip,
   segments = 9
 ) {
-  const means =
-    [];
+  const means = [];
 
   const segmentWidth =
     width /
@@ -1265,8 +1149,7 @@ function segmentMeansVertical(
   height,
   segments = 9
 ) {
-  const means =
-    [];
+  const means = [];
 
   const segmentHeight =
     height /
@@ -1297,9 +1180,7 @@ function percentile(
   values,
   fraction
 ) {
-  if (
-    !values.length
-  ) {
+  if (!values.length) {
     return 0;
   }
 
@@ -1370,10 +1251,6 @@ function continuityScore(
     );
 
   return {
-    p25,
-    median,
-    strongSegments,
-
     score:
       clamp(
         (
@@ -1389,7 +1266,7 @@ function continuityScore(
       clamp(
         (
           median -
-          1.0
+          1
         ) /
         1.8,
         0,
@@ -1432,9 +1309,7 @@ function candidateDirectionalScore(
 
   const cornerSize =
     Math.max(
-      strip *
-      4,
-
+      strip * 4,
       Math.round(
         minSide *
         0.055
@@ -1669,27 +1544,22 @@ function candidateDirectionalScore(
       )
     ];
 
-  const cornerRatios =
-    cornerMeans.map(
-      (value) =>
-        value /
-        Math.max(
-          maps.totalMean,
-          0.001
-        )
-    );
-
   const cornerSupport =
     percentile(
-      cornerRatios,
+      cornerMeans.map(
+        (value) =>
+          value /
+          Math.max(
+            maps.totalMean,
+            0.001
+          )
+      ),
       0.25
     );
 
   const innerMargin =
     Math.max(
-      strip *
-      5,
-
+      strip * 5,
       Math.round(
         minSide *
         0.07
@@ -1700,16 +1570,14 @@ function candidateDirectionalScore(
     Math.max(
       1,
       width -
-      innerMargin *
-      2
+      innerMargin * 2
     );
 
   const innerHeight =
     Math.max(
       1,
       height -
-      innerMargin *
-      2
+      innerMargin * 2
     );
 
   const innerEdgeMean =
@@ -1749,24 +1617,16 @@ function candidateDirectionalScore(
   const centerX =
     (
       x +
-      width /
-      2
+      width / 2
     ) /
     maps.width;
 
   const centerY =
     (
       y +
-      height /
-      2
+      height / 2
     ) /
     maps.height;
-
-  const targetCenterY =
-    role ===
-    'hero'
-      ? 0.47
-      : 0.47;
 
   const centerPenalty =
     Math.abs(
@@ -1777,7 +1637,7 @@ function candidateDirectionalScore(
 
     Math.abs(
       centerY -
-      targetCenterY
+      0.47
     ) *
     0.85;
 
@@ -1796,14 +1656,10 @@ function candidateDirectionalScore(
     clamp(
       (
         (
-          (
-            width /
-            maps.width
-          ) +
-          (
-            height /
-            maps.height
-          )
+          width /
+          maps.width +
+          height /
+          maps.height
         ) /
         2 -
         0.42
@@ -1891,18 +1747,13 @@ function candidateDirectionalScore(
       width /
       height,
 
-    centerX,
-    centerY,
-
     avgContinuity,
     weakestContinuity,
     horizontalStrength,
     verticalStrength,
     weakestDirectionalStrength,
     cornerSupport,
-    borderVsInside,
-    outerSizeBonus,
-    reachBonus
+    borderVsInside
   };
 }
 
@@ -2043,21 +1894,12 @@ async function detectOuterFrame(
         gy;
 
       totalEdges[idx] =
-        gx +
-        gy;
+        gx + gy;
 
-      verticalSum +=
-        gx;
-
-      horizontalSum +=
-        gy;
-
-      totalSum +=
-        gx +
-        gy;
-
-      edgeCount +=
-        1;
+      verticalSum += gx;
+      horizontalSum += gy;
+      totalSum += gx + gy;
+      edgeCount += 1;
     }
   }
 
@@ -2143,8 +1985,7 @@ async function detectOuterFrame(
           0.025
         );
 
-  const candidates =
-    [];
+  const candidates = [];
 
   for (
     const wf of
@@ -2171,10 +2012,8 @@ async function detectOuterFrame(
         candidateHeight;
 
       if (
-        aspect <
-          0.48 ||
-        aspect >
-          1.45
+        aspect < 0.48 ||
+        aspect > 1.45
       ) {
         continue;
       }
@@ -2253,11 +2092,14 @@ async function detectOuterFrame(
             );
 
           if (
-            metrics.avgContinuity <
+            metrics
+              .avgContinuity <
               0.24 ||
-            metrics.weakestContinuity <
+            metrics
+              .weakestContinuity <
               0.08 ||
-            metrics.weakestDirectionalStrength <
+            metrics
+              .weakestDirectionalStrength <
               0.78
           ) {
             continue;
@@ -2272,22 +2114,19 @@ async function detectOuterFrame(
     }
   }
 
-  if (
-    !candidates.length
-  ) {
+  if (!candidates.length) {
     const err =
       new Error(
         'outer_frame_detector_found_no_candidate'
       );
 
-    err.status =
-      422;
+    err.status = 422;
 
     err.details = {
       role,
 
       reason:
-        'No sufficiently continuous four-sided outer frame candidate was found.'
+        'No sufficiently continuous outer-frame candidate was found.'
     };
 
     throw err;
@@ -2333,8 +2172,7 @@ async function detectOuterFrame(
   const best =
     nearBest[0];
 
-  let second =
-    null;
+  let second = null;
 
   for (
     const candidate of
@@ -2356,9 +2194,7 @@ async function detectOuterFrame(
       ) >
       0.10
     ) {
-      second =
-        candidate;
-
+      second = candidate;
       break;
     }
   }
@@ -2456,7 +2292,7 @@ async function detectOuterFrame(
     role,
 
     detector:
-      'outer_frame_v5_3',
+      'outer_frame_v5_4',
 
     status,
 
@@ -2491,72 +2327,28 @@ async function detectOuterFrame(
     area_ratio:
       round2(
         best.areaRatio
-      ),
-
-    detector_metrics: {
-      average_border_continuity:
-        round2(
-          best.avgContinuity
-        ),
-
-      weakest_border_continuity:
-        round2(
-          best.weakestContinuity
-        ),
-
-      horizontal_edge_strength:
-        round2(
-          best.horizontalStrength
-        ),
-
-      vertical_edge_strength:
-        round2(
-          best.verticalStrength
-        ),
-
-      weakest_directional_strength:
-        round2(
-          best.weakestDirectionalStrength
-        ),
-
-      corner_support:
-        round2(
-          best.cornerSupport
-        ),
-
-      border_to_inside_ratio:
-        round2(
-          best.borderVsInside
-        ),
-
-      candidate_separation:
-        round2(
-          separation
-        )
-    }
+      )
   };
 }
-
 
 /* =========================================================
    FRAME GEOMETRY
 ========================================================= */
 
-function innerRectFromOuter(
-  outer,
-  role
+/*
+  Image 2 still needs the actual artwork rather than its mockup frame.
+
+  This crop worked correctly in the previous compare,
+  so it is intentionally retained only for the Image 2 source.
+*/
+function referenceArtworkRectFromOuter(
+  outer
 ) {
   const insetX =
-    role ===
-    'hero'
-      ? 0.045
-      : 0.035;
+    0.035;
 
   const insetY =
-    role ===
-    'hero'
-      ? 0.055
-      : 0.040;
+    0.040;
 
   return {
     x:
@@ -2582,6 +2374,47 @@ function innerRectFromOuter(
       (
         1 -
         insetY *
+        2
+      )
+  };
+}
+
+/*
+  v5.4 destination:
+  artwork fills essentially the complete detected Rank-1 frame area.
+
+  It deliberately extends underneath the original frame ring.
+*/
+function heroArtworkFillRect(
+  outer
+) {
+  const inset =
+    HERO_ARTWORK_BLEED_INSET;
+
+  return {
+    x:
+      outer.x +
+      outer.width *
+      inset,
+
+    y:
+      outer.y +
+      outer.height *
+      inset,
+
+    width:
+      outer.width *
+      (
+        1 -
+        inset *
+        2
+      ),
+
+    height:
+      outer.height *
+      (
+        1 -
+        inset *
         2
       )
   };
@@ -2688,47 +2521,74 @@ function rectToPixels(
   };
 }
 
-function colorBalanceDistance(
-  a,
-  b
+function coverCropFraction(
+  sourceAspect,
+  targetAspect
 ) {
   if (
-    !a?.color_balance ||
-    !b?.color_balance
+    !Number.isFinite(
+      sourceAspect
+    ) ||
+    !Number.isFinite(
+      targetAspect
+    ) ||
+    sourceAspect <= 0 ||
+    targetAspect <= 0
   ) {
-    return 0;
+    return 1;
   }
 
-  return Math.sqrt(
-    Math.pow(
-      Number(
-        a.color_balance
-          .r_minus_g
-      ) -
-      Number(
-        b.color_balance
-          .r_minus_g
-      ),
-      2
-    ) +
-    Math.pow(
-      Number(
-        a.color_balance
-          .b_minus_g
-      ) -
-      Number(
-        b.color_balance
-          .b_minus_g
-      ),
-      2
-    )
+  if (
+    sourceAspect >
+    targetAspect
+  ) {
+    /*
+      Source is wider.
+      Cover crops left/right.
+    */
+    return (
+      1 -
+      targetAspect /
+      sourceAspect
+    );
+  }
+
+  /*
+    Source is taller/narrower.
+    Cover crops top/bottom.
+  */
+  return (
+    1 -
+    sourceAspect /
+    targetAspect
   );
 }
-
 
 /* =========================================================
    DETECTOR OVERLAY
 ========================================================= */
+
+function detectorInnerGuide(
+  outer,
+  role
+) {
+  if (
+    role ===
+    'image2'
+  ) {
+    return (
+      referenceArtworkRectFromOuter(
+        outer
+      )
+    );
+  }
+
+  return (
+    heroArtworkFillRect(
+      outer
+    )
+  );
+}
 
 async function makeDetectorOverlay(
   buffer,
@@ -2774,7 +2634,7 @@ async function makeDetectorOverlay(
     detection.normalized;
 
   const inner =
-    innerRectFromOuter(
+    detectorInnerGuide(
       outer,
       detection.role
     );
@@ -2924,9 +2784,8 @@ async function makeDetectorOverlay(
     .toBuffer();
 }
 
-
 /* =========================================================
-   ARTWORK TRANSFER
+   V5.4 COVER-FIT TRANSFER
 ========================================================= */
 
 async function normalizeForComposite(
@@ -2963,6 +2822,186 @@ async function normalizeForComposite(
     });
 }
 
+async function extractFrameRingLayers(
+  heroBuffer,
+  outerRect
+) {
+  const borderX =
+    Math.max(
+      4,
+      Math.round(
+        outerRect.width *
+        FRAME_RING_X_RATIO
+      )
+    );
+
+  const borderY =
+    Math.max(
+      4,
+      Math.round(
+        outerRect.height *
+        FRAME_RING_Y_RATIO
+      )
+    );
+
+  if (
+    borderX * 2 >=
+      outerRect.width ||
+    borderY * 2 >=
+      outerRect.height
+  ) {
+    const err =
+      new Error(
+        'frame_ring_geometry_invalid'
+      );
+
+    err.status = 422;
+    throw err;
+  }
+
+  const top =
+    await sharp(
+      heroBuffer
+    )
+      .extract({
+        left:
+          outerRect.left,
+
+        top:
+          outerRect.top,
+
+        width:
+          outerRect.width,
+
+        height:
+          borderY
+      })
+      .png()
+      .toBuffer();
+
+  const bottom =
+    await sharp(
+      heroBuffer
+    )
+      .extract({
+        left:
+          outerRect.left,
+
+        top:
+          outerRect.top +
+          outerRect.height -
+          borderY,
+
+        width:
+          outerRect.width,
+
+        height:
+          borderY
+      })
+      .png()
+      .toBuffer();
+
+  const sideHeight =
+    outerRect.height -
+    borderY * 2;
+
+  const left =
+    await sharp(
+      heroBuffer
+    )
+      .extract({
+        left:
+          outerRect.left,
+
+        top:
+          outerRect.top +
+          borderY,
+
+        width:
+          borderX,
+
+        height:
+          sideHeight
+      })
+      .png()
+      .toBuffer();
+
+  const right =
+    await sharp(
+      heroBuffer
+    )
+      .extract({
+        left:
+          outerRect.left +
+          outerRect.width -
+          borderX,
+
+        top:
+          outerRect.top +
+          borderY,
+
+        width:
+          borderX,
+
+        height:
+          sideHeight
+      })
+      .png()
+      .toBuffer();
+
+  return [
+    {
+      input:
+        top,
+
+      left:
+        outerRect.left,
+
+      top:
+        outerRect.top
+    },
+
+    {
+      input:
+        bottom,
+
+      left:
+        outerRect.left,
+
+      top:
+        outerRect.top +
+        outerRect.height -
+        borderY
+    },
+
+    {
+      input:
+        left,
+
+      left:
+        outerRect.left,
+
+      top:
+        outerRect.top +
+        borderY
+    },
+
+    {
+      input:
+        right,
+
+      left:
+        outerRect.left +
+        outerRect.width -
+        borderX,
+
+      top:
+        outerRect.top +
+        borderY
+    }
+  ];
+}
+
 async function renderApprovedTransfer(
   heroBuffer,
   image2Buffer,
@@ -2979,85 +3018,45 @@ async function renderApprovedTransfer(
       image2Buffer
     );
 
-  const heroInner =
-    innerRectFromOuter(
-      heroOuter,
-      'hero'
+  /*
+    Image 2 source:
+    use only its artwork area.
+  */
+  const refArtworkRect =
+    referenceArtworkRectFromOuter(
+      image2Outer
     );
 
-  const refInner =
-    innerRectFromOuter(
-      image2Outer,
-      'image2'
+  /*
+    Rank 1 destination:
+    fill almost the whole detected frame,
+    underneath the original frame border.
+  */
+  const heroFillNormalized =
+    heroArtworkFillRect(
+      heroOuter
+    );
+
+  const heroOuterPixels =
+    rectToPixels(
+      heroOuter,
+      heroNorm.info.width,
+      heroNorm.info.height
     );
 
   const heroTarget =
     rectToPixels(
-      heroInner,
+      heroFillNormalized,
       heroNorm.info.width,
       heroNorm.info.height
     );
 
   const refCrop =
     rectToPixels(
-      refInner,
+      refArtworkRect,
       refNorm.info.width,
       refNorm.info.height
     );
-
-  const heroAspect =
-    heroTarget.width /
-    heroTarget.height;
-
-  const refAspect =
-    refCrop.width /
-    refCrop.height;
-
-  const aspectMismatch =
-    Math.abs(
-      Math.log(
-        heroAspect /
-        refAspect
-      )
-    );
-
-  if (
-    aspectMismatch >
-    MAX_ASPECT_LOG_MISMATCH
-  ) {
-    const err =
-      new Error(
-        'approved_frame_aspect_ratio_mismatch'
-      );
-
-    err.status =
-      422;
-
-    err.details = {
-      hero_inner_aspect:
-        round2(
-          heroAspect
-        ),
-
-      image2_inner_aspect:
-        round2(
-          refAspect
-        ),
-
-      mismatch:
-        round2(
-          aspectMismatch
-        ),
-
-      limit:
-        MAX_ASPECT_LOG_MISMATCH,
-
-      reason:
-        'Transfer would require too much stretching or cropping.'
-    };
-
-    throw err;
-  }
 
   if (
     heroTarget.width <
@@ -3074,8 +3073,61 @@ async function renderApprovedTransfer(
         'approved_frame_region_too_small'
       );
 
-    err.status =
-      422;
+    err.status = 422;
+    throw err;
+  }
+
+  const sourceAspect =
+    refCrop.width /
+    refCrop.height;
+
+  const targetAspect =
+    heroTarget.width /
+    heroTarget.height;
+
+  const cropFraction =
+    coverCropFraction(
+      sourceAspect,
+      targetAspect
+    );
+
+  if (
+    cropFraction >
+    COVER_CROP_HARD_LIMIT
+  ) {
+    const err =
+      new Error(
+        'cover_fit_would_crop_too_much_artwork'
+      );
+
+    err.status = 422;
+
+    err.details = {
+      source_aspect_ratio:
+        round2(
+          sourceAspect
+        ),
+
+      target_aspect_ratio:
+        round2(
+          targetAspect
+        ),
+
+      estimated_crop_percent:
+        round1(
+          cropFraction *
+          100
+        ),
+
+      hard_limit_percent:
+        round1(
+          COVER_CROP_HARD_LIMIT *
+          100
+        ),
+
+      reason:
+        'Too much artwork would be removed by cover fitting.'
+    };
 
     throw err;
   }
@@ -3090,24 +3142,48 @@ async function renderApprovedTransfer(
       .png()
       .toBuffer();
 
-  const placedArtwork =
+  /*
+    IMPORTANT:
+    fit: cover
+
+    - no stretching
+    - no letterbox
+    - no empty strip
+    - small center crop only if needed
+  */
+  const fittedArtwork =
     await sharp(
       referenceArtwork
     )
-      .resize(
-        heroTarget.width,
-        heroTarget.height,
-        {
-          fit:
-            'fill',
+      .resize({
+        width:
+          heroTarget.width,
 
-          kernel:
-            sharp.kernel
-              .lanczos3
-        }
-      )
+        height:
+          heroTarget.height,
+
+        fit:
+          'cover',
+
+        position:
+          'centre',
+
+        kernel:
+          sharp.kernel.lanczos3
+      })
       .png()
       .toBuffer();
+
+  /*
+    Preserve only the narrow physical frame edge from Rank 1.
+    The transferred artwork extends underneath these strips,
+    so old artwork cannot remain visible as a gap.
+  */
+  const frameRingLayers =
+    await extractFrameRingLayers(
+      heroNorm.data,
+      heroOuterPixels
+    );
 
   const composed =
     await sharp(
@@ -3116,7 +3192,7 @@ async function renderApprovedTransfer(
       .composite([
         {
           input:
-            placedArtwork,
+            fittedArtwork,
 
           left:
             heroTarget.left,
@@ -3126,7 +3202,9 @@ async function renderApprovedTransfer(
 
           blend:
             'over'
-        }
+        },
+
+        ...frameRingLayers
       ])
       .jpeg({
         quality:
@@ -3148,128 +3226,65 @@ async function renderApprovedTransfer(
         'Generated preview is larger than 20 MB'
       );
 
-    err.status =
-      413;
-
+    err.status = 413;
     throw err;
   }
 
-  const referenceAnalysis =
-    await analyzeImage(
-      referenceArtwork
-    );
-
-  const placedAnalysis =
-    await analyzeImage(
-      placedArtwork
-    );
-
-  const colorBalanceDrift =
-    colorBalanceDistance(
-      referenceAnalysis,
-      placedAnalysis
-    );
-
-  const chromaDelta =
-    Math.abs(
-      referenceAnalysis
-        .mean_chroma -
-      placedAnalysis
-        .mean_chroma
-    );
-
-  const brightnessDelta =
-    Math.abs(
-      referenceAnalysis
-        .brightness_0_255 -
-      placedAnalysis
-        .brightness_0_255
-    );
-
-  const warnings =
-    [];
+  const warnings = [];
 
   if (
-    aspectMismatch >
-    0.035
+    cropFraction >
+    COVER_CROP_WARNING
   ) {
     warnings.push(
-      'minor_aspect_resampling'
+      'cover_fit_uses_noticeable_center_crop'
     );
   }
-
-  if (
-    colorBalanceDrift >
-    3
-  ) {
-    warnings.push(
-      'reference_color_balance_drift'
-    );
-  }
-
-  if (
-    chromaDelta >
-    5
-  ) {
-    warnings.push(
-      'reference_chroma_drift'
-    );
-  }
-
-  if (
-    brightnessDelta >
-    8
-  ) {
-    warnings.push(
-      'reference_brightness_drift'
-    );
-  }
-
-  const hardWarnings =
-    warnings.filter(
-      (warning) =>
-        warning !==
-        'minor_aspect_resampling'
-    );
 
   return {
     composed,
 
-    heroInner,
-    refInner,
+    refArtworkRect,
+    heroFillNormalized,
     heroTarget,
     refCrop,
 
     safety: {
       passed:
-        hardWarnings.length ===
-        0,
+        true,
 
       hard_block_upload:
-        hardWarnings.length >
-        0,
+        false,
 
       warnings,
 
-      aspect_log_mismatch:
+      transfer_version:
+        'v5.4',
+
+      transfer_mode:
+        'cover_fit_under_original_frame',
+
+      source_aspect_ratio:
         round2(
-          aspectMismatch
+          sourceAspect
         ),
 
-      reference_color_balance_drift:
+      target_aspect_ratio:
         round2(
-          colorBalanceDrift
+          targetAspect
         ),
 
-      reference_chroma_delta:
-        round2(
-          chromaDelta
+      estimated_cover_crop_percent:
+        round1(
+          cropFraction *
+          100
         ),
 
-      reference_brightness_delta:
-        round2(
-          brightnessDelta
-        ),
+      stretch_used:
+        false,
+
+      letterbox_used:
+        false,
 
       generative_redraw_used:
         false,
@@ -3277,18 +3292,23 @@ async function renderApprovedTransfer(
       image2_reference_pixels_reused:
         true,
 
-      hero_outer_scene_edit_operation:
+      color_transform_applied:
         false,
+
+      hero_room_changed:
+        false,
+
+      original_frame_ring_restored:
+        true,
 
       perspective_warp_applied:
         false,
 
       note:
-        'Only the manually approved inner frame rectangle is replaced with Image 2 artwork pixels. No new artwork is generated.'
+        'Image 2 artwork is cover-fitted beneath the original Rank 1 frame. No empty artwork strip is intentionally left.'
     }
   };
 }
-
 
 /* =========================================================
    TOKENS
@@ -3296,13 +3316,15 @@ async function renderApprovedTransfer(
 
 function signToken(payload) {
   const encoded =
-    Buffer.from(
-      JSON.stringify(
-        payload
+    Buffer
+      .from(
+        JSON.stringify(
+          payload
+        )
       )
-    ).toString(
-      'base64url'
-    );
+      .toString(
+        'base64url'
+      );
 
   const signature =
     createHmac(
@@ -3344,9 +3366,7 @@ function verifyToken(
         'Invalid signed token'
       );
 
-    err.status =
-      400;
-
+    err.status = 400;
     throw err;
   }
 
@@ -3387,9 +3407,7 @@ function verifyToken(
         'Invalid signed token signature'
       );
 
-    err.status =
-      400;
-
+    err.status = 400;
     throw err;
   }
 
@@ -3414,9 +3432,7 @@ function verifyToken(
         'Invalid signed token payload'
       );
 
-    err.status =
-      400;
-
+    err.status = 400;
     throw err;
   }
 
@@ -3430,9 +3446,7 @@ function verifyToken(
         'Signed token expired'
       );
 
-    err.status =
-      410;
-
+    err.status = 410;
     throw err;
   }
 
@@ -3458,16 +3472,13 @@ function verifyToken(
           'Signed token is for a different action'
         );
 
-      err.status =
-        409;
-
+      err.status = 409;
       throw err;
     }
   }
 
   return payload;
 }
-
 
 /* =========================================================
    DETECTOR PREVIEW
@@ -3496,9 +3507,7 @@ async function buildDetectorPreview(
         'image2_reference_required'
       );
 
-    err.status =
-      422;
-
+    err.status = 422;
     throw err;
   }
 
@@ -3522,9 +3531,7 @@ async function buildDetectorPreview(
 
   const [
     heroDetection,
-    image2Detection,
-    heroAnalysis,
-    image2Analysis
+    image2Detection
   ] =
     await Promise.all([
       detectOuterFrame(
@@ -3535,21 +3542,13 @@ async function buildDetectorPreview(
       detectOuterFrame(
         image2Download.buffer,
         'image2'
-      ),
-
-      analyzeImage(
-        heroDownload.buffer
-      ),
-
-      analyzeImage(
-        image2Download.buffer
       )
     ]);
 
   const token =
     signToken({
       type:
-        'thumbnail_detector_v53',
+        'thumbnail_detector_v54',
 
       listingId,
 
@@ -3606,17 +3605,8 @@ async function buildDetectorPreview(
   return {
     listing,
     imageSet,
-
-    heroBuffer:
-      heroDownload.buffer,
-
-    image2Buffer:
-      image2Download.buffer,
-
     heroDetection,
     image2Detection,
-    heroAnalysis,
-    image2Analysis,
     token
   };
 }
@@ -3646,9 +3636,7 @@ async function verifyCurrentImagesAgainstToken(
         'Current rank 1 image changed after preview was created'
       );
 
-    err.status =
-      409;
-
+    err.status = 409;
     throw err;
   }
 
@@ -3669,18 +3657,15 @@ async function verifyCurrentImagesAgainstToken(
         'Image 2 reference changed after preview was created'
       );
 
-    err.status =
-      409;
-
+    err.status = 409;
     throw err;
   }
 
   return imageSet;
 }
 
-
 /* =========================================================
-   MANUAL FRAME APPROVAL → TRANSFER PREVIEW
+   FRAME APPROVAL → V5.4 COVER PREVIEW
 ========================================================= */
 
 async function buildApprovedTransferPreview(
@@ -3697,22 +3682,29 @@ async function buildApprovedTransferPreview(
         `Exact approval text ${FRAME_APPROVAL} is required`
       );
 
-    err.status =
-      400;
-
+    err.status = 400;
     throw err;
   }
 
+  /*
+    Accept previous v5.3 detector token because the user already
+    visually approved those frame boxes.
+
+    We intentionally do NOT accept v5.3 transfer preview tokens
+    for publishing later.
+  */
   const detectorPayload =
     verifyToken(
       detectorToken,
-      'thumbnail_detector_v53'
+      [
+        'thumbnail_detector_v53',
+        'thumbnail_detector_v54'
+      ]
     );
 
   if (
     String(
-      detectorPayload
-        .listingId
+      detectorPayload.listingId
     ) !==
     listingId
   ) {
@@ -3721,9 +3713,7 @@ async function buildApprovedTransferPreview(
         'Detector token belongs to another listing'
       );
 
-    err.status =
-      409;
-
+    err.status = 409;
     throw err;
   }
 
@@ -3751,6 +3741,9 @@ async function buildApprovedTransferPreview(
       )
     ]);
 
+  /*
+    Re-run detector before using previously approved coordinates.
+  */
   const [
     heroNow,
     image2Now
@@ -3788,9 +3781,7 @@ async function buildApprovedTransferPreview(
         'Frame detection changed since human approval; create a new detector preview'
       );
 
-    err.status =
-      409;
-
+    err.status = 409;
     throw err;
   }
 
@@ -3821,9 +3812,7 @@ async function buildApprovedTransferPreview(
         'Frame confidence is too low even for manual approval'
       );
 
-    err.status =
-      422;
-
+    err.status = 422;
     throw err;
   }
 
@@ -3847,7 +3836,7 @@ async function buildApprovedTransferPreview(
   const transferToken =
     signToken({
       type:
-        'thumbnail_transfer_preview_v53',
+        'thumbnail_transfer_preview_v54',
 
       listingId,
 
@@ -3875,16 +3864,8 @@ async function buildApprovedTransferPreview(
           .image2Detection
           .normalized,
 
-      heroInner:
-        transfer
-          .heroInner,
-
-      image2Inner:
-        transfer
-          .refInner,
-
       method:
-        'manual_frame_approved_image2_transfer_v53',
+        'cover_fit_under_original_frame_v54',
 
       exp:
         Date.now() +
@@ -3935,337 +3916,313 @@ async function rebuildTransferFromPayload(
       payload.image2Outer
     );
 
-  if (
-    rectDistance(
-      transfer.heroInner,
-      payload.heroInner
-    ) >
-      0.0005 ||
-    rectDistance(
-      transfer.refInner,
-      payload.image2Inner
-    ) >
-      0.0005
-  ) {
-    const err =
-      new Error(
-        'Approved transfer geometry changed; create a new preview'
-      );
-
-    err.status =
-      409;
-
-    throw err;
-  }
-
   return {
     imageSet,
     transfer
   };
 }
 
-
 /* =========================================================
-   PUBLIC COMPARE PAGES
+   PUBLIC DETECTOR / PREVIEW
 ========================================================= */
 
-async function renderDetectorCompare(
-  req,
-  res,
-  payload
-) {
-  const listingId =
-    asListingId(
-      payload.listingId
-    );
-
-  const listing =
-    await etsyRequest(
-      `/listings/${listingId}`
-    );
-
-  const imageSet =
-    await verifyCurrentImagesAgainstToken(
-      listingId,
-      payload
-    );
-
-  const token =
-    encodeURIComponent(
-      req.params.token
-    );
-
-  const heroOverlayUrl =
-    `${publicBase()}/preview/thumbnail-repair/${token}/hero-detection`;
-
-  const image2OverlayUrl =
-    `${publicBase()}/preview/thumbnail-repair/${token}/image2-detection`;
-
-  const esc =
-    (value) =>
-      String(
-        value ??
-        ''
-      )
-        .replaceAll(
-          '&',
-          '&amp;'
-        )
-        .replaceAll(
-          '<',
-          '&lt;'
-        )
-        .replaceAll(
-          '>',
-          '&gt;'
-        )
-        .replaceAll(
-          '"',
-          '&quot;'
+app.get(
+  '/preview/thumbnail-repair/:token/hero-detection',
+  async (
+    req,
+    res
+  ) => {
+    try {
+      const payload =
+        verifyToken(
+          req.params.token,
+          [
+            'thumbnail_detector_v53',
+            'thumbnail_detector_v54'
+          ]
         );
 
-  res
-    .type(
-      'html'
-    )
-    .send(`
-<!doctype html>
+      const listingId =
+        asListingId(
+          payload.listingId
+        );
 
-<html lang="tr">
+      const imageSet =
+        await verifyCurrentImagesAgainstToken(
+          listingId,
+          payload
+        );
 
-<head>
+      const {
+        buffer
+      } =
+        await downloadImage(
+          imageSet
+            .rank1
+            .imageUrl
+        );
 
-<meta charset="utf-8">
+      const overlay =
+        await makeDetectorOverlay(
+          buffer,
+          payload.heroDetection,
+          `HERO FRAME ${payload.heroDetection.confidence_0_1}`
+        );
 
-<meta
-  name="viewport"
-  content="width=device-width, initial-scale=1"
->
+      res.setHeader(
+        'content-type',
+        'image/jpeg'
+      );
 
-<title>
-VAELONS Frame Approval
-</title>
+      res.send(
+        overlay
+      );
 
-<style>
+    } catch (err) {
+      res
+        .status(
+          err.status ||
+          400
+        )
+        .json({
+          error:
+            err.message,
 
-body {
-  margin: 0;
-  background: #111;
-  color: #f4f4f4;
-  font-family:
-    system-ui,
-    -apple-system,
-    sans-serif;
-}
-
-main {
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 24px;
-}
-
-.grid {
-  display: grid;
-  grid-template-columns:
-    repeat(
-      2,
-      minmax(0, 1fr)
-    );
-  gap: 18px;
-}
-
-.card {
-  background: #1b1b1b;
-  border: 1px solid #333;
-  border-radius: 14px;
-  overflow: hidden;
-}
-
-.label {
-  padding: 12px 14px;
-  font-weight: 700;
-}
-
-img {
-  display: block;
-  width: 100%;
-  height: auto;
-}
-
-.note {
-  margin-top: 18px;
-  padding: 15px;
-  background: #191919;
-  border-radius: 12px;
-  line-height: 1.55;
-}
-
-.green {
-  color: #00ff66;
-  font-weight: 700;
-}
-
-.cyan {
-  color: #00d9ff;
-  font-weight: 700;
-}
-
-.warn {
-  color: #ffd369;
-  font-weight: 700;
-}
-
-@media (
-  max-width: 850px
-) {
-  .grid {
-    grid-template-columns:
-      1fr;
+          details:
+            err.details ||
+            null
+        });
+    }
   }
-}
+);
 
-</style>
-
-</head>
-
-<body>
-
-<main>
-
-<h1>
-${esc(
-  listing?.title ||
-  `Listing ${listingId}`
-)}
-</h1>
-
-<p>
-Rank 1 ${esc(imageSet.rank1.imageId)}
-·
-Image 2 ${esc(imageSet.rank2.imageId)}
-</p>
-
-<div class="grid">
-
-<div class="card">
-  <div class="label">
-    RANK 1 — onaylanacak çerçeve
-  </div>
-
-  <img
-    src="${esc(heroOverlayUrl)}"
-  >
-</div>
-
-<div class="card">
-  <div class="label">
-    IMAGE 2 — onaylanacak referans çerçevesi
-  </div>
-
-  <img
-    src="${esc(image2OverlayUrl)}"
-  >
-</div>
-
-</div>
-
-<div class="note">
-
-<span class="warn">
-FRAME APPROVAL MODE
-</span>
-
-<br><br>
-
-<span class="green">
-Yeşil
-</span>
-dış çerçeve,
-
-<span class="cyan">
-mavi kesikli
-</span>
-transferde kullanılacak iç artwork alanıdır.
-
-<br><br>
-
-İki alanı insan olarak doğru buluyorsan sonraki preview isteğinde exact phrase
-
-<b>
-${FRAME_APPROVAL}
-</b>
-
-ve detector token kullanılmalıdır.
-
-Bu sayfa Etsy'yi değiştirmez.
-
-</div>
-
-</main>
-
-</body>
-
-</html>
-    `);
-}
-
-async function renderTransferCompare(
-  req,
-  res,
-  payload
-) {
-  const listingId =
-    asListingId(
-      payload.listingId
-    );
-
-  const listing =
-    await etsyRequest(
-      `/listings/${listingId}`
-    );
-
-  const imageSet =
-    await verifyCurrentImagesAgainstToken(
-      listingId,
-      payload
-    );
-
-  const token =
-    encodeURIComponent(
-      req.params.token
-    );
-
-  const previewUrl =
-    `${publicBase()}/preview/thumbnail-repair/${token}`;
-
-  const esc =
-    (value) =>
-      String(
-        value ??
-        ''
-      )
-        .replaceAll(
-          '&',
-          '&amp;'
-        )
-        .replaceAll(
-          '<',
-          '&lt;'
-        )
-        .replaceAll(
-          '>',
-          '&gt;'
-        )
-        .replaceAll(
-          '"',
-          '&quot;'
+app.get(
+  '/preview/thumbnail-repair/:token/image2-detection',
+  async (
+    req,
+    res
+  ) => {
+    try {
+      const payload =
+        verifyToken(
+          req.params.token,
+          [
+            'thumbnail_detector_v53',
+            'thumbnail_detector_v54'
+          ]
         );
 
-  res
-    .type(
-      'html'
-    )
-    .send(`
+      const listingId =
+        asListingId(
+          payload.listingId
+        );
+
+      const imageSet =
+        await verifyCurrentImagesAgainstToken(
+          listingId,
+          payload
+        );
+
+      const {
+        buffer
+      } =
+        await downloadImage(
+          imageSet
+            .rank2
+            .imageUrl
+        );
+
+      const overlay =
+        await makeDetectorOverlay(
+          buffer,
+          payload.image2Detection,
+          `IMAGE 2 FRAME ${payload.image2Detection.confidence_0_1}`
+        );
+
+      res.setHeader(
+        'content-type',
+        'image/jpeg'
+      );
+
+      res.send(
+        overlay
+      );
+
+    } catch (err) {
+      res
+        .status(
+          err.status ||
+          400
+        )
+        .json({
+          error:
+            err.message,
+
+          details:
+            err.details ||
+            null
+        });
+    }
+  }
+);
+
+app.get(
+  '/preview/thumbnail-repair/:token',
+  async (
+    req,
+    res
+  ) => {
+    try {
+      /*
+        IMPORTANT:
+        Old flawed v5.3 transfer token is intentionally rejected.
+      */
+      const payload =
+        verifyToken(
+          req.params.token,
+          'thumbnail_transfer_preview_v54'
+        );
+
+      const listingId =
+        asListingId(
+          payload.listingId
+        );
+
+      const rebuilt =
+        await rebuildTransferFromPayload(
+          listingId,
+          payload
+        );
+
+      if (
+        !rebuilt
+          .transfer
+          .safety
+          .passed
+      ) {
+        return res
+          .status(409)
+          .json({
+            error:
+              'transfer_safety_failed',
+
+            visual_consistency:
+              rebuilt
+                .transfer
+                .safety
+          });
+      }
+
+      res.setHeader(
+        'content-type',
+        'image/jpeg'
+      );
+
+      res.setHeader(
+        'content-disposition',
+        'inline; filename="thumbnail-cover-fit-v54.jpg"'
+      );
+
+      res.setHeader(
+        'cache-control',
+        'private, max-age=300'
+      );
+
+      res.send(
+        rebuilt
+          .transfer
+          .composed
+      );
+
+    } catch (err) {
+      res
+        .status(
+          err.status ||
+          400
+        )
+        .json({
+          error:
+            err.message,
+
+          details:
+            err.details ||
+            null
+        });
+    }
+  }
+);
+
+app.get(
+  '/preview/thumbnail-repair/:token/compare',
+  async (
+    req,
+    res
+  ) => {
+    try {
+      const payload =
+        verifyToken(
+          req.params.token,
+          [
+            'thumbnail_detector_v53',
+            'thumbnail_detector_v54',
+            'thumbnail_transfer_preview_v54'
+          ]
+        );
+
+      const listingId =
+        asListingId(
+          payload.listingId
+        );
+
+      const listing =
+        await etsyRequest(
+          `/listings/${listingId}`
+        );
+
+      const imageSet =
+        await verifyCurrentImagesAgainstToken(
+          listingId,
+          payload
+        );
+
+      const esc =
+        (value) =>
+          String(
+            value ??
+            ''
+          )
+            .replaceAll(
+              '&',
+              '&amp;'
+            )
+            .replaceAll(
+              '<',
+              '&lt;'
+            )
+            .replaceAll(
+              '>',
+              '&gt;'
+            )
+            .replaceAll(
+              '"',
+              '&quot;'
+            );
+
+      const token =
+        encodeURIComponent(
+          req.params.token
+        );
+
+      if (
+        payload.type ===
+        'thumbnail_transfer_preview_v54'
+      ) {
+        const previewUrl =
+          `${publicBase()}/preview/thumbnail-repair/${token}`;
+
+        return res
+          .type('html')
+          .send(`
 <!doctype html>
 
 <html lang="tr">
@@ -4280,7 +4237,7 @@ async function renderTransferCompare(
 >
 
 <title>
-VAELONS Transfer Preview
+VAELONS Cover Fit v5.4
 </title>
 
 <style>
@@ -4303,13 +4260,11 @@ main {
 
 .grid {
   display: grid;
-
   grid-template-columns:
     repeat(
       3,
       minmax(0, 1fr)
     );
-
   gap: 18px;
 }
 
@@ -4377,33 +4332,39 @@ Image 2 ${esc(imageSet.rank2.imageId)}
 <div class="grid">
 
 <div class="card">
-  <div class="label">
-    ÖNCE — mevcut Rank 1 hero
-  </div>
 
-  <img
-    src="${esc(imageSet.rank1.imageUrl)}"
-  >
+<div class="label">
+A — mevcut Rank 1
+</div>
+
+<img
+  src="${esc(imageSet.rank1.imageUrl)}"
+>
+
 </div>
 
 <div class="card">
-  <div class="label">
-    REFERANS — Etsy Image 2
-  </div>
 
-  <img
-    src="${esc(imageSet.rank2.imageUrl)}"
-  >
+<div class="label">
+B — Image 2 artwork reference
+</div>
+
+<img
+  src="${esc(imageSet.rank2.imageUrl)}"
+>
+
 </div>
 
 <div class="card">
-  <div class="label">
-    SONRA — onaylı frame transfer preview
-  </div>
 
-  <img
-    src="${esc(previewUrl)}"
-  >
+<div class="label">
+C — v5.4 COVER-FIT preview
+</div>
+
+<img
+  src="${esc(previewUrl)}"
+>
+
 </div>
 
 </div>
@@ -4411,25 +4372,30 @@ Image 2 ${esc(imageSet.rank2.imageId)}
 <div class="note">
 
 <span class="ok">
-PREVIEW ONLY
+V5.4 PREVIEW ONLY
 </span>
 
 <br><br>
 
-Image 2 artwork pikselleri,
-insan tarafından onaylanan Rank 1 iç frame alanına yerleştirilmiştir.
+Image 2 artwork,
+Rank 1 frame alanını tamamen dolduracak şekilde
+<b>cover-fit</b>
+ile yerleştirilir.
 
-Generative redraw yoktur.
+<br>
+
+Esnetme yoktur.
+Boş şerit bırakılmaz.
+Gerekirse yalnızca küçük merkez crop yapılır.
+
+<br><br>
+
+Orijinal Rank 1 çerçevesinin dar dış kenarı,
+artwork'ün üzerine tekrar bindirilir.
+
+<br><br>
 
 Bu sayfa Etsy'yi değiştirmez.
-
-Yayın ayrıca exact phrase
-
-<b>
-${PUBLISH_APPROVAL}
-</b>
-
-gerektirir.
 
 </div>
 
@@ -4438,186 +4404,141 @@ gerektirir.
 </body>
 
 </html>
-    `);
-}
-
-
-/* =========================================================
-   PUBLIC PREVIEW ROUTES
-========================================================= */
-
-app.get(
-  '/preview/thumbnail-repair/:token/hero-detection',
-  async (
-    req,
-    res
-  ) => {
-    try {
-      const payload =
-        verifyToken(
-          req.params.token,
-          'thumbnail_detector_v53'
-        );
-
-      const listingId =
-        asListingId(
-          payload.listingId
-        );
-
-      const imageSet =
-        await verifyCurrentImagesAgainstToken(
-          listingId,
-          payload
-        );
-
-      const {
-        buffer
-      } =
-        await downloadImage(
-          imageSet
-            .rank1
-            .imageUrl
-        );
-
-      const overlay =
-        await makeDetectorOverlay(
-          buffer,
-          payload.heroDetection,
-          `HERO FRAME ${payload.heroDetection.confidence_0_1}`
-        );
-
-      res.setHeader(
-        'content-type',
-        'image/jpeg'
-      );
-
-      res.send(
-        overlay
-      );
-
-    } catch (err) {
-      res
-        .status(
-          err.status ||
-          400
-        )
-        .json({
-          error:
-            err.message,
-
-          details:
-            err.details ||
-            null
-        });
-    }
-  }
-);
-
-app.get(
-  '/preview/thumbnail-repair/:token/image2-detection',
-  async (
-    req,
-    res
-  ) => {
-    try {
-      const payload =
-        verifyToken(
-          req.params.token,
-          'thumbnail_detector_v53'
-        );
-
-      const listingId =
-        asListingId(
-          payload.listingId
-        );
-
-      const imageSet =
-        await verifyCurrentImagesAgainstToken(
-          listingId,
-          payload
-        );
-
-      const {
-        buffer
-      } =
-        await downloadImage(
-          imageSet
-            .rank2
-            .imageUrl
-        );
-
-      const overlay =
-        await makeDetectorOverlay(
-          buffer,
-          payload.image2Detection,
-          `IMAGE 2 FRAME ${payload.image2Detection.confidence_0_1}`
-        );
-
-      res.setHeader(
-        'content-type',
-        'image/jpeg'
-      );
-
-      res.send(
-        overlay
-      );
-
-    } catch (err) {
-      res
-        .status(
-          err.status ||
-          400
-        )
-        .json({
-          error:
-            err.message,
-
-          details:
-            err.details ||
-            null
-        });
-    }
-  }
-);
-
-app.get(
-  '/preview/thumbnail-repair/:token/compare',
-  async (
-    req,
-    res
-  ) => {
-    try {
-      const payload =
-        verifyToken(
-          req.params.token,
-          [
-            'thumbnail_detector_v53',
-            'thumbnail_transfer_preview_v53'
-          ]
-        );
-
-      if (
-        payload.type ===
-        'thumbnail_detector_v53'
-      ) {
-        return renderDetectorCompare(
-          req,
-          res,
-          payload
-        );
+          `);
       }
 
-      return renderTransferCompare(
-        req,
-        res,
-        payload
-      );
+      const heroOverlayUrl =
+        `${publicBase()}/preview/thumbnail-repair/${token}/hero-detection`;
+
+      const image2OverlayUrl =
+        `${publicBase()}/preview/thumbnail-repair/${token}/image2-detection`;
+
+      return res
+        .type('html')
+        .send(`
+<!doctype html>
+
+<html lang="tr">
+
+<head>
+
+<meta charset="utf-8">
+
+<meta
+  name="viewport"
+  content="width=device-width, initial-scale=1"
+>
+
+<title>
+VAELONS Frame Detector
+</title>
+
+<style>
+
+body {
+  margin: 0;
+  background: #111;
+  color: #f4f4f4;
+  font-family:
+    system-ui,
+    -apple-system,
+    sans-serif;
+}
+
+main {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns:
+    repeat(
+      2,
+      minmax(0, 1fr)
+    );
+  gap: 18px;
+}
+
+.card {
+  background: #1b1b1b;
+  border: 1px solid #333;
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.label {
+  padding: 12px 14px;
+  font-weight: 700;
+}
+
+img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+@media (
+  max-width: 850px
+) {
+  .grid {
+    grid-template-columns:
+      1fr;
+  }
+}
+
+</style>
+
+</head>
+
+<body>
+
+<main>
+
+<h1>
+${esc(
+  listing?.title ||
+  `Listing ${listingId}`
+)}
+</h1>
+
+<div class="grid">
+
+<div class="card">
+
+<div class="label">
+RANK 1
+</div>
+
+<img
+  src="${esc(heroOverlayUrl)}"
+>
+
+</div>
+
+<div class="card">
+
+<div class="label">
+IMAGE 2
+</div>
+
+<img
+  src="${esc(image2OverlayUrl)}"
+>
+
+</div>
+
+</div>
+
+</main>
+
+</body>
+
+</html>
+        `);
 
     } catch (err) {
-      console.error(
-        err
-      );
-
       res
         .status(
           err.status ||
@@ -4630,93 +4551,6 @@ app.get(
   }
 );
 
-app.get(
-  '/preview/thumbnail-repair/:token',
-  async (
-    req,
-    res
-  ) => {
-    try {
-      const payload =
-        verifyToken(
-          req.params.token,
-          'thumbnail_transfer_preview_v53'
-        );
-
-      const listingId =
-        asListingId(
-          payload.listingId
-        );
-
-      const rebuilt =
-        await rebuildTransferFromPayload(
-          listingId,
-          payload
-        );
-
-      if (
-        !rebuilt
-          .transfer
-          .safety
-          .passed
-      ) {
-        return res
-          .status(409)
-          .json({
-            error:
-              'transfer_safety_failed',
-
-            visual_consistency:
-              rebuilt
-                .transfer
-                .safety
-          });
-      }
-
-      res.setHeader(
-        'content-type',
-        'image/jpeg'
-      );
-
-      res.setHeader(
-        'content-disposition',
-        'inline; filename="thumbnail-frame-transfer-v53.jpg"'
-      );
-
-      res.setHeader(
-        'cache-control',
-        'private, max-age=300'
-      );
-
-      res.send(
-        rebuilt
-          .transfer
-          .composed
-      );
-
-    } catch (err) {
-      console.error(
-        err
-      );
-
-      res
-        .status(
-          err.status ||
-          400
-        )
-        .json({
-          error:
-            err.message,
-
-          details:
-            err.details ||
-            null
-        });
-    }
-  }
-);
-
-
 /* =========================================================
    HEALTH
 ========================================================= */
@@ -4726,7 +4560,7 @@ app.get(
   (
     _req,
     res
-  ) =>
+  ) => {
     res.json({
       ok:
         true,
@@ -4735,7 +4569,7 @@ app.get(
         'vaelons-etsy-seller-bridge',
 
       thumbnail_engine:
-        'manual_frame_approved_transfer_v5_3',
+        'cover_fit_under_original_frame_v5_4',
 
       frame_approval_required:
         FRAME_APPROVAL,
@@ -4745,9 +4579,9 @@ app.get(
 
       cleanup_approval_required:
         CLEANUP_APPROVAL
-    })
+    });
+  }
 );
-
 
 /* =========================================================
    ETSY OAUTH
@@ -4892,9 +4726,7 @@ app.get(
           req
         ).etsy_oauth;
 
-      if (
-        !cookie
-      ) {
+      if (!cookie) {
         return res
           .status(400)
           .send(
@@ -4940,8 +4772,7 @@ app.get(
 
           code:
             String(
-              req.query
-                .code ||
+              req.query.code ||
               ''
             ),
 
@@ -5001,8 +4832,7 @@ app.get(
       const encryptedCapsule =
         sealJson({
           refresh_token:
-            token
-              .refresh_token,
+            token.refresh_token,
 
           shop_id:
             shopId
@@ -5013,9 +4843,7 @@ app.get(
       );
 
       res
-        .type(
-          'html'
-        )
+        .type('html')
         .send(`
 <!doctype html>
 
@@ -5024,24 +4852,6 @@ app.get(
 <title>
 VAELONS Etsy Connected
 </title>
-
-<style>
-
-body {
-  font-family: system-ui;
-  max-width: 800px;
-  margin: 60px auto;
-  padding: 0 20px;
-  line-height: 1.5;
-}
-
-textarea {
-  width: 100%;
-  height: 150px;
-  word-break: break-all;
-}
-
-</style>
 
 <h2>
 VAELONS Etsy Seller bağlantısı doğrulandı.
@@ -5054,16 +4864,13 @@ olarak Vercel Environment Variables bölümüne ekleyin.
 </p>
 
 <textarea
+  style="width:100%;height:150px"
   readonly
   onclick="this.select()"
 >${encryptedCapsule}</textarea>
         `);
 
     } catch (err) {
-      console.error(
-        err
-      );
-
       res
         .status(
           err.status ||
@@ -5081,7 +4888,6 @@ olarak Vercel Environment Variables bölümüne ekleyin.
   }
 );
 
-
 /* =========================================================
    API AUTH
 ========================================================= */
@@ -5090,7 +4896,6 @@ app.use(
   '/api',
   bridgeAuth
 );
-
 
 /* =========================================================
    CONNECTION / SHOP
@@ -5109,9 +4914,7 @@ app.get(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
@@ -5131,9 +4934,7 @@ app.get(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
@@ -5158,8 +4959,7 @@ app.patch(
       const body =
         Object.fromEntries(
           Object.entries(
-            req.body ||
-            {}
+            req.body || {}
           ).filter(
             (
               [key]
@@ -5196,13 +4996,10 @@ app.patch(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
 
 /* =========================================================
    LISTINGS
@@ -5221,8 +5018,7 @@ app.get(
           1,
           Math.min(
             Number(
-              req.query
-                .limit ||
+              req.query.limit ||
               25
             ),
             25
@@ -5233,15 +5029,13 @@ app.get(
         Math.max(
           0,
           Number(
-            req.query
-              .offset ||
+            req.query.offset ||
             0
           )
         );
 
       const state =
-        req.query
-          .state ||
+        req.query.state ||
         'active';
 
       const data =
@@ -5271,45 +5065,34 @@ app.get(
           ).map(
             (listing) => ({
               listing_id:
-                listing
-                  .listing_id,
+                listing.listing_id,
 
               title:
-                listing
-                  .title,
+                listing.title,
 
               state:
-                listing
-                  .state,
+                listing.state,
 
               num_favorers:
-                listing
-                  .num_favorers ??
+                listing.num_favorers ??
                 0,
 
               created_timestamp:
-                listing
-                  .original_creation_timestamp ??
-                listing
-                  .creation_timestamp ??
-                listing
-                  .created_timestamp ??
+                listing.original_creation_timestamp ??
+                listing.creation_timestamp ??
+                listing.created_timestamp ??
                 null,
 
               updated_timestamp:
-                listing
-                  .updated_timestamp ??
-                listing
-                  .last_modified_timestamp ??
+                listing.updated_timestamp ??
+                listing.last_modified_timestamp ??
                 null
             })
           )
       });
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
@@ -5324,8 +5107,7 @@ app.get(
     try {
       const listingId =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       res.json(
@@ -5335,9 +5117,7 @@ app.get(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
@@ -5352,8 +5132,7 @@ app.patch(
     try {
       const listingId =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       const allowed =
@@ -5375,8 +5154,7 @@ app.patch(
       const body =
         Object.fromEntries(
           Object.entries(
-            req.body ||
-            {}
+            req.body || {}
           ).filter(
             (
               [key]
@@ -5413,13 +5191,10 @@ app.patch(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
 
 /* =========================================================
    LISTING IMAGES
@@ -5436,16 +5211,13 @@ app.get(
       res.json(
         await getListingImages(
           asListingId(
-            req.params
-              .listingId
+            req.params.listingId
           )
         )
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
@@ -5460,8 +5232,7 @@ app.post(
     try {
       const listingId =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       const refs =
@@ -5469,11 +5240,8 @@ app.post(
           ?.openaiFileIdRefs;
 
       if (
-        !Array.isArray(
-          refs
-        ) ||
-        refs.length !==
-          1
+        !Array.isArray(refs) ||
+        refs.length !== 1
       ) {
         return res
           .status(400)
@@ -5504,8 +5272,7 @@ app.post(
 
       const fileUrl =
         new URL(
-          fileRef
-            .download_link
+          fileRef.download_link
         );
 
       if (
@@ -5522,13 +5289,10 @@ app.post(
 
       const response =
         await fetch(
-          fileRef
-            .download_link
+          fileRef.download_link
         );
 
-      if (
-        !response.ok
-      ) {
+      if (!response.ok) {
         return res
           .status(400)
           .json({
@@ -5539,8 +5303,7 @@ app.post(
 
       const imageBuffer =
         Buffer.from(
-          await response
-            .arrayBuffer()
+          await response.arrayBuffer()
         );
 
       if (
@@ -5558,8 +5321,7 @@ app.post(
       }
 
       const contentType =
-        fileRef
-          .mime_type ||
+        fileRef.mime_type ||
         response.headers.get(
           'content-type'
         ) ||
@@ -5588,8 +5350,7 @@ app.post(
           imageBuffer,
 
           filename:
-            fileRef
-              .name ||
+            fileRef.name ||
             'image.jpg',
 
           contentType
@@ -5597,13 +5358,10 @@ app.post(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
 
 /* =========================================================
    THUMBNAIL ANALYSIS
@@ -5619,8 +5377,7 @@ app.get(
     try {
       const listingId =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       const listing =
@@ -5654,8 +5411,7 @@ app.get(
           ),
 
         exact_title:
-          listing
-            ?.title ??
+          listing?.title ??
           null,
 
         image_id:
@@ -5699,13 +5455,10 @@ app.get(
       });
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
 
 /* =========================================================
    WORKER
@@ -5721,18 +5474,14 @@ async function mapLimit(
       items.length
     );
 
-  let cursor =
-    0;
+  let cursor = 0;
 
   async function worker() {
-    while (
-      true
-    ) {
+    while (true) {
       const index =
         cursor;
 
-      cursor +=
-        1;
+      cursor += 1;
 
       if (
         index >=
@@ -5778,8 +5527,7 @@ app.get(
         Math.max(
           0,
           Number(
-            req.query
-              .offset ||
+            req.query.offset ||
             0
           )
         );
@@ -5789,8 +5537,7 @@ app.get(
           1,
           Math.min(
             Number(
-              req.query
-                .limit ||
+              req.query.limit ||
               8
             ),
             SCAN_MAX_LIMIT
@@ -5825,8 +5572,7 @@ app.get(
             try {
               const listingId =
                 String(
-                  listing
-                    .listing_id
+                  listing.listing_id
                 );
 
               const imageSet =
@@ -5850,12 +5596,10 @@ app.get(
 
               return {
                 listing_id:
-                  listing
-                    .listing_id,
+                  listing.listing_id,
 
                 exact_title:
-                  listing
-                    .title,
+                  listing.title,
 
                 rank1_image_id:
                   imageSet
@@ -5890,12 +5634,10 @@ app.get(
             } catch (err) {
               return {
                 listing_id:
-                  listing
-                    .listing_id,
+                  listing.listing_id,
 
                 exact_title:
-                  listing
-                    .title,
+                  listing.title,
 
                 error:
                   err.message,
@@ -5911,68 +5653,6 @@ app.get(
             }
           }
         );
-
-      const order = {
-        urgent:
-          0,
-
-        high:
-          1,
-
-        review:
-          2,
-
-        none:
-          3
-      };
-
-      scanned.sort(
-        (
-          a,
-          b
-        ) => {
-          const pa =
-            order[
-              a
-                ?.assessment
-                ?.priority
-            ] ??
-            9;
-
-          const pb =
-            order[
-              b
-                ?.assessment
-                ?.priority
-            ] ??
-            9;
-
-          if (
-            pa !==
-            pb
-          ) {
-            return (
-              pa -
-              pb
-            );
-          }
-
-          return (
-            (
-              a
-                ?.assessment
-                ?.readability_score_0_100 ??
-              100
-            ) -
-            (
-              b
-                ?.assessment
-                ?.readability_score_0_100 ??
-              100
-            )
-          );
-        }
-      );
 
       const total =
         Number(
@@ -6015,13 +5695,10 @@ app.get(
       });
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
 
 /* =========================================================
    PREVIEW
@@ -6037,8 +5714,7 @@ app.post(
     try {
       const listingId =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       const frameApproval =
@@ -6056,11 +5732,9 @@ app.post(
         ).trim();
 
       /*
-        STAGE 1:
-        No frame approval yet.
-        Only generate detector preview.
+        STAGE 1
+        Detector only.
       */
-
       if (
         !frameApproval &&
         !detectorToken
@@ -6070,7 +5744,7 @@ app.post(
             listingId
           );
 
-        res.json({
+        return res.json({
           stage:
             'frame_detection',
 
@@ -6123,12 +5797,6 @@ app.post(
           detector_token:
             preview.token,
 
-          detector_expires_in_seconds:
-            Math.round(
-              DETECTOR_TTL_MS /
-              1000
-            ),
-
           next_required_approval:
             FRAME_APPROVAL,
 
@@ -6141,15 +5809,12 @@ app.post(
           etsy_modified:
             false
         });
-
-        return;
       }
 
       /*
-        STAGE 2:
-        Human has visually checked the frame.
+        STAGE 2
+        Human-approved frame → cover-fit preview.
       */
-
       if (
         frameApproval !==
         FRAME_APPROVAL
@@ -6165,9 +5830,7 @@ app.post(
           });
       }
 
-      if (
-        !detectorToken
-      ) {
+      if (!detectorToken) {
         return res
           .status(400)
           .json({
@@ -6186,7 +5849,7 @@ app.post(
           frameApproval
         );
 
-      res.json({
+      return res.json({
         stage:
           'artwork_transfer_preview',
 
@@ -6217,7 +5880,7 @@ app.post(
           true,
 
         transfer_method:
-          'manual_frame_approved_image2_transfer_v53',
+          'cover_fit_under_original_frame_v54',
 
         visual_consistency:
           preview
@@ -6233,12 +5896,6 @@ app.post(
         preview_token:
           preview
             .transferToken,
-
-        preview_expires_in_seconds:
-          Math.round(
-            TRANSFER_PREVIEW_TTL_MS /
-            1000
-          ),
 
         approval_required_for_upload:
           PUBLISH_APPROVAL,
@@ -6260,13 +5917,10 @@ app.post(
       });
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
 
 /* =========================================================
    APPLY
@@ -6285,8 +5939,7 @@ app.post(
     try {
       const listingId =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       const approval =
@@ -6318,16 +5971,19 @@ app.post(
           });
       }
 
+      /*
+        SECURITY:
+        old v5.3 transfer previews cannot be published.
+      */
       const payload =
         verifyToken(
           previewToken,
-          'thumbnail_transfer_preview_v53'
+          'thumbnail_transfer_preview_v54'
         );
 
       if (
         String(
-          payload
-            .listingId
+          payload.listingId
         ) !==
         listingId
       ) {
@@ -6388,9 +6044,7 @@ app.post(
                   )
                 )
             )
-            .filter(
-              Boolean
-            )
+            .filter(Boolean)
         );
 
       const uploadResult =
@@ -6406,14 +6060,13 @@ app.post(
               .composed,
 
           filename:
-            `etsy-${listingId}-frame-transfer-v53.jpg`,
+            `etsy-${listingId}-cover-fit-v54.jpg`,
 
           contentType:
             'image/jpeg'
         });
 
-      uploadOccurred =
-        true;
+      uploadOccurred = true;
 
       const uploadedRecord =
         extractUploadedImage(
@@ -6446,9 +6099,7 @@ app.post(
             return (
               id != null &&
               !beforeIds.has(
-                String(
-                  id
-                )
+                String(id)
               )
             );
           }
@@ -6474,8 +6125,7 @@ app.post(
           (img) =>
             Number(
               img.rank
-            ) ===
-            1
+            ) === 1
         ) ||
         [...postImages]
           .sort(
@@ -6525,8 +6175,7 @@ app.post(
           )
         );
 
-      let cleanupToken =
-        null;
+      let cleanupToken = null;
 
       if (
         newImageExists &&
@@ -6568,8 +6217,7 @@ app.post(
           ),
 
         exact_title:
-          listing
-            ?.title ??
+          listing?.title ??
           null,
 
         listing_id:
@@ -6601,14 +6249,6 @@ app.post(
         concurrent_image_change_detected:
           concurrentImageChangeDetected,
 
-        newly_added_image_ids:
-          newlyAddedImages.map(
-            (img) =>
-              getImageId(
-                img
-              )
-          ),
-
         visual_consistency:
           rebuilt
             .transfer
@@ -6623,25 +6263,6 @@ app.post(
         etsy_modified:
           true,
 
-        current_images:
-          postImages.map(
-            (img) => ({
-              image_id:
-                getImageId(
-                  img
-                ),
-
-              rank:
-                img.rank ??
-                null,
-
-              image_url:
-                getImageUrl(
-                  img
-                )
-            })
-          ),
-
         cleanup_available:
           Boolean(
             cleanupToken
@@ -6653,14 +6274,7 @@ app.post(
         cleanup_requires_exact_approval:
           cleanupToken
             ? CLEANUP_APPROVAL
-            : null,
-
-        warning:
-          concurrentImageChangeDetected
-            ? 'More than one new image appeared during verification. Cleanup is blocked until manual review.'
-            : newImageIsRank1
-              ? 'Replacement is verified as rank 1. Old source image remains until separate cleanup approval.'
-              : 'Etsy was modified because the new image was uploaded, but it was not verified as rank 1. Cleanup is blocked.'
+            : null
       });
 
     } catch (err) {
@@ -6671,13 +6285,10 @@ app.post(
           true;
       }
 
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
 
 /* =========================================================
    CLEANUP
@@ -6696,8 +6307,7 @@ app.post(
     try {
       const listingId =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       const approval =
@@ -6737,8 +6347,7 @@ app.post(
 
       if (
         String(
-          payload
-            .listingId
+          payload.listingId
         ) !==
         listingId
       ) {
@@ -6811,33 +6420,28 @@ app.post(
           (img) =>
             Number(
               img.rank
-            ) ===
-            1
+            ) === 1
         ) ||
         null;
 
-      if (
-        !source
-      ) {
+      if (!source) {
         return res
           .status(409)
           .json({
             error:
-              'Old source image is no longer attached; nothing was deleted',
+              'Old source image is no longer attached',
 
             etsy_modified:
               false
           });
       }
 
-      if (
-        !replacement
-      ) {
+      if (!replacement) {
         return res
           .status(409)
           .json({
             error:
-              'Replacement image is missing; cleanup blocked',
+              'Replacement image is missing',
 
             etsy_modified:
               false
@@ -6859,30 +6463,7 @@ app.post(
           .status(409)
           .json({
             error:
-              'Replacement is not the current rank 1 image; cleanup blocked',
-
-            etsy_modified:
-              false
-          });
-      }
-
-      if (
-        String(
-          getImageId(
-            source
-          )
-        ) ===
-        String(
-          getImageId(
-            rank1
-          )
-        )
-      ) {
-        return res
-          .status(409)
-          .json({
-            error:
-              'Source image is still rank 1; cleanup blocked',
+              'Replacement is not current rank 1; cleanup blocked',
 
             etsy_modified:
               false
@@ -6907,8 +6488,7 @@ app.post(
         ).some(
           (item) =>
             String(
-              item
-                ?.image_id
+              item?.image_id
             ) ===
             String(
               payload
@@ -6923,7 +6503,7 @@ app.post(
           .status(409)
           .json({
             error:
-              'Old source image is used by a listing variation; cleanup blocked for safety',
+              'Old source image is used by a variation; cleanup blocked',
 
             etsy_modified:
               false
@@ -6939,8 +6519,7 @@ app.post(
           }
         );
 
-        deletionOccurred =
-          true;
+        deletionOccurred = true;
 
       } catch (deleteErr) {
         const probe =
@@ -6953,8 +6532,7 @@ app.post(
 
         const stillExists =
           (
-            probe
-              ?.results ||
+            probe?.results ||
             []
           ).some(
             (img) =>
@@ -6976,8 +6554,7 @@ app.post(
           throw deleteErr;
         }
 
-        deletionOccurred =
-          true;
+        deletionOccurred = true;
       }
 
       const afterData =
@@ -6986,8 +6563,7 @@ app.post(
         );
 
       const afterImages =
-        afterData
-          ?.results ||
+        afterData?.results ||
         [];
 
       const sourceStillExists =
@@ -7050,25 +6626,6 @@ app.post(
         old_source_still_present:
           sourceStillExists,
 
-        current_images:
-          afterImages.map(
-            (img) => ({
-              image_id:
-                getImageId(
-                  img
-                ),
-
-              rank:
-                img.rank ??
-                null,
-
-              image_url:
-                getImageUrl(
-                  img
-                )
-            })
-          ),
-
         listing_fields_changed:
           false,
 
@@ -7084,13 +6641,10 @@ app.post(
           true;
       }
 
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
 
 /* =========================================================
    SECTIONS
@@ -7111,9 +6665,7 @@ app.get(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
@@ -7133,9 +6685,7 @@ app.post(
           ''
         ).trim();
 
-      if (
-        !title
-      ) {
+      if (!title) {
         return res
           .status(400)
           .json({
@@ -7159,9 +6709,7 @@ app.post(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
@@ -7176,8 +6724,7 @@ app.put(
     try {
       const sectionId =
         asSectionId(
-          req.params
-            .sectionId
+          req.params.sectionId
         );
 
       const title =
@@ -7187,9 +6734,7 @@ app.put(
           ''
         ).trim();
 
-      if (
-        !title
-      ) {
+      if (!title) {
         return res
           .status(400)
           .json({
@@ -7213,13 +6758,10 @@ app.put(
       );
 
     } catch (err) {
-      next(
-        err
-      );
+      next(err);
     }
   }
 );
-
 
 /* =========================================================
    ERROR HANDLER
@@ -7257,9 +6799,7 @@ app.use(
   }
 );
 
-
 export default app;
-
 
 if (
   !process.env.VERCEL
