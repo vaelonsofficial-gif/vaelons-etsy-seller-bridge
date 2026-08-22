@@ -1,4 +1,13 @@
 {
-  "version": 2,
-  "rewrites": [{ "source": "/(.*)", "destination": "/api" }]
+  "functions": {
+    "src/server.js": {
+      "maxDuration": 300
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/worker/run",
+      "schedule": "*/10 * * * *"
+    }
+  ]
 }
