@@ -5,8 +5,17 @@ import { Redis } from '@upstash/redis';
 import { randomBytes } from 'node:crypto';
 
 import {
+  randomBase64Url,
+  pkceChallenge,
+  sealJson,
+  openJson
+} from './crypto.js';
+
+import {
   etsyRequest,
   getShopId,
+  etsyApiKeyForOAuth,
+  setInitialToken,
   getTokenStatus,
   getListingImages,
   uploadListingImage
@@ -20,12 +29,87 @@ app.use(
   })
 );
 
+app.use(
+  express.urlencoded({
+    extended: false
+  })
+);
+
 let openaiClient = null;
 let redisClient = null;
 
 
 /* =========================================================
-   CLIENTS
+   CONFIG
+========================================================= */
+
+const PREFIX =
+  'vaelons:thumbnail-worker:v2';
+
+const PREVIEW_TTL_SECONDS =
+  24 * 60 * 60;
+
+const QA_RETRY_COOLDOWN_MS =
+  24 * 60 * 60 * 1000;
+
+const LOCK_TTL_SECONDS =
+  10 * 60;
+
+const WORKER_MODE =
+  String(
+    process.env.WORKER_MODE ||
+    'safe'
+  ).toLowerCase();
+
+const WORKER_BATCH_SIZE =
+  clampInt(
+    process.env.WORKER_BATCH_SIZE ||
+    2,
+    1,
+    5
+  );
+
+const BAD_SCORE_THRESHOLD =
+  clampInt(
+    process.env.BAD_SCORE_THRESHOLD ||
+    65,
+    20,
+    95
+  );
+
+const DARK_BRIGHTNESS_THRESHOLD =
+  clampInt(
+    process.env.DARK_BRIGHTNESS_THRESHOLD ||
+    78,
+    30,
+    150
+  );
+
+const AUTO_DELETE_OLD_RANK1 =
+  envBool(
+    'AUTO_DELETE_OLD_RANK1',
+    true
+  );
+
+const IMAGE_MODEL =
+  process.env.OPENAI_IMAGE_MODEL ||
+  'gpt-image-2';
+
+const QA_MODEL =
+  process.env.OPENAI_QA_MODEL ||
+  'gpt-5.6-luna';
+
+const IMAGE_SIZE =
+  process.env.OPENAI_IMAGE_SIZE ||
+  '1024x1024';
+
+const IMAGE_QUALITY =
+  process.env.OPENAI_IMAGE_QUALITY ||
+  'medium';
+
+
+/* =========================================================
+   BASIC HELPERS
 ========================================================= */
 
 function required(name) {
@@ -41,123 +125,14 @@ function required(name) {
   return value;
 }
 
-function ai() {
-  if (!openaiClient) {
-    openaiClient =
-      new OpenAI({
-        apiKey:
-          required(
-            'OPENAI_API_KEY'
-          )
-      });
-  }
-
-  return openaiClient;
+function publicBase() {
+  return required(
+    'PUBLIC_BASE_URL'
+  ).replace(
+    /\/$/,
+    ''
+  );
 }
-
-function db() {
-  if (!redisClient) {
-    redisClient =
-      new Redis({
-        url:
-          required(
-            'UPSTASH_REDIS_REST_URL'
-          ),
-
-        token:
-          required(
-            'UPSTASH_REDIS_REST_TOKEN'
-          ),
-
-        enableTelemetry:
-          false
-      });
-  }
-
-  return redisClient;
-}
-
-
-/* =========================================================
-   CONFIG
-========================================================= */
-
-const PREFIX =
-  'vaelons:thumb-worker:v1';
-
-const PREVIEW_TTL_SECONDS =
-  24 *
-  60 *
-  60;
-
-const LOCK_TTL_SECONDS =
-  9 *
-  60;
-
-const WORKER_MODE =
-  String(
-    process.env
-      .WORKER_MODE ||
-    'safe'
-  ).toLowerCase();
-
-const WORKER_BATCH_SIZE =
-  clampInt(
-    process.env
-      .WORKER_BATCH_SIZE ||
-    2,
-    1,
-    10
-  );
-
-const BAD_SCORE_THRESHOLD =
-  clampInt(
-    process.env
-      .BAD_SCORE_THRESHOLD ||
-    65,
-    20,
-    95
-  );
-
-const DARK_BRIGHTNESS_THRESHOLD =
-  clampInt(
-    process.env
-      .DARK_BRIGHTNESS_THRESHOLD ||
-    78,
-    30,
-    150
-  );
-
-const AUTO_DELETE_OLD_RANK1 =
-  envBool(
-    'AUTO_DELETE_OLD_RANK1',
-    true
-  );
-
-const IMAGE_MODEL =
-  process.env
-    .OPENAI_IMAGE_MODEL ||
-  'gpt-image-2';
-
-const QA_MODEL =
-  process.env
-    .OPENAI_QA_MODEL ||
-  'gpt-5.6-luna';
-
-const IMAGE_SIZE =
-  process.env
-    .OPENAI_IMAGE_SIZE ||
-  '1536x1536';
-
-const IMAGE_QUALITY =
-  process.env
-    .OPENAI_IMAGE_QUALITY ||
-  'medium';
-
-
-/* =========================================================
-   BASIC HELPERS
-========================================================= */
 
 function envBool(
   name,
@@ -277,9 +252,203 @@ function getImageUrl(
       ?.url_570xN ||
     image
       ?.url_300x300 ||
+    image
+      ?.url_170x135 ||
     null
   );
 }
+
+function parseCookies(
+  req
+) {
+  const result =
+    {};
+
+  for (
+    const part of
+    (
+      req.headers.cookie ||
+      ''
+    ).split(';')
+  ) {
+    const idx =
+      part.indexOf('=');
+
+    if (
+      idx >
+      -1
+    ) {
+      result[
+        part
+          .slice(
+            0,
+            idx
+          )
+          .trim()
+      ] =
+        decodeURIComponent(
+          part
+            .slice(
+              idx + 1
+            )
+            .trim()
+        );
+    }
+  }
+
+  return result;
+}
+
+
+/* =========================================================
+   AUTH
+========================================================= */
+
+function bridgeAuth(
+  req,
+  res,
+  next
+) {
+  const auth =
+    req.get(
+      'authorization'
+    ) ||
+    '';
+
+  const key =
+    process.env
+      .BRIDGE_API_KEY ||
+    '';
+
+  if (
+    !key ||
+    auth !==
+      `Bearer ${key}`
+  ) {
+    return res
+      .status(
+        401
+      )
+      .json({
+        error:
+          'unauthorized'
+      });
+  }
+
+  next();
+}
+
+function workerAuth(
+  req,
+  res,
+  next
+) {
+  const auth =
+    req.get(
+      'authorization'
+    ) ||
+    '';
+
+  const cronSecret =
+    process.env
+      .CRON_SECRET ||
+    '';
+
+  const bridgeKey =
+    process.env
+      .BRIDGE_API_KEY ||
+    '';
+
+  const allowed =
+    (
+      cronSecret &&
+      auth ===
+        `Bearer ${cronSecret}`
+    ) ||
+    (
+      bridgeKey &&
+      auth ===
+        `Bearer ${bridgeKey}`
+    );
+
+  if (
+    !allowed
+  ) {
+    return res
+      .status(
+        401
+      )
+      .json({
+        error:
+          'unauthorized'
+      });
+  }
+
+  next();
+}
+
+
+/* =========================================================
+   CLIENTS
+========================================================= */
+
+function openai() {
+  if (
+    !openaiClient
+  ) {
+    openaiClient =
+      new OpenAI({
+        apiKey:
+          required(
+            'OPENAI_API_KEY'
+          )
+      });
+  }
+
+  return openaiClient;
+}
+
+function redis() {
+  if (
+    !redisClient
+  ) {
+    const url =
+      process.env
+        .UPSTASH_REDIS_REST_KV_REST_API_URL ||
+      process.env
+        .UPSTASH_REDIS_REST_URL;
+
+    const token =
+      process.env
+        .UPSTASH_REDIS_REST_KV_REST_API_TOKEN ||
+      process.env
+        .UPSTASH_REDIS_REST_TOKEN;
+
+    if (
+      !url ||
+      !token
+    ) {
+      throw new Error(
+        'Missing Upstash Redis environment variables. Expected UPSTASH_REDIS_REST_KV_REST_API_URL and UPSTASH_REDIS_REST_KV_REST_API_TOKEN.'
+      );
+    }
+
+    redisClient =
+      new Redis({
+        url,
+        token,
+        enableTelemetry:
+          false
+      });
+  }
+
+  return redisClient;
+}
+
+
+/* =========================================================
+   REDIS KEYS
+========================================================= */
 
 function stateKey(
   listingId
@@ -305,16 +474,11 @@ function previewImageKey(
   );
 }
 
-
-/* =========================================================
-   REDIS HELPERS
-========================================================= */
-
 async function getJson(
   key
 ) {
   const raw =
-    await db().get(
+    await redis().get(
       key
     );
 
@@ -346,76 +510,13 @@ async function setJson(
   value,
   options = {}
 ) {
-  return db().set(
+  return redis().set(
     key,
     JSON.stringify(
       value
     ),
     options
   );
-}
-
-
-/* =========================================================
-   AUTH
-========================================================= */
-
-function managerOrWorkerAuth(
-  req,
-  res,
-  next
-) {
-  const auth =
-    req.get(
-      'authorization'
-    ) ||
-    '';
-
-  const workerSecret =
-    process.env
-      .CRON_SECRET ||
-    process.env
-      .WORKER_SECRET ||
-    '';
-
-  const bridgeKey =
-    process.env
-      .BRIDGE_API_KEY ||
-    '';
-
-  const allowed =
-    (
-      workerSecret &&
-      auth ===
-      `Bearer ${workerSecret}`
-    ) ||
-    (
-      bridgeKey &&
-      auth ===
-      `Bearer ${bridgeKey}`
-    ) ||
-    (
-      workerSecret &&
-      req.get(
-        'x-worker-secret'
-      ) ===
-      workerSecret
-    );
-
-  if (
-    !allowed
-  ) {
-    return res
-      .status(
-        401
-      )
-      .json({
-        error:
-          'unauthorized'
-      });
-  }
-
-  next();
 }
 
 
@@ -465,9 +566,15 @@ async function downloadImage(
     1024 *
     1024
   ) {
-    throw new Error(
-      'Image is larger than 20 MB'
-    );
+    const err =
+      new Error(
+        'Image is larger than 20 MB'
+      );
+
+    err.status =
+      413;
+
+    throw err;
   }
 
   return buffer;
@@ -632,11 +739,6 @@ async function analyzeImage(
       mean
     );
 
-  const stdev =
-    Math.sqrt(
-      variance
-    );
-
   return {
     width:
       meta.width ||
@@ -653,7 +755,9 @@ async function analyzeImage(
 
     contrast:
       round1(
-        stdev
+        Math.sqrt(
+          variance
+        )
       ),
 
     shadow_percent:
@@ -784,17 +888,14 @@ function thumbnailScore(
    REFERENCE SCORE
 ========================================================= */
 
-function referenceScore(
+function heuristicReferenceScore(
   analysis,
   rank
 ) {
-  const brightnessTarget =
-    120;
-
   const brightnessPenalty =
     Math.abs(
       analysis.brightness -
-      brightnessTarget
+      120
     ) *
     0.35;
 
@@ -872,13 +973,21 @@ async function getImageSet(
   if (
     !images.length
   ) {
-    throw new Error(
-      'No listing images found'
-    );
+    const err =
+      new Error(
+        'No listing images found'
+      );
+
+    err.status =
+      404;
+
+    throw err;
   }
 
   const ordered =
-    [...images].sort(
+    [
+      ...images
+    ].sort(
       (
         a,
         b
@@ -895,7 +1004,9 @@ async function getImageSet(
 
   const rank1 =
     images.find(
-      (img) =>
+      (
+        img
+      ) =>
         Number(
           img.rank
         ) ===
@@ -909,9 +1020,15 @@ async function getImageSet(
       rank1
     )
   ) {
-    throw new Error(
-      'No usable rank 1 image'
-    );
+    const err =
+      new Error(
+        'No usable rank 1 image'
+      );
+
+    err.status =
+      404;
+
+    throw err;
   }
 
   return {
@@ -924,16 +1041,273 @@ async function getImageSet(
 
 
 /* =========================================================
-   SELECT REFERENCE IMAGES
+   AI REFERENCE SELECTION
 ========================================================= */
 
+async function selectReferencesWithVision(
+  title,
+  candidates
+) {
+  if (
+    candidates.length ===
+    1
+  ) {
+    return [
+      candidates[0]
+    ];
+  }
+
+  const content = [
+    {
+      type:
+        'input_text',
+
+      text:
+        `You are selecting product-truth reference images for a new Etsy hero thumbnail.
+Listing title: ${title || ''}
+
+Choose the candidate that shows the actual product/artwork most clearly and faithfully.
+
+Prefer:
+- straight product/artwork view
+- complete composition
+- uncropped artwork
+- faithful colors
+- clear subject
+- minimal obstruction
+
+Avoid:
+- product too small
+- heavy perspective
+- dark image
+- cropped artwork
+- props covering product
+- visually altered artwork
+
+A second candidate may be selected only if it adds useful product-truth detail.
+
+Candidate images follow in order and are indexed from 0.`
+    }
+  ];
+
+  for (
+    let i = 0;
+    i <
+    candidates.length;
+    i +=
+      1
+  ) {
+    const candidate =
+      candidates[i];
+
+    const jpeg =
+      await normalizeJpeg(
+        candidate.buffer,
+        1200,
+        88
+      );
+
+    content.push({
+      type:
+        'input_text',
+
+      text:
+        `Candidate ${i}: Etsy rank ${candidate.rank}, image ID ${candidate.imageId}`
+    });
+
+    content.push({
+      type:
+        'input_image',
+
+      image_url:
+        `data:image/jpeg;base64,${jpeg.toString('base64')}`,
+
+      detail:
+        'high'
+    });
+  }
+
+  const schema = {
+    type:
+      'object',
+
+    additionalProperties:
+      false,
+
+    required: [
+      'primary_index',
+      'use_secondary',
+      'secondary_index',
+      'confidence',
+      'reason'
+    ],
+
+    properties: {
+      primary_index: {
+        type:
+          'integer'
+      },
+
+      use_secondary: {
+        type:
+          'boolean'
+      },
+
+      secondary_index: {
+        type:
+          'integer'
+      },
+
+      confidence: {
+        type:
+          'number',
+
+        minimum:
+          0,
+
+        maximum:
+          1
+      },
+
+      reason: {
+        type:
+          'string'
+      }
+    }
+  };
+
+  try {
+    const response =
+      await openai()
+        .responses
+        .create({
+          model:
+            QA_MODEL,
+
+          store:
+            false,
+
+          input: [
+            {
+              role:
+                'user',
+
+              content
+            }
+          ],
+
+          text: {
+            format: {
+              type:
+                'json_schema',
+
+              name:
+                'reference_selector',
+
+              strict:
+                true,
+
+              schema
+            }
+          }
+        });
+
+    const parsed =
+      JSON.parse(
+        response.output_text ||
+        '{}'
+      );
+
+    const primaryIndex =
+      Number(
+        parsed.primary_index
+      );
+
+    const secondaryIndex =
+      Number(
+        parsed.secondary_index
+      );
+
+    if (
+      Number.isInteger(
+        primaryIndex
+      ) &&
+      primaryIndex >=
+        0 &&
+      primaryIndex <
+        candidates.length
+    ) {
+      const selected = [
+        candidates[
+          primaryIndex
+        ]
+      ];
+
+      if (
+        parsed.use_secondary ===
+          true &&
+        Number.isInteger(
+          secondaryIndex
+        ) &&
+        secondaryIndex >=
+          0 &&
+        secondaryIndex <
+          candidates.length &&
+        secondaryIndex !==
+          primaryIndex
+      ) {
+        selected.push(
+          candidates[
+            secondaryIndex
+          ]
+        );
+      }
+
+      return selected.slice(
+        0,
+        2
+      );
+    }
+
+  } catch (
+    error
+  ) {
+    console.warn(
+      'Reference selector fallback:',
+      error.message
+    );
+  }
+
+  return [
+    ...candidates
+  ]
+    .sort(
+      (
+        a,
+        b
+      ) =>
+        b.heuristicScore -
+        a.heuristicScore
+    )
+    .slice(
+      0,
+      Math.min(
+        2,
+        candidates.length
+      )
+    );
+}
+
 async function selectReferences(
+  title,
   imageSet
 ) {
-  const candidates =
+  const sourceCandidates =
     imageSet.images
       .filter(
-        (img) =>
+        (
+          img
+        ) =>
           Number(
             img.rank
           ) !==
@@ -948,13 +1322,13 @@ async function selectReferences(
       );
 
   const fallback =
-    candidates.length
-      ? candidates
+    sourceCandidates.length
+      ? sourceCandidates
       : [
           imageSet.rank1
         ];
 
-  const scored =
+  const candidates =
     [];
 
   for (
@@ -974,63 +1348,57 @@ async function selectReferences(
           buffer
         );
 
-      scored.push({
+      const rank =
+        Number(
+          image.rank ||
+          99
+        );
+
+      candidates.push({
         image,
+
+        imageId:
+          getImageId(
+            image
+          ),
+
+        rank,
+
         buffer,
+
         analysis,
 
-        score:
-          referenceScore(
+        heuristicScore:
+          heuristicReferenceScore(
             analysis,
-            Number(
-              image.rank ||
-              99
-            )
+            rank
           )
       });
 
-    } catch (error) {
-      scored.push({
-        image,
-
-        error:
-          error.message,
-
-        score:
-          -999
-      });
+    } catch (
+      error
+    ) {
+      console.warn(
+        'Reference candidate failed:',
+        getImageId(
+          image
+        ),
+        error.message
+      );
     }
   }
 
-  const usable =
-    scored
-      .filter(
-        (x) =>
-          x.buffer
-      )
-      .sort(
-        (
-          a,
-          b
-        ) =>
-          b.score -
-          a.score
-      );
-
   if (
-    !usable.length
+    !candidates.length
   ) {
     throw new Error(
       'Could not obtain a usable reference image'
     );
   }
 
-  return usable.slice(
-    0,
-    Math.min(
-      2,
-      usable.length
-    )
+  return selectReferencesWithVision(
+    title,
+    candidates
   );
 }
 
@@ -1044,32 +1412,31 @@ function buildGenerationPrompt({
   reason
 }) {
   return `
-Create a premium Etsy first-image thumbnail for the exact product shown in the reference image or images.
+Create a premium Etsy first-image hero thumbnail for the exact product shown in the supplied reference image or images.
 
-PRODUCT TITLE:
-${title || 'Unknown title'}
+LISTING TITLE:
+${title || 'Unknown'}
 
-WHY THIS THUMBNAIL IS BEING CREATED:
+WHY A NEW THUMBNAIL IS NEEDED:
 ${reason}
 
-NON-NEGOTIABLE PRODUCT IDENTITY RULES:
-- The reference image is the product truth.
-- Preserve the exact artwork/product identity, subject, composition, important elements, orientation and color identity.
-- Do not redesign, repaint, reinterpret, simplify, remove, add, or invent artwork elements.
-- Do not generate a different product.
-- Do not add new text, captions, badges, labels, logos or watermarks.
-- If the product itself contains a signature or brand mark, preserve it as part of the product rather than inventing a new one.
+PRODUCT TRUTH — NON-NEGOTIABLE:
+- The supplied reference image or images are the product truth.
+- Preserve the same actual artwork/product identity.
+- Preserve the subject, important composition, important elements, orientation, and color identity of the actual product.
+- Do not redesign, repaint, reinterpret, simplify, add, remove, or invent product/artwork content.
+- Do not substitute a similar artwork or different product.
+- Do not create text, badges, labels, logos, or watermarks.
+- If the actual artwork contains a signature or text, preserve it only as part of the artwork; do not invent new text.
 
-THUMBNAIL GOAL:
-- Create a new, professional, high-converting Etsy hero thumbnail around the exact product.
-- Make the product immediately understandable on a mobile screen.
-- Use a tasteful premium presentation suitable for wall art / home decor when appropriate to the reference.
-- Bright natural lighting, clean tonal separation, realistic shadows, and strong but not exaggerated contrast.
-- The product should be the visual focus and occupy a large useful portion of the image.
-- Avoid dark moody exposure that hides the product.
-- Avoid HDR, over-saturation, clipped highlights, extreme color grading, clutter, or distracting props.
-- Keep the product itself faithful to the reference; only the presentation environment may be newly created.
-- Square Etsy-ready composition with safe central framing for thumbnail crops.
+PRESENTATION:
+- Create a NEW professional Etsy hero presentation around the exact product.
+- The environment/mockup may be newly created, but the product itself must remain faithful to the reference.
+- Make the product visually dominant and immediately understandable on a mobile screen.
+- Use bright natural lighting, realistic shadows, clean tonal separation, and premium home-decor styling when appropriate.
+- Avoid dark moody exposure, clutter, heavy HDR, extreme saturation, clipped highlights, and aggressive color grading.
+- Use a square Etsy-ready composition with the product safely centered for thumbnail crops.
+- Make it commercially attractive without changing what the customer is actually buying.
 
 Return only the finished image.
 `.trim();
@@ -1120,13 +1487,15 @@ async function generateThumbnail({
       retryNote
         ? `
 
-Previous quality check feedback to fix:
-${retryNote}`
+QUALITY-CHECK FEEDBACK FROM THE PREVIOUS ATTEMPT:
+${retryNote}
+
+Fix that problem while preserving the exact product identity.`
         : ''
     }`;
 
   const response =
-    await ai()
+    await openai()
       .images
       .edit({
         model:
@@ -1141,10 +1510,7 @@ ${retryNote}`
           IMAGE_SIZE,
 
         quality:
-          IMAGE_QUALITY,
-
-        moderation:
-          'auto'
+          IMAGE_QUALITY
       });
 
   const b64 =
@@ -1161,14 +1527,11 @@ ${retryNote}`
     );
   }
 
-  const raw =
+  return normalizeJpeg(
     Buffer.from(
       b64,
       'base64'
-    );
-
-  return normalizeJpeg(
-    raw,
+    ),
     1800,
     92
   );
@@ -1187,7 +1550,9 @@ async function qualityCheck({
   const references =
     await Promise.all(
       referenceBuffers.map(
-        (buffer) =>
+        (
+          buffer
+        ) =>
           normalizeJpeg(
             buffer,
             1200,
@@ -1295,90 +1660,106 @@ async function qualityCheck({
     }
   };
 
-  const response =
-    await ai()
-      .responses
-      .create({
-        model:
-          QA_MODEL,
+  const content = [
+    {
+      type:
+        'input_text',
 
-        store:
-          false,
+      text:
+        `You are the final safety gate for an Etsy thumbnail replacement.
 
-        input: [
-          {
-            role:
-              'user',
+Listing title:
+${title || ''}
 
-            content: [
-              {
-                type:
-                  'input_text',
+Every image except the final image is a product-truth reference.
+The final image is the generated candidate.
 
-                text:
-                  `You are the final safety gate for an Etsy thumbnail replacement.
-All images except the final image are reference product truth.
-The final image is the generated candidate thumbnail.
-Listing title: ${title || ''}
-PASS only if the candidate clearly shows the same actual product/artwork, preserves important subject/composition/color identity, does not invent or replace product content, and is readable as a thumbnail. Presentation/background may differ. Be strict.`
-              },
+PASS only when:
+- candidate clearly shows the same actual product/artwork
+- important subject and composition remain faithful
+- color identity remains faithful
+- no product content was invented
+- no different product was substituted
+- candidate is readable as a mobile Etsy thumbnail
 
-              ...references.map(
-                (
-                  reference
-                ) => ({
-                  type:
-                    'input_image',
+The presentation environment may differ.
+Be strict.`
+    },
 
-                  image_url:
-                    `data:image/jpeg;base64,${reference.toString('base64')}`,
+    ...references.map(
+      (
+        reference
+      ) => ({
+        type:
+          'input_image',
 
-                  detail:
-                    'high'
-                })
-              ),
+        image_url:
+          `data:image/jpeg;base64,${reference.toString('base64')}`,
 
-              {
-                type:
-                  'input_image',
+        detail:
+          'high'
+      })
+    ),
 
-                image_url:
-                  `data:image/jpeg;base64,${generated.toString('base64')}`,
+    {
+      type:
+        'input_image',
 
-                detail:
-                  'high'
-              }
-            ]
-          }
-        ],
+      image_url:
+        `data:image/jpeg;base64,${generated.toString('base64')}`,
 
-        text: {
-          format: {
-            type:
-              'json_schema',
-
-            name:
-              'etsy_thumbnail_qc',
-
-            strict:
-              true,
-
-            schema
-          }
-        }
-      });
+      detail:
+        'high'
+    }
+  ];
 
   let semantic;
 
   try {
+    const response =
+      await openai()
+        .responses
+        .create({
+          model:
+            QA_MODEL,
+
+          store:
+            false,
+
+          input: [
+            {
+              role:
+                'user',
+
+              content
+            }
+          ],
+
+          text: {
+            format: {
+              type:
+                'json_schema',
+
+              name:
+                'etsy_thumbnail_qc',
+
+              strict:
+                true,
+
+              schema
+            }
+          }
+        });
+
     semantic =
       JSON.parse(
-        response
-          .output_text ||
+        response.output_text ||
         '{}'
       );
 
-  } catch {
+  } catch (
+    error
+  ) {
     semantic = {
       pass:
         false,
@@ -1405,7 +1786,7 @@ PASS only if the candidate clearly shows the same actual product/artwork, preser
         0,
 
       reason:
-        'Quality-control response could not be parsed.'
+        `Quality-control request failed: ${error.message}`
     };
   }
 
@@ -1499,6 +1880,7 @@ async function savePreview({
       ),
 
     qc,
+
     reason,
 
     createdAt:
@@ -1517,7 +1899,7 @@ async function savePreview({
       }
     ),
 
-    db().set(
+    redis().set(
       previewImageKey(
         token
       ),
@@ -1535,7 +1917,7 @@ async function savePreview({
     ...meta,
 
     previewUrl:
-      `${required('PUBLIC_BASE_URL').replace(/\/$/, '')}/preview/worker/${token}`
+      `${publicBase()}/preview/worker/${token}`
   };
 }
 
@@ -1550,7 +1932,7 @@ async function loadPreview(
     );
 
   const base64 =
-    await db().get(
+    await redis().get(
       previewImageKey(
         token
       )
@@ -1601,7 +1983,9 @@ async function deleteOldRank1IfSafe({
 
   const currentRank1 =
     imageSet.images.find(
-      (img) =>
+      (
+        img
+      ) =>
         Number(
           img.rank
         ) ===
@@ -1630,7 +2014,9 @@ async function deleteOldRank1IfSafe({
 
   const oldImage =
     imageSet.images.find(
-      (img) =>
+      (
+        img
+      ) =>
         String(
           getImageId(
             img
@@ -1653,15 +2039,28 @@ async function deleteOldRank1IfSafe({
     };
   }
 
-  const variationData =
-    await etsyRequest(
-      `/shops/${await getShopId()}/listings/${listingId}/variation-images`
-    ).catch(
-      () => ({
-        results:
-          []
-      })
-    );
+  let variationData;
+
+  try {
+    variationData =
+      await etsyRequest(
+        `/shops/${await getShopId()}/listings/${listingId}/variation-images`
+      );
+
+  } catch (
+    error
+  ) {
+    return {
+      deleted:
+        false,
+
+      reason:
+        'variation_safety_check_failed',
+
+      detail:
+        error.message
+    };
+  }
 
   const usedByVariation =
     (
@@ -1669,7 +2068,9 @@ async function deleteOldRank1IfSafe({
         ?.results ||
       []
     ).some(
-      (item) =>
+      (
+        item
+      ) =>
         String(
           item
             ?.image_id
@@ -1715,7 +2116,9 @@ async function deleteOldRank1IfSafe({
       probe
         ?.images
         ?.some(
-          (img) =>
+          (
+            img
+          ) =>
             String(
               getImageId(
                 img
@@ -1741,7 +2144,9 @@ async function deleteOldRank1IfSafe({
 
   const afterRank1 =
     after.images.find(
-      (img) =>
+      (
+        img
+      ) =>
         Number(
           img.rank
         ) ===
@@ -1855,7 +2260,9 @@ async function publishPreview(
         imageSet
           .images
           .map(
-            (img) =>
+            (
+              img
+            ) =>
               String(
                 getImageId(
                   img
@@ -1867,7 +2274,7 @@ async function publishPreview(
           )
       );
 
-    const uploaded =
+    const uploadResult =
       await uploadListingImage({
         shopId:
           await getShopId(),
@@ -1888,12 +2295,18 @@ async function publishPreview(
     uploadOccurred =
       true;
 
+    const uploadRecord =
+      Array.isArray(
+        uploadResult
+          ?.results
+      )
+        ? uploadResult
+            .results[0]
+        : uploadResult;
+
     let uploadedImageId =
       getImageId(
-        uploaded
-          ?.results
-          ?.[0] ||
-        uploaded
+        uploadRecord
       );
 
     let verifiedSet =
@@ -1933,7 +2346,9 @@ async function publishPreview(
           verifiedSet
             .images
             .filter(
-              (img) =>
+              (
+                img
+              ) =>
                 !beforeIds.has(
                   String(
                     getImageId(
@@ -1958,7 +2373,9 @@ async function publishPreview(
         verifiedSet
           .images
           .find(
-            (img) =>
+            (
+              img
+            ) =>
               Number(
                 img.rank
               ) ===
@@ -1986,7 +2403,9 @@ async function publishPreview(
       verifiedSet
         ?.images
         ?.find(
-          (img) =>
+          (
+            img
+          ) =>
             Number(
               img.rank
             ) ===
@@ -2069,7 +2488,7 @@ async function publishPreview(
         status:
           replacementIsRank1
             ? 'published'
-            : 'uploaded_not_rank1',
+            : 'manual_attention',
 
         sourceImageId:
           String(
@@ -2133,7 +2552,8 @@ async function prepareListing(
     );
 
   const exact =
-    listing?.title
+    listing
+      ?.title
       ? listing
       : await etsyRequest(
           `/listings/${listingId}`
@@ -2160,75 +2580,142 @@ async function prepareListing(
 
   if (
     !force &&
-    existing
-      ?.status ===
-      'published' &&
-    String(
-      existing
-        .uploadedImageId ||
-      ''
-    ) ===
-    sourceImageId
-  ) {
-    return {
-      listing_id:
-        Number(
-          listingId
-        ),
-
-      exact_title:
-        exact?.title ||
-        null,
-
-      action:
-        'skipped',
-
-      reason:
-        'current_rank1_was_already_published_by_worker',
-
-      state:
-        existing,
-
-      etsy_modified:
-        false
-    };
-  }
-
-  if (
-    !force &&
     existing &&
     String(
       existing
         .sourceImageId ||
       ''
     ) ===
-    sourceImageId &&
-    existing
-      .status ===
-      'preview_ready'
+    sourceImageId
   ) {
-    return {
-      listing_id:
+    if (
+      existing.status ===
+      'preview_ready'
+    ) {
+      return {
+        listing_id:
+          Number(
+            listingId
+          ),
+
+        exact_title:
+          exact
+            ?.title ||
+          null,
+
+        action:
+          'skipped',
+
+        reason:
+          'preview_already_ready_for_current_rank1',
+
+        state:
+          existing,
+
+        etsy_modified:
+          false
+      };
+    }
+
+    if (
+      existing.status ===
+      'manual_attention'
+    ) {
+      return {
+        listing_id:
+          Number(
+            listingId
+          ),
+
+        exact_title:
+          exact
+            ?.title ||
+          null,
+
+        action:
+          'blocked',
+
+        reason:
+          'manual_attention_required_before_retry',
+
+        state:
+          existing,
+
+        etsy_modified:
+          false
+      };
+    }
+
+    if (
+      existing.status ===
+        'blocked_qa' &&
+      Date.now() -
         Number(
-          listingId
-        ),
+          existing
+            .checkedAt ||
+          0
+        ) <
+        QA_RETRY_COOLDOWN_MS
+    ) {
+      return {
+        listing_id:
+          Number(
+            listingId
+          ),
 
-      exact_title:
-        exact?.title ||
-        null,
+        exact_title:
+          exact
+            ?.title ||
+          null,
 
-      action:
-        'skipped',
+        action:
+          'skipped',
 
-      reason:
-        'already_processed_for_current_rank1',
+        reason:
+          'qa_retry_cooldown',
 
-      state:
-        existing,
+        state:
+          existing,
 
-      etsy_modified:
-        false
-    };
+        etsy_modified:
+          false
+      };
+    }
+
+    if (
+      existing.status ===
+        'published' &&
+      String(
+        existing
+          .uploadedImageId ||
+        ''
+      ) ===
+      sourceImageId
+    ) {
+      return {
+        listing_id:
+          Number(
+            listingId
+          ),
+
+        exact_title:
+          exact
+            ?.title ||
+          null,
+
+        action:
+          'keep',
+
+        reason:
+          'current_rank1_was_published_by_worker',
+
+        state:
+          existing,
+
+        etsy_modified:
+          false
+      };
+    }
   }
 
   const rank1Buffer =
@@ -2292,7 +2779,8 @@ async function prepareListing(
         ),
 
       exact_title:
-        exact?.title ||
+        exact
+          ?.title ||
         null,
 
       action:
@@ -2314,12 +2802,17 @@ async function prepareListing(
 
   const references =
     await selectReferences(
+      exact
+        ?.title ||
+      '',
       imageSet
     );
 
   const referenceImageIds =
     references.map(
-      (ref) =>
+      (
+        ref
+      ) =>
         getImageId(
           ref.image
         )
@@ -2336,20 +2829,21 @@ async function prepareListing(
     attempt <=
     2;
     attempt +=
-    1
+      1
   ) {
     generated =
       await generateThumbnail({
         title:
-          exact?.title ||
+          exact
+            ?.title ||
           '',
 
         references,
 
         reason:
           isNew
-            ? 'New Etsy listing detected'
-            : `Existing thumbnail quality score ${rank1Score}/100`,
+            ? 'A new Etsy listing was detected and needs a fresh hero thumbnail.'
+            : `The current Etsy thumbnail quality score is ${rank1Score}/100 and needs improvement.`,
 
         retryNote:
           attempt ===
@@ -2357,19 +2851,22 @@ async function prepareListing(
             ? qc
                 ?.semantic
                 ?.reason ||
-              'Preserve the product identity more strictly and improve thumbnail readability.'
+              'Preserve the product identity more strictly and improve mobile readability.'
             : ''
       });
 
     qc =
       await qualityCheck({
         title:
-          exact?.title ||
+          exact
+            ?.title ||
           '',
 
         referenceBuffers:
           references.map(
-            (ref) =>
+            (
+              ref
+            ) =>
               ref.buffer
           ),
 
@@ -2385,7 +2882,8 @@ async function prepareListing(
   }
 
   if (
-    !qc?.passed
+    !qc
+      ?.passed
   ) {
     const state = {
       status:
@@ -2401,10 +2899,9 @@ async function prepareListing(
       rank1Analysis,
 
       referenceImageIds:
-        referenceImageIds
-          .map(
-            String
-          ),
+        referenceImageIds.map(
+          String
+        ),
 
       qc
     };
@@ -2423,7 +2920,8 @@ async function prepareListing(
         ),
 
       exact_title:
-        exact?.title ||
+        exact
+          ?.title ||
         null,
 
       action:
@@ -2434,6 +2932,9 @@ async function prepareListing(
 
       rank1_score:
         rank1Score,
+
+      reference_image_ids:
+        referenceImageIds,
 
       qc,
 
@@ -2447,7 +2948,8 @@ async function prepareListing(
       listingId,
 
       title:
-        exact?.title ||
+        exact
+          ?.title ||
         null,
 
       sourceImageId,
@@ -2486,10 +2988,9 @@ async function prepareListing(
       rank1Analysis,
 
       referenceImageIds:
-        referenceImageIds
-          .map(
-            String
-          ),
+        referenceImageIds.map(
+          String
+        ),
 
       qc
     }
@@ -2520,7 +3021,8 @@ async function prepareListing(
         ),
 
       exact_title:
-        exact?.title ||
+        exact
+          ?.title ||
         null,
 
       action:
@@ -2531,8 +3033,8 @@ async function prepareListing(
       previous_rank1_score:
         rank1Score,
 
-      preview_url:
-        preview.previewUrl,
+      reference_image_ids:
+        referenceImageIds,
 
       qc,
 
@@ -2547,7 +3049,8 @@ async function prepareListing(
       ),
 
     exact_title:
-      exact?.title ||
+      exact
+        ?.title ||
       null,
 
     action:
@@ -2626,14 +3129,16 @@ async function fetchAllActiveListings() {
 
     const page =
       Array.isArray(
-        data?.results
+        data
+          ?.results
       )
         ? data.results
         : [];
 
     total =
       Number(
-        data?.count ??
+        data
+          ?.count ??
         page.length
       );
 
@@ -2642,20 +3147,15 @@ async function fetchAllActiveListings() {
     );
 
     if (
-      !page.length
+      !page.length ||
+      page.length <
+        100
     ) {
       break;
     }
 
     offset +=
       page.length;
-
-    if (
-      page.length <
-      100
-    ) {
-      break;
-    }
   }
 
   return results;
@@ -2675,7 +3175,7 @@ async function acquireWorkerLock() {
     );
 
   const ok =
-    await db().set(
+    await redis().set(
       `${PREFIX}:lock`,
       token,
       {
@@ -2696,7 +3196,7 @@ async function releaseWorkerLock(
   token
 ) {
   const current =
-    await db().get(
+    await redis().get(
       `${PREFIX}:lock`
     );
 
@@ -2709,7 +3209,7 @@ async function releaseWorkerLock(
       token
     )
   ) {
-    await db().del(
+    await redis().del(
       `${PREFIX}:lock`
     );
   }
@@ -2745,16 +3245,17 @@ async function runWorker() {
 
     const initialized =
       Boolean(
-        await db().get(
+        await redis().get(
           `${PREFIX}:initialized`
         )
       );
 
     /*
-      FIRST EVER RUN:
-      mark all current listings as seen.
-      This prevents every existing listing from being treated as "new".
-      They will still be checked by rolling scan.
+      FIRST RUN:
+      Existing listing IDs are marked as seen,
+      so they are not mistaken for newly created listings.
+
+      The rolling scanner still checks them gradually.
     */
     if (
       !initialized
@@ -2762,18 +3263,21 @@ async function runWorker() {
       if (
         listings.length
       ) {
-        await db().sadd(
+        await redis().sadd(
           `${PREFIX}:seen`,
           ...listings.map(
-            (l) =>
+            (
+              listing
+            ) =>
               String(
-                l.listing_id
+                listing
+                  .listing_id
               )
           )
         );
       }
 
-      await db().set(
+      await redis().set(
         `${PREFIX}:initialized`,
         '1'
       );
@@ -2781,7 +3285,7 @@ async function runWorker() {
     } else {
       /*
         Later runs:
-        unknown listing IDs are real new listings.
+        unseen IDs are genuinely new active listings.
       */
       for (
         const listing of
@@ -2795,7 +3299,7 @@ async function runWorker() {
 
         const seen =
           Boolean(
-            await db().sismember(
+            await redis().sismember(
               `${PREFIX}:seen`,
               id
             )
@@ -2804,12 +3308,12 @@ async function runWorker() {
         if (
           !seen
         ) {
-          await db().sadd(
+          await redis().sadd(
             `${PREFIX}:seen`,
             id
           );
 
-          await db().sadd(
+          await redis().sadd(
             `${PREFIX}:pending-new`,
             id
           );
@@ -2820,18 +3324,21 @@ async function runWorker() {
     const byId =
       new Map(
         listings.map(
-          (l) => [
+          (
+            listing
+          ) => [
             String(
-              l.listing_id
+              listing
+                .listing_id
             ),
-            l
+            listing
           ]
         )
       );
 
     const pending =
       (
-        await db().smembers(
+        await redis().smembers(
           `${PREFIX}:pending-new`
         )
       ).map(
@@ -2845,7 +3352,7 @@ async function runWorker() {
       new Set();
 
     /*
-      New listings get first priority.
+      New listings have priority.
     */
     for (
       const id of
@@ -2878,7 +3385,7 @@ async function runWorker() {
         );
 
       } else {
-        await db().srem(
+        await redis().srem(
           `${PREFIX}:pending-new`,
           id
         );
@@ -2886,11 +3393,11 @@ async function runWorker() {
     }
 
     /*
-      Fill remaining batch with rolling store scan.
+      Remaining capacity scans existing shop listings.
     */
     let cursor =
       Number(
-        await db().get(
+        await redis().get(
           `${PREFIX}:scan-cursor`
         )
       ) ||
@@ -2954,7 +3461,7 @@ async function runWorker() {
     if (
       listings.length
     ) {
-      await db().set(
+      await redis().set(
         `${PREFIX}:scan-cursor`,
         String(
           (
@@ -2996,7 +3503,7 @@ async function runWorker() {
           result.action !==
             'error'
         ) {
-          await db().srem(
+          await redis().srem(
             `${PREFIX}:pending-new`,
             String(
               item
@@ -3033,7 +3540,9 @@ async function runWorker() {
             error.message,
 
           etsy_modified:
-            false
+            error
+              .etsyModified ===
+            true
         });
       }
     }
@@ -3056,7 +3565,7 @@ async function runWorker() {
 
       pending_new_count:
         Number(
-          await db().scard(
+          await redis().scard(
             `${PREFIX}:pending-new`
           )
         ),
@@ -3078,7 +3587,7 @@ async function runWorker() {
 
 app.get(
   '/health',
-  async (
+  (
     _req,
     res
   ) => {
@@ -3087,10 +3596,10 @@ app.get(
         true,
 
       service:
-        'vaelons-thumbnail-worker',
+        'vaelons-ai-thumbnail-worker',
 
       version:
-        '1.0.0',
+        '2.0.0',
 
       worker_mode:
         WORKER_MODE,
@@ -3109,7 +3618,332 @@ app.get(
 
 
 /* =========================================================
-   PUBLIC PREVIEW IMAGE
+   ETSY OAUTH
+========================================================= */
+
+app.get(
+  '/oauth/etsy/start',
+  (
+    req,
+    res
+  ) => {
+    try {
+      if (
+        req.query
+          .setup_secret !==
+        required(
+          'SETUP_SECRET'
+        )
+      ) {
+        return res
+          .status(
+            401
+          )
+          .send(
+            'Invalid setup secret.'
+          );
+      }
+
+      const state =
+        randomBase64Url(
+          24
+        );
+
+      const verifier =
+        randomBase64Url(
+          48
+        );
+
+      const challenge =
+        pkceChallenge(
+          verifier
+        );
+
+      const redirectUri =
+        `${publicBase()}/oauth/etsy/callback`;
+
+      const capsule =
+        sealJson({
+          state,
+          verifier,
+          ts:
+            Date.now()
+        });
+
+      res.cookie(
+        'etsy_oauth',
+        capsule,
+        {
+          httpOnly:
+            true,
+
+          secure:
+            true,
+
+          sameSite:
+            'lax',
+
+          maxAge:
+            10 *
+            60 *
+            1000
+        }
+      );
+
+      const url =
+        new URL(
+          'https://www.etsy.com/oauth/connect'
+        );
+
+      url.searchParams.set(
+        'response_type',
+        'code'
+      );
+
+      url.searchParams.set(
+        'client_id',
+        etsyApiKeyForOAuth()
+      );
+
+      url.searchParams.set(
+        'redirect_uri',
+        redirectUri
+      );
+
+      url.searchParams.set(
+        'scope',
+        'listings_r listings_w shops_r shops_w'
+      );
+
+      url.searchParams.set(
+        'state',
+        state
+      );
+
+      url.searchParams.set(
+        'code_challenge',
+        challenge
+      );
+
+      url.searchParams.set(
+        'code_challenge_method',
+        'S256'
+      );
+
+      res.redirect(
+        url.toString()
+      );
+
+    } catch (
+      error
+    ) {
+      res
+        .status(
+          error.status ||
+          500
+        )
+        .json({
+          error:
+            error.message
+        });
+    }
+  }
+);
+
+app.get(
+  '/oauth/etsy/callback',
+  async (
+    req,
+    res
+  ) => {
+    try {
+      if (
+        req.query
+          .error
+      ) {
+        return res
+          .status(
+            400
+          )
+          .send(
+            `Etsy authorization failed: ${
+              req.query
+                .error_description ||
+              req.query
+                .error
+            }`
+          );
+      }
+
+      const cookie =
+        parseCookies(
+          req
+        ).etsy_oauth;
+
+      if (
+        !cookie
+      ) {
+        return res
+          .status(
+            400
+          )
+          .send(
+            'OAuth session expired. Start again.'
+          );
+      }
+
+      const flow =
+        openJson(
+          cookie
+        );
+
+      if (
+        !req.query
+          .state ||
+        req.query
+          .state !==
+          flow.state ||
+        Date.now() -
+          flow.ts >
+          10 *
+          60 *
+          1000
+      ) {
+        return res
+          .status(
+            400
+          )
+          .send(
+            'Invalid OAuth state.'
+          );
+      }
+
+      const redirectUri =
+        `${publicBase()}/oauth/etsy/callback`;
+
+      const body =
+        new URLSearchParams({
+          grant_type:
+            'authorization_code',
+
+          client_id:
+            etsyApiKeyForOAuth(),
+
+          redirect_uri:
+            redirectUri,
+
+          code:
+            String(
+              req.query
+                .code ||
+              ''
+            ),
+
+          code_verifier:
+            flow.verifier
+        });
+
+      const tokenRes =
+        await fetch(
+          'https://api.etsy.com/v3/public/oauth/token',
+          {
+            method:
+              'POST',
+
+            headers: {
+              'content-type':
+                'application/x-www-form-urlencoded; charset=utf-8'
+            },
+
+            body
+          }
+        );
+
+      const token =
+        await tokenRes.json();
+
+      if (
+        !tokenRes.ok
+      ) {
+        return res
+          .status(
+            400
+          )
+          .send(
+            `Token exchange failed: ${JSON.stringify(token)}`
+          );
+      }
+
+      await setInitialToken(
+        token
+      );
+
+      const shopId =
+        await getShopId();
+
+      const encryptedCapsule =
+        sealJson({
+          refresh_token:
+            token
+              .refresh_token,
+
+          shop_id:
+            shopId
+        });
+
+      res.clearCookie(
+        'etsy_oauth'
+      );
+
+      res
+        .type(
+          'html'
+        )
+        .send(`
+<!doctype html>
+<meta charset="utf-8">
+<title>VAELONS Etsy Connected</title>
+
+<h2>
+VAELONS Etsy bağlantısı doğrulandı.
+</h2>
+
+<p>
+Aşağıdaki şifreli değeri
+<b>ETSY_TOKEN_CAPSULE</b>
+olarak Vercel Environment Variables bölümüne ekleyin.
+</p>
+
+<textarea
+  style="width:100%;height:150px"
+  readonly
+  onclick="this.select()"
+>${encryptedCapsule}</textarea>
+        `);
+
+    } catch (
+      error
+    ) {
+      res
+        .status(
+          error.status ||
+          500
+        )
+        .json({
+          error:
+            error.message,
+
+          details:
+            error.details ||
+            null
+        });
+    }
+  }
+);
+
+
+/* =========================================================
+   PUBLIC PREVIEW
 ========================================================= */
 
 app.get(
@@ -3134,7 +3968,7 @@ app.get(
         );
 
       const base64 =
-        await db().get(
+        await redis().get(
           previewImageKey(
             token
           )
@@ -3188,18 +4022,13 @@ app.get(
 
 
 /* =========================================================
-   WORKER API AUTH
+   WORKER API
 ========================================================= */
 
 app.use(
   '/api/worker',
-  managerOrWorkerAuth
+  workerAuth
 );
-
-
-/* =========================================================
-   WORKER STATUS
-========================================================= */
 
 app.get(
   '/api/worker/status',
@@ -3211,10 +4040,10 @@ app.get(
     try {
       res.json({
         service:
-          'vaelons-thumbnail-worker',
+          'vaelons-ai-thumbnail-worker',
 
         version:
-          '1.0.0',
+          '2.0.0',
 
         mode:
           WORKER_MODE,
@@ -3224,21 +4053,21 @@ app.get(
 
         initialized:
           Boolean(
-            await db().get(
+            await redis().get(
               `${PREFIX}:initialized`
             )
           ),
 
         pending_new_count:
           Number(
-            await db().scard(
+            await redis().scard(
               `${PREFIX}:pending-new`
             )
           ),
 
         scan_cursor:
           Number(
-            await db().get(
+            await redis().get(
               `${PREFIX}:scan-cursor`
             )
           ) ||
@@ -3261,14 +4090,7 @@ app.get(
   }
 );
 
-
-/* =========================================================
-   RUN WORKER
-   GET = Vercel Cron
-   POST = Manager/manual
-========================================================= */
-
-const workerRunHandler =
+const runHandler =
   async (
     _req,
     res,
@@ -3290,18 +4112,13 @@ const workerRunHandler =
 
 app.get(
   '/api/worker/run',
-  workerRunHandler
+  runHandler
 );
 
 app.post(
   '/api/worker/run',
-  workerRunHandler
+  runHandler
 );
-
-
-/* =========================================================
-   MANUAL PREPARE
-========================================================= */
 
 app.post(
   '/api/worker/listings/:listingId/prepare',
@@ -3347,11 +4164,6 @@ app.post(
   }
 );
 
-
-/* =========================================================
-   LISTING WORKER STATUS
-========================================================= */
-
 app.get(
   '/api/worker/listings/:listingId/status',
   async (
@@ -3392,11 +4204,6 @@ app.get(
     }
   }
 );
-
-
-/* =========================================================
-   MANUAL PUBLISH
-========================================================= */
 
 app.post(
   '/api/worker/listings/:listingId/publish',
@@ -3468,17 +4275,188 @@ app.post(
           });
       }
 
-      const deleteOld =
-        req.body
-          ?.delete_old !==
-        false;
-
       res.json(
         await publishPreview(
           preview,
           {
-            deleteOld
+            deleteOld:
+              req.body
+                ?.delete_old !==
+              false
           }
+        )
+      );
+
+    } catch (
+      error
+    ) {
+      next(
+        error
+      );
+    }
+  }
+);
+
+
+/* =========================================================
+   BASIC ETSY READ API
+========================================================= */
+
+app.use(
+  '/api',
+  bridgeAuth
+);
+
+app.get(
+  '/api/token-status',
+  async (
+    _req,
+    res,
+    next
+  ) => {
+    try {
+      res.json(
+        await getTokenStatus()
+      );
+
+    } catch (
+      error
+    ) {
+      next(
+        error
+      );
+    }
+  }
+);
+
+app.get(
+  '/api/shop',
+  async (
+    _req,
+    res,
+    next
+  ) => {
+    try {
+      res.json(
+        await etsyRequest(
+          `/shops/${await getShopId()}`
+        )
+      );
+
+    } catch (
+      error
+    ) {
+      next(
+        error
+      );
+    }
+  }
+);
+
+app.get(
+  '/api/listings',
+  async (
+    req,
+    res,
+    next
+  ) => {
+    try {
+      const limit =
+        clampInt(
+          req.query
+            .limit ||
+          25,
+          1,
+          100
+        );
+
+      const offset =
+        Math.max(
+          0,
+          Number(
+            req.query
+              .offset ||
+            0
+          )
+        );
+
+      const state =
+        String(
+          req.query
+            .state ||
+          'active'
+        );
+
+      res.json(
+        await etsyRequest(
+          `/shops/${await getShopId()}/listings`,
+          {
+            params: {
+              limit,
+              offset,
+              state
+            }
+          }
+        )
+      );
+
+    } catch (
+      error
+    ) {
+      next(
+        error
+      );
+    }
+  }
+);
+
+app.get(
+  '/api/listings/:listingId',
+  async (
+    req,
+    res,
+    next
+  ) => {
+    try {
+      const listingId =
+        asListingId(
+          req.params
+            .listingId
+        );
+
+      res.json(
+        await etsyRequest(
+          `/listings/${listingId}`
+        )
+      );
+
+    } catch (
+      error
+    ) {
+      next(
+        error
+      );
+    }
+  }
+);
+
+app.get(
+  '/api/listings/:listingId/images',
+  async (
+    req,
+    res,
+    next
+  ) => {
+    try {
+      const listingId =
+        asListingId(
+          req.params
+            .listingId
+        );
+
+      res.json(
+        await getListingImages(
+          listingId
         )
       );
 
@@ -3523,7 +4501,8 @@ app.use(
           null,
 
         etsy_modified:
-          error.etsyModified ===
+          error
+            .etsyModified ===
           true
       });
   }
@@ -3547,7 +4526,7 @@ if (
     port,
     () => {
       console.log(
-        `VAELONS Thumbnail Worker listening on :${port}`
+        `VAELONS AI Thumbnail Worker listening on :${port}`
       );
     }
   );
