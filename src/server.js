@@ -400,7 +400,7 @@ function openai() {
       new OpenAI({
         apiKey:
           required(
-            'OPENAI_API_KEY'
+            'VAELONS_OPENAI_API_KEY'
           )
       });
   }
@@ -1064,25 +1064,14 @@ async function selectReferencesWithVision(
 
       text:
         `You are selecting product-truth reference images for a new Etsy hero thumbnail.
-Listing title: ${title || ''}
+
+Listing title:
+${title || ''}
 
 Choose the candidate that shows the actual product/artwork most clearly and faithfully.
 
-Prefer:
-- straight product/artwork view
-- complete composition
-- uncropped artwork
-- faithful colors
-- clear subject
-- minimal obstruction
-
-Avoid:
-- product too small
-- heavy perspective
-- dark image
-- cropped artwork
-- props covering product
-- visually altered artwork
+Prefer straight, complete, uncropped, faithful product views.
+Avoid dark, heavily perspectived, cropped, obstructed, or altered views.
 
 A second candidate may be selected only if it adds useful product-truth detail.
 
@@ -3250,13 +3239,6 @@ async function runWorker() {
         )
       );
 
-    /*
-      FIRST RUN:
-      Existing listing IDs are marked as seen,
-      so they are not mistaken for newly created listings.
-
-      The rolling scanner still checks them gradually.
-    */
     if (
       !initialized
     ) {
@@ -3283,10 +3265,6 @@ async function runWorker() {
       );
 
     } else {
-      /*
-        Later runs:
-        unseen IDs are genuinely new active listings.
-      */
       for (
         const listing of
         listings
@@ -3351,9 +3329,6 @@ async function runWorker() {
     const selectedIds =
       new Set();
 
-    /*
-      New listings have priority.
-    */
     for (
       const id of
       pending
@@ -3392,9 +3367,6 @@ async function runWorker() {
       }
     }
 
-    /*
-      Remaining capacity scans existing shop listings.
-    */
     let cursor =
       Number(
         await redis().get(
@@ -3599,7 +3571,7 @@ app.get(
         'vaelons-ai-thumbnail-worker',
 
       version:
-        '2.0.0',
+        '2.0.1',
 
       worker_mode:
         WORKER_MODE,
@@ -3609,6 +3581,9 @@ app.get(
 
       qa_model:
         QA_MODEL,
+
+      openai_key_source:
+        'VAELONS_OPENAI_API_KEY',
 
       safe_replace_order:
         'generate -> QA -> upload -> verify rank1 -> delete old'
@@ -4043,7 +4018,7 @@ app.get(
           'vaelons-ai-thumbnail-worker',
 
         version:
-          '2.0.0',
+          '2.0.1',
 
         mode:
           WORKER_MODE,
@@ -4075,6 +4050,9 @@ app.get(
 
         auto_delete_old_rank1:
           AUTO_DELETE_OLD_RANK1,
+
+        openai_key_source:
+          'VAELONS_OPENAI_API_KEY',
 
         etsy_modified:
           false
