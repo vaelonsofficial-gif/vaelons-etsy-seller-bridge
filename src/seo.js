@@ -14,6 +14,9 @@ const PREFIX = 'vaelons:seo:v1';
 const PREVIEW_TTL_SECONDS = 24 * 60 * 60;
 const HISTORY_LIMIT = 50;
 
+const SECTION_CONFIDENCE_THRESHOLD = 0.78;
+const SECTION_CLASSIFY_BATCH = 20;
+
 const SEO_MODEL =
   process.env.OPENAI_SEO_MODEL ||
   process.env.OPENAI_QA_MODEL ||
@@ -28,7 +31,8 @@ let redisClient = null;
 ========================================================= */
 
 function required(name) {
-  const value = process.env[name];
+  const value =
+    process.env[name];
 
   if (!value) {
     throw new Error(
@@ -41,11 +45,13 @@ function required(name) {
 
 function openai() {
   if (!openaiClient) {
-    openaiClient = new OpenAI({
-      apiKey: required(
-        'VAELONS_OPENAI_API_KEY'
-      )
-    });
+    openaiClient =
+      new OpenAI({
+        apiKey:
+          required(
+            'VAELONS_OPENAI_API_KEY'
+          )
+      });
   }
 
   return openaiClient;
@@ -65,17 +71,22 @@ function redis() {
       process.env
         .UPSTASH_REDIS_REST_TOKEN;
 
-    if (!url || !token) {
+    if (
+      !url ||
+      !token
+    ) {
       throw new Error(
         'Missing Upstash Redis environment variables'
       );
     }
 
-    redisClient = new Redis({
-      url,
-      token,
-      enableTelemetry: false
-    });
+    redisClient =
+      new Redis({
+        url,
+        token,
+        enableTelemetry:
+          false
+      });
   }
 
   return redisClient;
@@ -86,24 +97,37 @@ function redis() {
    AUTH
 ========================================================= */
 
-function bridgeAuth(req, res, next) {
+function bridgeAuth(
+  req,
+  res,
+  next
+) {
   const auth =
-    req.get('authorization') ||
+    req.get(
+      'authorization'
+    ) ||
     '';
 
   const key =
-    process.env.BRIDGE_API_KEY ||
+    process.env
+      .BRIDGE_API_KEY ||
     '';
 
   if (
     !key ||
-    auth !== `Bearer ${key}`
+    auth !==
+      `Bearer ${key}`
   ) {
     return res
-      .status(401)
+      .status(
+        401
+      )
       .json({
-        error: 'unauthorized',
-        etsy_modified: false
+        error:
+          'unauthorized',
+
+        etsy_modified:
+          false
       });
   }
 
@@ -115,18 +139,27 @@ function bridgeAuth(req, res, next) {
    BASIC HELPERS
 ========================================================= */
 
-function asListingId(value) {
+function asListingId(
+  value
+) {
   const id =
-    String(value || '')
-      .trim();
+    String(
+      value ||
+      ''
+    ).trim();
 
-  if (!/^\d+$/.test(id)) {
+  if (
+    !/^\d+$/.test(
+      id
+    )
+  ) {
     const err =
       new Error(
         'Invalid listingId'
       );
 
-    err.status = 400;
+    err.status =
+      400;
 
     throw err;
   }
@@ -134,65 +167,41 @@ function asListingId(value) {
   return id;
 }
 
-function previewKey(token) {
-  return (
-    `${PREFIX}:preview:${token}`
-  );
-}
-
-function stateKey(listingId) {
-  return (
-    `${PREFIX}:listing:${listingId}`
-  );
-}
-
-function historyKey(listingId) {
-  return (
-    `${PREFIX}:history:${listingId}`
-  );
-}
-
-async function setJson(
-  key,
+function clampInt(
   value,
-  options = {}
+  min,
+  max
 ) {
-  return redis().set(
-    key,
-    JSON.stringify(value),
-    options
+  const n =
+    Number(
+      value
+    );
+
+  const safe =
+    Number.isFinite(
+      n
+    )
+      ? Math.round(
+          n
+        )
+      : min;
+
+  return Math.max(
+    min,
+    Math.min(
+      max,
+      safe
+    )
   );
 }
 
-async function getJson(key) {
-  const raw =
-    await redis().get(key);
-
-  if (raw == null) {
-    return null;
-  }
-
-  if (
-    typeof raw ===
-    'object'
-  ) {
-    return raw;
-  }
-
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-
-/* =========================================================
-   NORMALIZATION
-========================================================= */
-
-function normalizeTitle(value) {
-  return String(value || '')
+function normalizeTitle(
+  value
+) {
+  return String(
+    value ||
+    ''
+  )
     .replace(
       /[\r\n\t]+/g,
       ' '
@@ -204,8 +213,13 @@ function normalizeTitle(value) {
     .trim();
 }
 
-function normalizeDescription(value) {
-  return String(value || '')
+function normalizeDescription(
+  value
+) {
+  return String(
+    value ||
+    ''
+  )
     .replace(
       /\r\n/g,
       '\n'
@@ -213,26 +227,41 @@ function normalizeDescription(value) {
     .trim();
 }
 
-function normalizeTags(tags) {
-  if (!Array.isArray(tags)) {
+function normalizeTags(
+  tags
+) {
+  if (
+    !Array.isArray(
+      tags
+    )
+  ) {
     return [];
   }
 
   const seen =
     new Set();
 
-  const result = [];
+  const result =
+    [];
 
-  for (const raw of tags) {
+  for (
+    const raw of
+    tags
+  ) {
     const tag =
-      String(raw || '')
+      String(
+        raw ||
+        ''
+      )
         .replace(
           /\s{2,}/g,
           ' '
         )
         .trim();
 
-    if (!tag) {
+    if (
+      !tag
+    ) {
       continue;
     }
 
@@ -241,42 +270,268 @@ function normalizeTags(tags) {
         'en-US'
       );
 
-    if (seen.has(key)) {
+    if (
+      seen.has(
+        key
+      )
+    ) {
       continue;
     }
 
-    seen.add(key);
+    seen.add(
+      key
+    );
 
-    result.push(tag);
+    result.push(
+      tag
+    );
   }
 
   return result;
 }
 
+function sameArray(
+  a,
+  b
+) {
+  if (
+    !Array.isArray(
+      a
+    ) ||
+    !Array.isArray(
+      b
+    ) ||
+    a.length !==
+      b.length
+  ) {
+    return false;
+  }
+
+  return a.every(
+    (
+      value,
+      index
+    ) =>
+      String(
+        value
+      ) ===
+      String(
+        b[
+          index
+        ]
+      )
+  );
+}
+
 
 /* =========================================================
-   VALIDATION
+   REDIS KEYS
 ========================================================= */
 
-function validateProposal(proposal) {
-  const errors = [];
+function previewKey(
+  token
+) {
+  return (
+    `${PREFIX}:preview:${token}`
+  );
+}
+
+function stateKey(
+  listingId
+) {
+  return (
+    `${PREFIX}:listing:${listingId}`
+  );
+}
+
+function historyKey(
+  listingId
+) {
+  return (
+    `${PREFIX}:history:${listingId}`
+  );
+}
+
+function sectionPreviewKey(
+  token
+) {
+  return (
+    `${PREFIX}:section-preview:${token}`
+  );
+}
+
+async function setJson(
+  key,
+  value,
+  options = {}
+) {
+  return redis().set(
+    key,
+    JSON.stringify(
+      value
+    ),
+    options
+  );
+}
+
+async function getJson(
+  key
+) {
+  const raw =
+    await redis().get(
+      key
+    );
+
+  if (
+    raw ==
+    null
+  ) {
+    return null;
+  }
+
+  if (
+    typeof raw ===
+    'object'
+  ) {
+    return raw;
+  }
+
+  try {
+    return JSON.parse(
+      raw
+    );
+
+  } catch {
+    return null;
+  }
+}
+
+
+/* =========================================================
+   LISTING SNAPSHOT
+========================================================= */
+
+function snapshotFromListing(
+  listing
+) {
+  return {
+    title:
+      normalizeTitle(
+        listing
+          ?.title ||
+        ''
+      ),
+
+    tags:
+      normalizeTags(
+        listing
+          ?.tags ||
+        []
+      ),
+
+    description:
+      normalizeDescription(
+        listing
+          ?.description ||
+        ''
+      ),
+
+    updated_timestamp:
+      listing
+        ?.updated_timestamp ??
+      listing
+        ?.last_modified_timestamp ??
+      null
+  };
+}
+
+function snapshotHash(
+  snapshot
+) {
+  return createHash(
+    'sha256'
+  )
+    .update(
+      JSON.stringify({
+        title:
+          snapshot.title,
+
+        tags:
+          snapshot.tags,
+
+        description:
+          snapshot.description,
+
+        updated_timestamp:
+          snapshot
+            .updated_timestamp
+      })
+    )
+    .digest(
+      'hex'
+    );
+}
+
+function getListingSectionId(
+  listing
+) {
+  const raw =
+    listing
+      ?.shop_section_id ??
+    listing
+      ?.section_id ??
+    null;
+
+  if (
+    raw ==
+      null ||
+    raw ===
+      '' ||
+    Number(
+      raw
+    ) <=
+      0
+  ) {
+    return null;
+  }
+
+  return Number(
+    raw
+  );
+}
+
+
+/* =========================================================
+   SEO VALIDATION
+========================================================= */
+
+function validateProposal(
+  proposal
+) {
+  const errors =
+    [];
 
   const title =
     normalizeTitle(
-      proposal.proposed_title
+      proposal
+        .proposed_title
     );
 
   const tags =
     normalizeTags(
-      proposal.proposed_tags
+      proposal
+        .proposed_tags
     );
 
   const description =
     normalizeDescription(
-      proposal.proposed_description
+      proposal
+        .proposed_description
     );
 
-  if (!title) {
+  if (
+    !title
+  ) {
     errors.push(
       'title_empty'
     );
@@ -300,7 +555,10 @@ function validateProposal(proposal) {
     );
   }
 
-  for (const tag of tags) {
+  for (
+    const tag of
+    tags
+  ) {
     if (
       tag.length >
       20
@@ -312,7 +570,9 @@ function validateProposal(proposal) {
 
     if (
       !/^[\p{L}\p{Nd}\p{Zs}'\-™©®]+$/u
-        .test(tag)
+        .test(
+          tag
+        )
     ) {
       errors.push(
         `tag_contains_invalid_characters:${tag}`
@@ -321,7 +581,9 @@ function validateProposal(proposal) {
 
     if (
       /^['-]|['-]$/
-        .test(tag)
+        .test(
+          tag
+        )
     ) {
       errors.push(
         `tag_invalid_edge_character:${tag}`
@@ -330,7 +592,8 @@ function validateProposal(proposal) {
   }
 
   if (
-    proposal.change_description ===
+    proposal
+      .change_description ===
       true &&
     !description
   ) {
@@ -356,85 +619,6 @@ function validateProposal(proposal) {
 
 
 /* =========================================================
-   LISTING SNAPSHOT
-========================================================= */
-
-function snapshotFromListing(
-  listing
-) {
-  return {
-    title:
-      normalizeTitle(
-        listing?.title ||
-        ''
-      ),
-
-    tags:
-      normalizeTags(
-        listing?.tags ||
-        []
-      ),
-
-    description:
-      normalizeDescription(
-        listing?.description ||
-        ''
-      ),
-
-    updated_timestamp:
-      listing
-        ?.updated_timestamp ??
-      listing
-        ?.last_modified_timestamp ??
-      null
-  };
-}
-
-function snapshotHash(snapshot) {
-  return createHash(
-    'sha256'
-  )
-    .update(
-      JSON.stringify({
-        title:
-          snapshot.title,
-
-        tags:
-          snapshot.tags,
-
-        description:
-          snapshot.description,
-
-        updated_timestamp:
-          snapshot
-            .updated_timestamp
-      })
-    )
-    .digest('hex');
-}
-
-function sameArray(a, b) {
-  if (
-    !Array.isArray(a) ||
-    !Array.isArray(b) ||
-    a.length !==
-      b.length
-  ) {
-    return false;
-  }
-
-  return a.every(
-    (
-      value,
-      index
-    ) =>
-      String(value) ===
-      String(b[index])
-  );
-}
-
-
-/* =========================================================
    SEO PROMPT
 ========================================================= */
 
@@ -453,7 +637,7 @@ function buildProposalPrompt(
   return `
 You are the SEO optimization engine for an Etsy seller.
 
-Your job is to improve ONLY the listing title, tags, and description using the facts already present in the listing.
+Improve ONLY the listing title, tags, and description using facts already present in the listing.
 
 CURRENT LISTING
 
@@ -473,7 +657,7 @@ Additional listing facts:
 - is_personalizable: ${Boolean(listing?.is_personalizable)}
 - is_customizable: ${Boolean(listing?.is_customizable)}
 
-NON-NEGOTIABLE SAFETY RULES
+SAFETY RULES
 
 - Do not invent materials.
 - Do not invent sizes.
@@ -485,8 +669,7 @@ NON-NEGOTIABLE SAFETY RULES
 - Do not invent discounts.
 - Do not invent guarantees.
 - Do not invent product features.
-- Do not remove important factual product details.
-- Do not remove size information.
+- Do not remove important factual details.
 - Do not remove shipping information.
 - Do not remove personalization instructions.
 - Do not remove policies or disclaimers.
@@ -494,19 +677,18 @@ NON-NEGOTIABLE SAFETY RULES
 - Do not use competitor brand names.
 - Do not use irrelevant trending keywords.
 
-ETSY TITLE RULES
+TITLE
 
 - Maximum 140 characters.
 - Prefer fewer than 15 words when possible.
 - Clearly state what the item is near the beginning.
-- Lead with the strongest descriptive buyer-facing phrase.
+- Lead with the strongest buyer-facing phrase.
 - Keep it natural and readable on mobile.
 - Avoid keyword stuffing.
 - Avoid repeated phrases.
 - Avoid subjective filler.
-- Avoid unnecessary gift or occasion phrases unless essential to the item.
 
-ETSY TAG RULES
+TAGS
 
 - Return exactly 13 unique tags.
 - Each tag maximum 20 characters.
@@ -515,16 +697,17 @@ ETSY TAG RULES
 - Do not repeat nearly identical phrases.
 - Use only facts supported by the listing.
 
-DESCRIPTION RULES
+DESCRIPTION
 
-- Improve clarity and search usefulness while preserving all factual and operational information.
+- Improve clarity and search usefulness.
+- Preserve factual and operational information.
 - Put a concise buyer-friendly opening near the top.
-- Naturally include relevant search language without stuffing.
-- Preserve important existing factual sections and meaning.
+- Naturally include relevant search language.
+- Preserve important sections and meaning.
 
 Be conservative.
 
-If the current field is already strong, keep it unchanged and set the corresponding change flag to false.
+If a field is already strong, keep it unchanged and set the corresponding change flag to false.
 `.trim();
 }
 
@@ -538,7 +721,8 @@ async function generateProposal(
   original
 ) {
   const schema = {
-    type: 'object',
+    type:
+      'object',
 
     additionalProperties:
       false,
@@ -558,41 +742,54 @@ async function generateProposal(
 
     properties: {
       proposed_title: {
-        type: 'string'
+        type:
+          'string'
       },
 
       proposed_tags: {
-        type: 'array',
+        type:
+          'array',
 
         items: {
-          type: 'string'
+          type:
+            'string'
         }
       },
 
       proposed_description: {
-        type: 'string'
+        type:
+          'string'
       },
 
       change_title: {
-        type: 'boolean'
+        type:
+          'boolean'
       },
 
       change_tags: {
-        type: 'boolean'
+        type:
+          'boolean'
       },
 
       change_description: {
-        type: 'boolean'
+        type:
+          'boolean'
       },
 
       confidence: {
-        type: 'number',
-        minimum: 0,
-        maximum: 1
+        type:
+          'number',
+
+        minimum:
+          0,
+
+        maximum:
+          1
       },
 
       risk_level: {
-        type: 'string',
+        type:
+          'string',
 
         enum: [
           'low',
@@ -602,14 +799,17 @@ async function generateProposal(
       },
 
       reason: {
-        type: 'string'
+        type:
+          'string'
       },
 
       keyword_strategy: {
-        type: 'array',
+        type:
+          'array',
 
         items: {
-          type: 'string'
+          type:
+            'string'
         }
       }
     }
@@ -678,7 +878,8 @@ async function qualityCheck(
   normalized
 ) {
   const schema = {
-    type: 'object',
+    type:
+      'object',
 
     additionalProperties:
       false,
@@ -696,37 +897,49 @@ async function qualityCheck(
 
     properties: {
       pass: {
-        type: 'boolean'
+        type:
+          'boolean'
       },
 
       title_clear: {
-        type: 'boolean'
+        type:
+          'boolean'
       },
 
       tags_valid: {
-        type: 'boolean'
+        type:
+          'boolean'
       },
 
       description_preserves_facts: {
-        type: 'boolean'
+        type:
+          'boolean'
       },
 
       no_invented_facts: {
-        type: 'boolean'
+        type:
+          'boolean'
       },
 
       keyword_stuffing: {
-        type: 'boolean'
+        type:
+          'boolean'
       },
 
       confidence: {
-        type: 'number',
-        minimum: 0,
-        maximum: 1
+        type:
+          'number',
+
+        minimum:
+          0,
+
+        maximum:
+          1
       },
 
       reason: {
-        type: 'string'
+        type:
+          'string'
       }
     }
   };
@@ -753,8 +966,6 @@ async function qualityCheck(
 
                 text:
 `Act as a strict safety reviewer for an Etsy SEO update.
-
-Compare the CURRENT listing fields against the PROPOSED fields.
 
 CURRENT TITLE:
 ${original.title}
@@ -787,7 +998,7 @@ ${JSON.stringify({
 })}
 
 PASS only if:
-- the proposal stays faithful to facts present in the current listing
+- proposal stays faithful to existing facts
 - title is clear and natural
 - all 13 tags are valid and relevant
 - description preserves important facts
@@ -847,17 +1058,18 @@ PASS only if:
 
 
 /* =========================================================
-   PREVIEW STORAGE
+   SEO PREVIEW
 ========================================================= */
 
 async function savePreview(
   preview
 ) {
   const token =
-    randomBytes(24)
-      .toString(
-        'base64url'
-      );
+    randomBytes(
+      24
+    ).toString(
+      'base64url'
+    );
 
   const value = {
     ...preview,
@@ -870,7 +1082,9 @@ async function savePreview(
 
   await Promise.all([
     setJson(
-      previewKey(token),
+      previewKey(
+        token
+      ),
       value,
       {
         ex:
@@ -922,14 +1136,19 @@ async function addHistory(
     });
 
   await redis().lpush(
-    historyKey(listingId),
+    historyKey(
+      listingId
+    ),
     payload
   );
 
   await redis().ltrim(
-    historyKey(listingId),
+    historyKey(
+      listingId
+    ),
     0,
-    HISTORY_LIMIT - 1
+    HISTORY_LIMIT -
+      1
   );
 }
 
@@ -938,14 +1157,18 @@ async function latestHistory(
 ) {
   const rows =
     await redis().lrange(
-      historyKey(listingId),
+      historyKey(
+        listingId
+      ),
       0,
       9
     );
 
   return rows
     .map(
-      (row) => {
+      (
+        row
+      ) => {
         if (
           typeof row ===
           'object'
@@ -954,24 +1177,30 @@ async function latestHistory(
         }
 
         try {
-          return JSON.parse(row);
+          return JSON.parse(
+            row
+          );
+
         } catch {
           return null;
         }
       }
     )
-    .filter(Boolean);
+    .filter(
+      Boolean
+    );
 }
 
 
 /* =========================================================
-   PATCH BODY
+   SEO PATCH
 ========================================================= */
 
 function patchBodyFromPreview(
   preview
 ) {
-  const body = {};
+  const body =
+    {};
 
   if (
     preview
@@ -1018,7 +1247,8 @@ function verifyPublished(
   flags
 ) {
   if (
-    flags.change_title ===
+    flags
+      .change_title ===
       true &&
     current.title !==
       expected.title
@@ -1027,7 +1257,8 @@ function verifyPublished(
   }
 
   if (
-    flags.change_tags ===
+    flags
+      .change_tags ===
       true &&
     !sameArray(
       current.tags,
@@ -1038,7 +1269,8 @@ function verifyPublished(
   }
 
   if (
-    flags.change_description ===
+    flags
+      .change_description ===
       true &&
     current.description !==
       expected.description
@@ -1047,6 +1279,678 @@ function verifyPublished(
   }
 
   return true;
+}
+
+
+/* =========================================================
+   ETSY SECTIONS
+========================================================= */
+
+async function getShopSections() {
+  const shopId =
+    await getShopId();
+
+  const data =
+    await etsyRequest(
+      `/shops/${shopId}/sections`
+    );
+
+  const sections =
+    Array.isArray(
+      data
+        ?.results
+    )
+      ? data.results
+      : [];
+
+  return sections
+    .map(
+      (
+        section
+      ) => ({
+        shop_section_id:
+          Number(
+            section
+              .shop_section_id
+          ),
+
+        title:
+          String(
+            section
+              .title ||
+            ''
+          ).trim(),
+
+        rank:
+          Number(
+            section
+              .rank ??
+            0
+          ),
+
+        active_listing_count:
+          Number(
+            section
+              .active_listing_count ??
+            0
+          )
+      })
+    )
+    .filter(
+      (
+        section
+      ) =>
+        Number.isFinite(
+          section
+            .shop_section_id
+        ) &&
+        section
+          .shop_section_id >
+        0 &&
+        section.title
+    )
+    .sort(
+      (
+        a,
+        b
+      ) =>
+        a.rank -
+        b.rank
+    );
+}
+
+
+/* =========================================================
+   ALL ACTIVE LISTINGS
+========================================================= */
+
+async function fetchAllActiveListings() {
+  const shopId =
+    await getShopId();
+
+  const results =
+    [];
+
+  let offset =
+    0;
+
+  let total =
+    Infinity;
+
+  while (
+    offset <
+    total
+  ) {
+    const data =
+      await etsyRequest(
+        `/shops/${shopId}/listings`,
+        {
+          params: {
+            state:
+              'active',
+
+            limit:
+              100,
+
+            offset,
+
+            sort_on:
+              'created',
+
+            sort_order:
+              'desc'
+          }
+        }
+      );
+
+    const page =
+      Array.isArray(
+        data
+          ?.results
+      )
+        ? data.results
+        : [];
+
+    total =
+      Number(
+        data
+          ?.count ??
+        page.length
+      );
+
+    results.push(
+      ...page
+    );
+
+    if (
+      !page.length ||
+      page.length <
+        100
+    ) {
+      break;
+    }
+
+    offset +=
+      page.length;
+  }
+
+  return results;
+}
+
+
+/* =========================================================
+   SECTION AI CLASSIFIER
+========================================================= */
+
+async function classifySectionChunk(
+  sections,
+  listings
+) {
+  const allowedIds =
+    new Set(
+      sections.map(
+        (
+          section
+        ) =>
+          String(
+            section
+              .shop_section_id
+          )
+      )
+    );
+
+  const schema = {
+    type:
+      'object',
+
+    additionalProperties:
+      false,
+
+    required: [
+      'assignments'
+    ],
+
+    properties: {
+      assignments: {
+        type:
+          'array',
+
+        items: {
+          type:
+            'object',
+
+          additionalProperties:
+            false,
+
+          required: [
+            'listing_id',
+            'section_id',
+            'confidence',
+            'reason'
+          ],
+
+          properties: {
+            listing_id: {
+              type:
+                'string'
+            },
+
+            section_id: {
+              type: [
+                'integer',
+                'null'
+              ]
+            },
+
+            confidence: {
+              type:
+                'number',
+
+              minimum:
+                0,
+
+              maximum:
+                1
+            },
+
+            reason: {
+              type:
+                'string'
+            }
+          }
+        }
+      }
+    }
+  };
+
+  const sectionText =
+    sections
+      .map(
+        (
+          section
+        ) =>
+          `${section.shop_section_id} = ${section.title}`
+      )
+      .join(
+        '\n'
+      );
+
+  const listingText =
+    listings
+      .map(
+        (
+          listing
+        ) => {
+          const id =
+            String(
+              listing
+                .listing_id
+            );
+
+          const title =
+            normalizeTitle(
+              listing
+                .title ||
+              ''
+            );
+
+          const tags =
+            normalizeTags(
+              listing
+                .tags ||
+              []
+            ).slice(
+              0,
+              13
+            );
+
+          const description =
+            normalizeDescription(
+              listing
+                .description ||
+              ''
+            ).slice(
+              0,
+              700
+            );
+
+          return `
+LISTING ${id}
+TITLE: ${title}
+TAGS: ${JSON.stringify(tags)}
+DESCRIPTION: ${description}
+`.trim();
+        }
+      )
+      .join(
+        '\n\n'
+      );
+
+  const response =
+    await openai()
+      .responses
+      .create({
+        model:
+          SEO_MODEL,
+
+        store:
+          false,
+
+        input: [
+          {
+            role:
+              'user',
+
+            content: [
+              {
+                type:
+                  'input_text',
+
+                text:
+`You organize Etsy listings into EXISTING shop sections.
+
+You MUST choose only from the section IDs below.
+
+Never create a new section.
+
+If none is a confident fit, return section_id null.
+
+Use:
+- product subject
+- visual style
+- location or theme
+- buyer intent
+
+Ignore generic phrases such as:
+wall art, canvas, decor, gift, print.
+
+Be conservative.
+
+EXISTING SECTIONS:
+
+${sectionText}
+
+UNGROUPED LISTINGS:
+
+${listingText}
+
+Return exactly one assignment for every listing.`
+              }
+            ]
+          }
+        ],
+
+        text: {
+          format: {
+            type:
+              'json_schema',
+
+            name:
+              'etsy_section_assignments',
+
+            strict:
+              true,
+
+            schema
+          }
+        }
+      });
+
+  const parsed =
+    JSON.parse(
+      response.output_text ||
+      '{}'
+    );
+
+  const assignments =
+    Array.isArray(
+      parsed
+        .assignments
+    )
+      ? parsed.assignments
+      : [];
+
+  const byListing =
+    new Map(
+      assignments.map(
+        (
+          item
+        ) => [
+          String(
+            item
+              .listing_id
+          ),
+          item
+        ]
+      )
+    );
+
+  return listings.map(
+    (
+      listing
+    ) => {
+      const listingId =
+        String(
+          listing
+            .listing_id
+        );
+
+      const raw =
+        byListing.get(
+          listingId
+        );
+
+      const sectionId =
+        raw
+          ?.section_id ==
+        null
+          ? null
+          : Number(
+              raw
+                .section_id
+            );
+
+      const validSection =
+        sectionId !=
+          null &&
+        allowedIds.has(
+          String(
+            sectionId
+          )
+        );
+
+      const confidence =
+        Number(
+          raw
+            ?.confidence ||
+          0
+        );
+
+      return {
+        listing_id:
+          listingId,
+
+        title:
+          normalizeTitle(
+            listing
+              .title ||
+            ''
+          ),
+
+        current_section_id:
+          getListingSectionId(
+            listing
+          ),
+
+        proposed_section_id:
+          validSection
+            ? sectionId
+            : null,
+
+        confidence,
+
+        status:
+          validSection &&
+          confidence >=
+            SECTION_CONFIDENCE_THRESHOLD
+            ? 'ready'
+            : 'needs_review',
+
+        reason:
+          String(
+            raw
+              ?.reason ||
+            'No confident section match'
+          )
+      };
+    }
+  );
+}
+
+async function classifyUngroupedListings(
+  sections,
+  listings
+) {
+  const results =
+    [];
+
+  for (
+    let i = 0;
+    i <
+    listings.length;
+    i +=
+      SECTION_CLASSIFY_BATCH
+  ) {
+    const chunk =
+      listings.slice(
+        i,
+        i +
+          SECTION_CLASSIFY_BATCH
+      );
+
+    const classified =
+      await classifySectionChunk(
+        sections,
+        chunk
+      );
+
+    results.push(
+      ...classified
+    );
+  }
+
+  return results;
+}
+
+
+/* =========================================================
+   SECTION PREVIEW
+========================================================= */
+
+async function saveSectionPreview(
+  payload
+) {
+  const token =
+    randomBytes(
+      24
+    ).toString(
+      'base64url'
+    );
+
+  const value = {
+    ...payload,
+
+    token,
+
+    created_at:
+      Date.now()
+  };
+
+  await setJson(
+    sectionPreviewKey(
+      token
+    ),
+    value,
+    {
+      ex:
+        PREVIEW_TTL_SECONDS
+    }
+  );
+
+  return value;
+}
+
+
+/* =========================================================
+   SAFE SECTION ASSIGNMENT
+========================================================= */
+
+async function assignListingToSection(
+  listingId,
+  sectionId
+) {
+  const shopId =
+    await getShopId();
+
+  const path =
+    `/shops/${shopId}/listings/${listingId}`;
+
+  const attempts = [
+    {
+      method:
+        'PATCH',
+
+      body: {
+        shop_section_id:
+          Number(
+            sectionId
+          )
+      }
+    },
+
+    {
+      method:
+        'PATCH',
+
+      body: {
+        section_id:
+          Number(
+            sectionId
+          )
+      }
+    },
+
+    {
+      method:
+        'PUT',
+
+      body: {
+        section_id:
+          Number(
+            sectionId
+          )
+      }
+    }
+  ];
+
+  let lastError =
+    null;
+
+  for (
+    const attempt of
+    attempts
+  ) {
+    try {
+      await etsyRequest(
+        path,
+        attempt
+      );
+
+      const verified =
+        await etsyRequest(
+          `/listings/${listingId}`
+        );
+
+      if (
+        getListingSectionId(
+          verified
+        ) ===
+        Number(
+          sectionId
+        )
+      ) {
+        return {
+          verified:
+            true,
+
+          listing:
+            verified
+        };
+      }
+
+    } catch (
+      error
+    ) {
+      lastError =
+        error;
+    }
+  }
+
+  if (
+    lastError
+  ) {
+    throw lastError;
+  }
+
+  const err =
+    new Error(
+      'Section assignment could not be verified'
+    );
+
+  err.status =
+    409;
+
+  throw err;
 }
 
 
@@ -1065,7 +1969,10 @@ router.use(
 
 router.get(
   '/health',
-  (_req, res) => {
+  (
+    _req,
+    res
+  ) => {
     res.json({
       ok:
         true,
@@ -1074,7 +1981,7 @@ router.get(
         'vaelons-seo-engine',
 
       version:
-        '1.0.0',
+        '2.0.0',
 
       model:
         SEO_MODEL,
@@ -1083,8 +1990,710 @@ router.get(
         'ONAYLIYORUM',
 
       safe_flow:
-        'prepare -> QA -> preview -> approval -> PATCH -> verify'
+        'prepare -> QA -> preview -> approval -> PATCH -> verify',
+
+      listing_directory:
+        true,
+
+      section_organizer:
+        true
     });
+  }
+);
+
+
+/* =========================================================
+   LIST LISTINGS
+========================================================= */
+
+router.get(
+  '/listings',
+  async (
+    req,
+    res,
+    next
+  ) => {
+    try {
+      const limit =
+        clampInt(
+          req.query
+            .limit ||
+          50,
+          1,
+          100
+        );
+
+      const offset =
+        Math.max(
+          0,
+          Number(
+            req.query
+              .offset ||
+            0
+          )
+        );
+
+      const state =
+        String(
+          req.query
+            .state ||
+          'active'
+        );
+
+      const shopId =
+        await getShopId();
+
+      const [
+        data,
+        sections
+      ] =
+        await Promise.all([
+          etsyRequest(
+            `/shops/${shopId}/listings`,
+            {
+              params: {
+                state,
+                limit,
+                offset
+              }
+            }
+          ),
+
+          getShopSections()
+        ]);
+
+      const sectionMap =
+        new Map(
+          sections.map(
+            (
+              section
+            ) => [
+              section
+                .shop_section_id,
+
+              section
+                .title
+            ]
+          )
+        );
+
+      const results =
+        Array.isArray(
+          data
+            ?.results
+        )
+          ? data.results
+          : [];
+
+      res.json({
+        count:
+          Number(
+            data
+              ?.count ??
+            results.length
+          ),
+
+        limit,
+
+        offset,
+
+        results:
+          results.map(
+            (
+              listing
+            ) => {
+              const sectionId =
+                getListingSectionId(
+                  listing
+                );
+
+              return {
+                listing_id:
+                  Number(
+                    listing
+                      .listing_id
+                  ),
+
+                title:
+                  normalizeTitle(
+                    listing
+                      .title ||
+                    ''
+                  ),
+
+                state:
+                  listing
+                    .state ||
+                  null,
+
+                shop_section_id:
+                  sectionId,
+
+                section_title:
+                  sectionId
+                    ? sectionMap.get(
+                        sectionId
+                      ) ||
+                      null
+                    : null,
+
+                grouped:
+                  Boolean(
+                    sectionId
+                  )
+              };
+            }
+          ),
+
+        etsy_modified:
+          false
+      });
+
+    } catch (
+      error
+    ) {
+      next(
+        error
+      );
+    }
+  }
+);
+
+
+/* =========================================================
+   LIST EXISTING SECTIONS
+========================================================= */
+
+router.get(
+  '/sections',
+  async (
+    _req,
+    res,
+    next
+  ) => {
+    try {
+      const sections =
+        await getShopSections();
+
+      res.json({
+        count:
+          sections.length,
+
+        sections,
+
+        etsy_modified:
+          false
+      });
+
+    } catch (
+      error
+    ) {
+      next(
+        error
+      );
+    }
+  }
+);
+
+
+/* =========================================================
+   SCAN UNGROUPED LISTINGS
+========================================================= */
+
+router.post(
+  '/sections/scan',
+  async (
+    _req,
+    res,
+    next
+  ) => {
+    try {
+      const [
+        sections,
+        listings
+      ] =
+        await Promise.all([
+          getShopSections(),
+          fetchAllActiveListings()
+        ]);
+
+      if (
+        !sections.length
+      ) {
+        return res
+          .status(
+            409
+          )
+          .json({
+            error:
+              'No existing Etsy shop sections found. Organizer will not create new sections.',
+
+            etsy_modified:
+              false
+          });
+      }
+
+      const validSectionIds =
+        new Set(
+          sections.map(
+            (
+              section
+            ) =>
+              section
+                .shop_section_id
+          )
+        );
+
+      const alreadyGrouped =
+        [];
+
+      const ungrouped =
+        [];
+
+      for (
+        const listing of
+        listings
+      ) {
+        const sectionId =
+          getListingSectionId(
+            listing
+          );
+
+        if (
+          sectionId &&
+          validSectionIds.has(
+            sectionId
+          )
+        ) {
+          alreadyGrouped.push(
+            listing
+          );
+
+        } else {
+          ungrouped.push(
+            listing
+          );
+        }
+      }
+
+      const assignments =
+        ungrouped.length
+          ? await classifyUngroupedListings(
+              sections,
+              ungrouped
+            )
+          : [];
+
+      const sectionMap =
+        new Map(
+          sections.map(
+            (
+              section
+            ) => [
+              section
+                .shop_section_id,
+
+              section
+                .title
+            ]
+          )
+        );
+
+      const enriched =
+        assignments.map(
+          (
+            item
+          ) => ({
+            ...item,
+
+            proposed_section_title:
+              item
+                .proposed_section_id
+                ? sectionMap.get(
+                    item
+                      .proposed_section_id
+                  ) ||
+                  null
+                : null
+          })
+        );
+
+      const preview =
+        await saveSectionPreview({
+          active_listing_count:
+            listings.length,
+
+          already_grouped_count:
+            alreadyGrouped.length,
+
+          ungrouped_count:
+            ungrouped.length,
+
+          ready_count:
+            enriched.filter(
+              (
+                item
+              ) =>
+                item
+                  .status ===
+                'ready'
+            ).length,
+
+          needs_review_count:
+            enriched.filter(
+              (
+                item
+              ) =>
+                item
+                  .status ===
+                'needs_review'
+            ).length,
+
+          sections,
+
+          assignments:
+            enriched
+        });
+
+      res.json({
+        action:
+          'section_preview_ready',
+
+        active_listing_count:
+          listings.length,
+
+        already_grouped_count:
+          alreadyGrouped.length,
+
+        ungrouped_count:
+          ungrouped.length,
+
+        ready_count:
+          preview
+            .ready_count,
+
+        needs_review_count:
+          preview
+            .needs_review_count,
+
+        assignments:
+          enriched,
+
+        preview_token:
+          preview.token,
+
+        approval_required:
+          'ONAYLIYORUM',
+
+        etsy_modified:
+          false
+      });
+
+    } catch (
+      error
+    ) {
+      next(
+        error
+      );
+    }
+  }
+);
+
+
+/* =========================================================
+   APPLY GROUP ASSIGNMENTS
+========================================================= */
+
+router.post(
+  '/sections/apply',
+  async (
+    req,
+    res,
+    next
+  ) => {
+    let etsyModified =
+      false;
+
+    try {
+      const approval =
+        String(
+          req.body
+            ?.approval ||
+          ''
+        ).trim();
+
+      const token =
+        String(
+          req.body
+            ?.preview_token ||
+          ''
+        ).trim();
+
+      if (
+        approval !==
+        'ONAYLIYORUM'
+      ) {
+        return res
+          .status(
+            400
+          )
+          .json({
+            error:
+              'Exact approval text ONAYLIYORUM is required',
+
+            etsy_modified:
+              false
+          });
+      }
+
+      const preview =
+        await getJson(
+          sectionPreviewKey(
+            token
+          )
+        );
+
+      if (
+        !preview
+      ) {
+        return res
+          .status(
+            404
+          )
+          .json({
+            error:
+              'Section preview not found or expired',
+
+            etsy_modified:
+              false
+          });
+      }
+
+      const currentSections =
+        await getShopSections();
+
+      const currentSectionIds =
+        new Set(
+          currentSections.map(
+            (
+              section
+            ) =>
+              section
+                .shop_section_id
+          )
+        );
+
+      const ready =
+        Array.isArray(
+          preview
+            .assignments
+        )
+          ? preview
+              .assignments
+              .filter(
+                (
+                  item
+                ) =>
+                  item
+                    .status ===
+                    'ready' &&
+                  Number(
+                    item
+                      .confidence ||
+                    0
+                  ) >=
+                    SECTION_CONFIDENCE_THRESHOLD &&
+                  currentSectionIds.has(
+                    Number(
+                      item
+                        .proposed_section_id
+                    )
+                  )
+              )
+          : [];
+
+      const placed =
+        [];
+
+      const skipped =
+        [];
+
+      const failed =
+        [];
+
+      for (
+        const item of
+        ready
+      ) {
+        const listingId =
+          asListingId(
+            item
+              .listing_id
+          );
+
+        try {
+          const current =
+            await etsyRequest(
+              `/listings/${listingId}`
+            );
+
+          const currentSectionId =
+            getListingSectionId(
+              current
+            );
+
+          if (
+            currentSectionId
+          ) {
+            skipped.push({
+              listing_id:
+                Number(
+                  listingId
+                ),
+
+              title:
+                normalizeTitle(
+                  current
+                    .title ||
+                  item
+                    .title ||
+                  ''
+                ),
+
+              reason:
+                'listing_is_already_grouped',
+
+              current_section_id:
+                currentSectionId
+            });
+
+            continue;
+          }
+
+          const result =
+            await assignListingToSection(
+              listingId,
+              Number(
+                item
+                  .proposed_section_id
+              )
+            );
+
+          etsyModified =
+            true;
+
+          placed.push({
+            listing_id:
+              Number(
+                listingId
+              ),
+
+            title:
+              normalizeTitle(
+                result
+                  .listing
+                  ?.title ||
+                item
+                  .title ||
+                ''
+              ),
+
+            section_id:
+              Number(
+                item
+                  .proposed_section_id
+              ),
+
+            section_title:
+              item
+                .proposed_section_title ||
+              null,
+
+            verified:
+              true
+          });
+
+        } catch (
+          error
+        ) {
+          failed.push({
+            listing_id:
+              Number(
+                listingId
+              ),
+
+            title:
+              item
+                .title ||
+              null,
+
+            error:
+              error.message
+          });
+        }
+      }
+
+      res
+        .status(
+          failed.length
+            ? 207
+            : 200
+        )
+        .json({
+          success:
+            failed.length ===
+            0,
+
+          action:
+            'section_organization_applied',
+
+          placed_count:
+            placed.length,
+
+          skipped_count:
+            skipped.length,
+
+          failed_count:
+            failed.length,
+
+          needs_review_count:
+            Array.isArray(
+              preview
+                .assignments
+            )
+              ? preview
+                  .assignments
+                  .filter(
+                    (
+                      item
+                    ) =>
+                      item
+                        .status ===
+                      'needs_review'
+                  )
+                  .length
+              : 0,
+
+          placed,
+
+          skipped,
+
+          failed,
+
+          etsy_modified:
+            etsyModified
+        });
+
+    } catch (
+      error
+    ) {
+      error.etsyModified =
+        etsyModified;
+
+      next(
+        error
+      );
+    }
   }
 );
 
@@ -1129,10 +2738,13 @@ router.post(
         );
 
       if (
-        !validation.valid
+        !validation
+          .valid
       ) {
         await setJson(
-          stateKey(listingId),
+          stateKey(
+            listingId
+          ),
           {
             status:
               'blocked_validation',
@@ -1141,18 +2753,24 @@ router.post(
               Date.now(),
 
             validation_errors:
-              validation.errors
+              validation
+                .errors
           }
         );
 
         return res
-          .status(422)
+          .status(
+            422
+          )
           .json({
             listing_id:
-              Number(listingId),
+              Number(
+                listingId
+              ),
 
             exact_title:
-              original.title,
+              original
+                .title,
 
             action:
               'blocked',
@@ -1161,7 +2779,8 @@ router.post(
               'seo_proposal_failed_validation',
 
             validation_errors:
-              validation.errors,
+              validation
+                .errors,
 
             etsy_modified:
               false
@@ -1169,7 +2788,8 @@ router.post(
       }
 
       const normalized =
-        validation.normalized;
+        validation
+          .normalized;
 
       if (
         proposal
@@ -1208,9 +2828,13 @@ router.post(
         normalized.description ===
           original.description;
 
-      if (noChanges) {
+      if (
+        noChanges
+      ) {
         await setJson(
-          stateKey(listingId),
+          stateKey(
+            listingId
+          ),
           {
             status:
               'healthy',
@@ -1227,7 +2851,9 @@ router.post(
 
         return res.json({
           listing_id:
-            Number(listingId),
+            Number(
+              listingId
+            ),
 
           exact_title:
             original.title,
@@ -1250,9 +2876,14 @@ router.post(
           normalized
         );
 
-      if (!qa.passed) {
+      if (
+        !qa
+          .passed
+      ) {
         await setJson(
-          stateKey(listingId),
+          stateKey(
+            listingId
+          ),
           {
             status:
               'blocked_qa',
@@ -1265,10 +2896,14 @@ router.post(
         );
 
         return res
-          .status(422)
+          .status(
+            422
+          )
           .json({
             listing_id:
-              Number(listingId),
+              Number(
+                listingId
+              ),
 
             exact_title:
               original.title,
@@ -1289,7 +2924,9 @@ router.post(
       const preview =
         await savePreview({
           listing_id:
-            String(listingId),
+            String(
+              listingId
+            ),
 
           original,
 
@@ -1303,32 +2940,38 @@ router.post(
 
           proposal: {
             change_title:
-              proposal.change_title ===
+              proposal
+                .change_title ===
               true,
 
             change_tags:
-              proposal.change_tags ===
+              proposal
+                .change_tags ===
               true,
 
             change_description:
-              proposal.change_description ===
+              proposal
+                .change_description ===
               true,
 
             confidence:
               Number(
-                proposal.confidence ||
+                proposal
+                  .confidence ||
                 0
               ),
 
             risk_level:
               String(
-                proposal.risk_level ||
+                proposal
+                  .risk_level ||
                 'medium'
               ),
 
             reason:
               String(
-                proposal.reason ||
+                proposal
+                  .reason ||
                 ''
               ),
 
@@ -1347,7 +2990,9 @@ router.post(
 
       res.json({
         listing_id:
-          Number(listingId),
+          Number(
+            listingId
+          ),
 
         exact_title:
           original.title,
@@ -1361,7 +3006,8 @@ router.post(
           normalized,
 
         change_flags:
-          preview.proposal,
+          preview
+            .proposal,
 
         qa,
 
@@ -1375,8 +3021,12 @@ router.post(
           false
       });
 
-    } catch (error) {
-      next(error);
+    } catch (
+      error
+    ) {
+      next(
+        error
+      );
     }
   }
 );
@@ -1402,11 +3052,15 @@ router.get(
 
       res.json({
         listing_id:
-          Number(listingId),
+          Number(
+            listingId
+          ),
 
         state:
           await getJson(
-            stateKey(listingId)
+            stateKey(
+              listingId
+            )
           ),
 
         recent_history:
@@ -1418,8 +3072,12 @@ router.get(
           false
       });
 
-    } catch (error) {
-      next(error);
+    } catch (
+      error
+    ) {
+      next(
+        error
+      );
     }
   }
 );
@@ -1465,7 +3123,9 @@ router.post(
         'ONAYLIYORUM'
       ) {
         return res
-          .status(400)
+          .status(
+            400
+          )
           .json({
             error:
               'Exact approval text ONAYLIYORUM is required',
@@ -1477,12 +3137,18 @@ router.post(
 
       const preview =
         await getJson(
-          previewKey(token)
+          previewKey(
+            token
+          )
         );
 
-      if (!preview) {
+      if (
+        !preview
+      ) {
         return res
-          .status(404)
+          .status(
+            404
+          )
           .json({
             error:
               'SEO preview not found or expired',
@@ -1494,12 +3160,15 @@ router.post(
 
       if (
         String(
-          preview.listing_id
+          preview
+            .listing_id
         ) !==
         listingId
       ) {
         return res
-          .status(409)
+          .status(
+            409
+          )
           .json({
             error:
               'Preview token belongs to another listing',
@@ -1516,7 +3185,9 @@ router.post(
         true
       ) {
         return res
-          .status(409)
+          .status(
+            409
+          )
           .json({
             error:
               'SEO preview did not pass QA',
@@ -1537,11 +3208,16 @@ router.post(
         );
 
       if (
-        snapshotHash(current) !==
-        preview.original_hash
+        snapshotHash(
+          current
+        ) !==
+        preview
+          .original_hash
       ) {
         return res
-          .status(409)
+          .status(
+            409
+          )
           .json({
             error:
               'Listing changed after SEO preview was created. Generate a fresh preview.',
@@ -1557,11 +3233,14 @@ router.post(
         );
 
       if (
-        !Object.keys(body)
-          .length
+        !Object.keys(
+          body
+        ).length
       ) {
         return res
-          .status(409)
+          .status(
+            409
+          )
           .json({
             error:
               'Preview contains no approved SEO changes',
@@ -1601,39 +3280,39 @@ router.post(
           preview.proposal
         );
 
-      const event = {
-        type:
-          'seo_publish',
-
-        success:
-          publishedOk,
-
-        preview_token:
-          token,
-
-        before:
-          preview.original,
-
-        after_expected:
-          preview.proposed,
-
-        after_verified:
-          verified,
-
-        change_flags:
-          preview.proposal,
-
-        qa:
-          preview.qa
-      };
-
       await addHistory(
         listingId,
-        event
+        {
+          type:
+            'seo_publish',
+
+          success:
+            publishedOk,
+
+          preview_token:
+            token,
+
+          before:
+            preview.original,
+
+          after_expected:
+            preview.proposed,
+
+          after_verified:
+            verified,
+
+          change_flags:
+            preview.proposal,
+
+          qa:
+            preview.qa
+        }
       );
 
       await setJson(
-        stateKey(listingId),
+        stateKey(
+          listingId
+        ),
         {
           status:
             publishedOk
@@ -1677,7 +3356,9 @@ router.post(
               : 'manual_attention',
 
           changed_fields:
-            Object.keys(body),
+            Object.keys(
+              body
+            ),
 
           before:
             preview.original,
@@ -1692,18 +3373,22 @@ router.post(
             true
         });
 
-    } catch (error) {
+    } catch (
+      error
+    ) {
       error.etsyModified =
         etsyModified;
 
-      next(error);
+      next(
+        error
+      );
     }
   }
 );
 
 
 /* =========================================================
-   ROLLBACK
+   ROLLBACK SEO
 ========================================================= */
 
 router.post(
@@ -1735,7 +3420,9 @@ router.post(
         'GERI_AL ONAYLIYORUM'
       ) {
         return res
-          .status(400)
+          .status(
+            400
+          )
           .json({
             error:
               'Exact approval text GERI_AL ONAYLIYORUM is required',
@@ -1752,16 +3439,24 @@ router.post(
 
       const lastPublish =
         history.find(
-          (item) =>
-            item?.type ===
+          (
+            item
+          ) =>
+            item
+              ?.type ===
               'seo_publish' &&
-            item?.success ===
+            item
+              ?.success ===
               true
         );
 
-      if (!lastPublish) {
+      if (
+        !lastPublish
+      ) {
         return res
-          .status(404)
+          .status(
+            404
+          )
           .json({
             error:
               'No successful SEO publish event available for rollback',
@@ -1782,14 +3477,18 @@ router.post(
         );
 
       if (
-        snapshotHash(current) !==
+        snapshotHash(
+          current
+        ) !==
         snapshotHash(
           lastPublish
             .after_verified
         )
       ) {
         return res
-          .status(409)
+          .status(
+            409
+          )
           .json({
             error:
               'Listing changed after the SEO publish. Automatic rollback is blocked.',
@@ -1863,14 +3562,17 @@ router.post(
             rollbackOk,
 
           restored:
-            lastPublish.before,
+            lastPublish
+              .before,
 
           verified
         }
       );
 
       await setJson(
-        stateKey(listingId),
+        stateKey(
+          listingId
+        ),
         {
           status:
             rollbackOk
@@ -1917,11 +3619,15 @@ router.post(
             true
         });
 
-    } catch (error) {
+    } catch (
+      error
+    ) {
       error.etsyModified =
         etsyModified;
 
-      next(error);
+      next(
+        error
+      );
     }
   }
 );
