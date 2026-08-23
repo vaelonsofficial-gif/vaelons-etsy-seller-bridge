@@ -124,6 +124,17 @@ const RECENT_SCENE_HISTORY_LIMIT =
 const RECENT_QA_COMPARISON_LIMIT =
   3;
 
+const MANAGER_READ_CACHE_TTL_MS =
+  clampInt(
+    process.env.MANAGER_READ_CACHE_TTL_MS ||
+    15000,
+    1000,
+    60000
+  );
+
+const managerReadCache =
+  new Map();
+
 const SCENE_FAMILIES = [
   {
     id: 'museum_wall',
@@ -477,6 +488,202 @@ function parseCookies(
   }
 
   return result;
+}
+
+
+/* =========================================================
+   MANAGER READ CACHE
+========================================================= */
+
+function managerCacheKey(
+  name,
+  params = {}
+) {
+  return `${name}:${JSON.stringify(params)}`;
+}
+
+function readManagerCache(
+  key
+) {
+  const entry =
+    managerReadCache.get(
+      key
+    );
+
+  if (
+    !entry ||
+    entry.expiresAt <=
+      Date.now()
+  ) {
+    if (entry) {
+      managerReadCache.delete(
+        key
+      );
+    }
+
+    return null;
+  }
+
+  return entry.value;
+}
+
+function writeManagerCache(
+  key,
+  value,
+  ttlMs =
+    MANAGER_READ_CACHE_TTL_MS
+) {
+  managerReadCache.set(
+    key,
+    {
+      value,
+      expiresAt:
+        Date.now() +
+        ttlMs
+    }
+  );
+
+  return value;
+}
+
+async function managerCached(
+  key,
+  loader,
+  ttlMs =
+    MANAGER_READ_CACHE_TTL_MS
+) {
+  const cached =
+    readManagerCache(
+      key
+    );
+
+  if (
+    cached !== null
+  ) {
+    return {
+      value:
+        cached,
+      cache_hit:
+        true
+    };
+  }
+
+  const value =
+    await loader();
+
+  writeManagerCache(
+    key,
+    value,
+    ttlMs
+  );
+
+  return {
+    value,
+    cache_hit:
+      false
+  };
+}
+
+async function buildManagerWorkerStatus() {
+  const [
+    etsy,
+    initialized,
+    pendingNewCount,
+    scanCursor,
+    recentSceneHistory
+  ] =
+    await Promise.all([
+      getTokenStatus(),
+      redis().get(
+        `${PREFIX}:initialized`
+      ),
+      redis().scard(
+        `${PREFIX}:pending-new`
+      ),
+      redis().get(
+        `${PREFIX}:scan-cursor`
+      ),
+      getRecentSceneHistory()
+    ]);
+
+  return {
+    service:
+      'vaelons-ai-thumbnail-worker',
+
+    version:
+      '3.2.0',
+
+    mode:
+      WORKER_MODE,
+
+    etsy,
+
+    initialized:
+      Boolean(
+        initialized
+      ),
+
+    pending_new_count:
+      Number(
+        pendingNewCount
+      ),
+
+    scan_cursor:
+      Number(
+        scanCursor
+      ) ||
+      0,
+
+    auto_delete_old_rank1:
+      AUTO_DELETE_OLD_RANK1,
+
+    approval_required:
+      'ONAYLIYORUM',
+
+    anti_repeat_memory:
+      true,
+
+    artwork_reference_isolation:
+      true,
+
+    hard_staging_gate:
+      true,
+
+    masked_environment_audit:
+      true,
+
+    cropped_artwork_identity_qa:
+      true,
+
+    max_generation_attempts:
+      MAX_GENERATION_ATTEMPTS,
+
+    recent_scene_count:
+      recentSceneHistory.length,
+
+    etsy_modified:
+      false
+  };
+}
+
+async function getManagerListingPage({
+  limit,
+  offset,
+  state
+}) {
+  const shopId =
+    await getShopId();
+
+  return etsyRequest(
+    `/shops/${shopId}/listings`,
+    {
+      params: {
+        limit,
+        offset,
+        state
+      }
+    }
+  );
 }
 
 
@@ -6868,6 +7075,208 @@ app.post(
 app.use(
   '/api',
   bridgeAuth
+);
+
+
+/* =========================================================
+   MANAGER FAST READ API
+========================================================= */
+
+app.get(
+  '/api/manager/status',
+  async (
+    _req,
+    res,
+    next
+  ) => {
+    const startedAt =
+      Date.now();
+
+    try {
+      const key =
+        managerCacheKey(
+          'manager-status'
+        );
+
+      const result =
+        await managerCached(
+          key,
+          buildManagerWorkerStatus
+        );
+
+      res.json({
+        ok:
+          true,
+
+        manager_api:
+          '1.0.0',
+
+        cache_hit:
+          result.cache_hit,
+
+        cache_ttl_ms:
+          MANAGER_READ_CACHE_TTL_MS,
+
+        duration_ms:
+          Date.now() -
+          startedAt,
+
+        worker:
+          result.value,
+
+        etsy_modified:
+          false
+      });
+
+    } catch (
+      error
+    ) {
+      next(
+        error
+      );
+    }
+  }
+);
+
+app.get(
+  '/api/manager/bootstrap',
+  async (
+    req,
+    res,
+    next
+  ) => {
+    const startedAt =
+      Date.now();
+
+    try {
+      const limit =
+        clampInt(
+          req.query
+            .limit ||
+          100,
+          1,
+          100
+        );
+
+      const offset =
+        Math.max(
+          0,
+          Number(
+            req.query
+              .offset ||
+            0
+          )
+        );
+
+      const state =
+        String(
+          req.query
+            .state ||
+          'active'
+        );
+
+      const statusKey =
+        managerCacheKey(
+          'manager-status'
+        );
+
+      const listingsKey =
+        managerCacheKey(
+          'manager-listings',
+          {
+            limit,
+            offset,
+            state
+          }
+        );
+
+      const [
+        statusResult,
+        listingsResult
+      ] =
+        await Promise.all([
+          managerCached(
+            statusKey,
+            buildManagerWorkerStatus
+          ),
+          managerCached(
+            listingsKey,
+            () =>
+              getManagerListingPage({
+                limit,
+                offset,
+                state
+              })
+          )
+        ]);
+
+      const listings =
+        listingsResult.value ||
+        {};
+
+      res.json({
+        ok:
+          true,
+
+        manager_api:
+          '1.0.0',
+
+        cache: {
+          status_hit:
+            statusResult.cache_hit,
+
+          listings_hit:
+            listingsResult.cache_hit,
+
+          ttl_ms:
+            MANAGER_READ_CACHE_TTL_MS
+        },
+
+        duration_ms:
+          Date.now() -
+          startedAt,
+
+        worker:
+          statusResult.value,
+
+        listings: {
+          state,
+          limit,
+          offset,
+
+          total_count:
+            Number(
+              listings.count
+            ) ||
+            null,
+
+          page_count:
+            Array.isArray(
+              listings.results
+            )
+              ? listings.results.length
+              : 0,
+
+          results:
+            Array.isArray(
+              listings.results
+            )
+              ? listings.results
+              : []
+        },
+
+        etsy_modified:
+          false
+      });
+
+    } catch (
+      error
+    ) {
+      next(
+        error
+      );
+    }
+  }
 );
 
 app.get(
