@@ -2,7 +2,7 @@ import express from 'express';
 import sharp from 'sharp';
 import OpenAI, { toFile } from 'openai';
 import { Redis } from '@upstash/redis';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 
 import {
   randomBase64Url,
@@ -18,7 +18,9 @@ import {
   setInitialToken,
   getTokenStatus,
   getListingImages,
-  uploadListingImage
+  uploadListingImage,
+  setListingImageRank,
+  deleteListingImage
 } from './etsy.js';
 
 const app = express();
@@ -56,10 +58,7 @@ const LOCK_TTL_SECONDS =
   10 * 60;
 
 const WORKER_MODE =
-  String(
-    process.env.WORKER_MODE ||
-    'safe'
-  ).toLowerCase();
+  'safe';
 
 const WORKER_BATCH_SIZE =
   clampInt(
@@ -105,7 +104,106 @@ const IMAGE_SIZE =
 
 const IMAGE_QUALITY =
   process.env.OPENAI_IMAGE_QUALITY ||
-  'medium';
+  'high';
+
+const RECENT_SCENE_HISTORY_LIMIT =
+  12;
+
+const RECENT_QA_COMPARISON_LIMIT =
+  3;
+
+const SCENE_FAMILIES = [
+  {
+    id: 'bright_gallery',
+    label: 'Bright Gallery Wall',
+    description:
+      'A bright neutral gallery wall with generous negative space and either no furniture or one slim bench well below the artwork.',
+    decor_signature:
+      'gallery_wall+optional_slim_bench',
+    forbidden:
+      'No console table, no stacked books, no vase, no shelf styling.'
+  },
+  {
+    id: 'airy_living',
+    label: 'Airy Living Room',
+    description:
+      'A daylight-filled refined living room with a low neutral sofa entering only the lower edge of frame; the artwork remains the dominant object.',
+    decor_signature:
+      'low_sofa+open_wall',
+    forbidden:
+      'No console below the artwork, no stacked books, no decorative vase cluster.'
+  },
+  {
+    id: 'stone_niche',
+    label: 'Architectural Stone Niche',
+    description:
+      'A pale limestone or soft plaster architectural wall/niche with clean daylight and one quiet pedestal or nothing below the artwork.',
+    decor_signature:
+      'stone_niche+minimal_pedestal',
+    forbidden:
+      'No books, no tabletop styling, no vase-and-branch composition.'
+  },
+  {
+    id: 'refined_office',
+    label: 'Refined Home Office',
+    description:
+      'A bright sophisticated home office with only a clean desk edge or chair visible low in frame; the wall art is large and unobstructed.',
+    decor_signature:
+      'desk_edge+chair',
+    forbidden:
+      'No book stacks below the art, no vase on a console, no cluttered shelves.'
+  },
+  {
+    id: 'calm_bedroom',
+    label: 'Calm Bedroom',
+    description:
+      'A serene neutral bedroom with a low headboard or bedding at the bottom edge and a large artwork centered above, lit by neutral natural daylight.',
+    decor_signature:
+      'low_bed+open_wall',
+    forbidden:
+      'No console, no book stacks, no large vase, no amber bedside glow.'
+  },
+  {
+    id: 'modern_dining',
+    label: 'Modern Dining Space',
+    description:
+      'A bright modern dining space where a table edge and simple chairs sit low in the composition while the artwork dominates the wall.',
+    decor_signature:
+      'dining_table_edge+chairs',
+    forbidden:
+      'No vase-and-books pairing, no heavy centerpiece, no warm restaurant lighting.'
+  },
+  {
+    id: 'quiet_entry',
+    label: 'Quiet Entry Gallery',
+    description:
+      'A clean high-end entry or hallway with a simple bench or sculptural pedestal and strong daylight; the artwork is the clear focal point.',
+    decor_signature:
+      'entry_bench_or_pedestal',
+    forbidden:
+      'No console-table styling, no stacked books, no vase with branches.'
+  },
+  {
+    id: 'architectural_hall',
+    label: 'Architectural Hall',
+    description:
+      'A bright architectural corridor, loft, or softly arched interior with minimal furniture and a museum-like presentation of the artwork.',
+    decor_signature:
+      'architectural_hall+minimal_furniture',
+    forbidden:
+      'No console, no books, no decorative vase, no dark cinematic spotlighting.'
+  },
+  {
+    id: 'museum_wall',
+    label: 'Museum Minimal',
+    description:
+      'A nearly furniture-free museum-style wall with soft natural or diffused neutral light and premium architectural texture.',
+    decor_signature:
+      'museum_wall+no_decor',
+    forbidden:
+      'No furniture styling under the artwork, no books, no vase, no plant cluster.'
+  }
+];
 
 
 /* =========================================================
@@ -1393,15 +1491,609 @@ async function selectReferences(
 
 
 /* =========================================================
+   ARTWORK-AWARE SCENE PLANNER
+========================================================= */
+
+function sceneHistoryKey() {
+  return `${PREFIX}:scene-history`;
+}
+
+function stableNumber(value) {
+  const hex =
+    createHash('sha256')
+      .update(String(value || ''))
+      .digest('hex')
+      .slice(0, 8);
+
+  return Number.parseInt(hex, 16) || 0;
+}
+
+async function getRecentSceneHistory(
+  limit = RECENT_SCENE_HISTORY_LIMIT
+) {
+  const rows =
+    await redis().lrange(
+      sceneHistoryKey(),
+      0,
+      Math.max(0, limit - 1)
+    );
+
+  return (rows || [])
+    .map((row) => {
+      if (
+        row &&
+        typeof row === 'object'
+      ) {
+        return row;
+      }
+
+      try {
+        return JSON.parse(String(row));
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+async function addSceneHistory(item) {
+  await redis().lpush(
+    sceneHistoryKey(),
+    JSON.stringify({
+      ...item,
+      recorded_at:
+        Date.now()
+    })
+  );
+
+  await redis().ltrim(
+    sceneHistoryKey(),
+    0,
+    49
+  );
+}
+
+async function loadRecentGeneratedComparisons(
+  limit = RECENT_QA_COMPARISON_LIMIT
+) {
+  const history =
+    await getRecentSceneHistory(
+      Math.max(
+        limit * 3,
+        limit
+      )
+    );
+
+  const result = [];
+  const usedTokens = new Set();
+
+  for (
+    const item of history
+  ) {
+    if (
+      result.length >= limit
+    ) {
+      break;
+    }
+
+    const token =
+      String(
+        item?.preview_token ||
+        ''
+      );
+
+    if (
+      !token ||
+      usedTokens.has(token)
+    ) {
+      continue;
+    }
+
+    const base64 =
+      await redis().get(
+        previewImageKey(token)
+      );
+
+    if (!base64) {
+      continue;
+    }
+
+    try {
+      result.push({
+        scene_family:
+          item?.scene_family ||
+          null,
+
+        decor_signature:
+          item?.decor_signature ||
+          null,
+
+        buffer:
+          Buffer.from(
+            String(base64),
+            'base64'
+          )
+      });
+
+      usedTokens.add(token);
+    } catch {
+      // Ignore stale/corrupt comparison entries.
+    }
+  }
+
+  return result;
+}
+
+async function analyzeArtworkContext({
+  title,
+  references
+}) {
+  const referenceImages =
+    await Promise.all(
+      references.map(
+        (ref) =>
+          normalizeJpeg(
+            ref.buffer,
+            1200,
+            90
+          )
+      )
+    );
+
+  const allowedSceneIds =
+    SCENE_FAMILIES.map(
+      (item) => item.id
+    );
+
+  const schema = {
+    type:
+      'object',
+
+    additionalProperties:
+      false,
+
+    required: [
+      'artwork_subject',
+      'artwork_style',
+      'visual_mood',
+      'palette',
+      'orientation',
+      'recommended_scene_families',
+      'must_preserve',
+      'avoid_environment_elements',
+      'confidence'
+    ],
+
+    properties: {
+      artwork_subject: {
+        type:
+          'string'
+      },
+
+      artwork_style: {
+        type:
+          'string'
+      },
+
+      visual_mood: {
+        type:
+          'string'
+      },
+
+      palette: {
+        type:
+          'array',
+
+        items: {
+          type:
+            'string'
+        },
+
+        maxItems:
+          8
+      },
+
+      orientation: {
+        type:
+          'string',
+
+        enum: [
+          'portrait',
+          'landscape',
+          'square',
+          'unknown'
+        ]
+      },
+
+      recommended_scene_families: {
+        type:
+          'array',
+
+        items: {
+          type:
+            'string',
+
+          enum:
+            allowedSceneIds
+        },
+
+        minItems:
+          3,
+
+        maxItems:
+          6
+      },
+
+      must_preserve: {
+        type:
+          'array',
+
+        items: {
+          type:
+            'string'
+        },
+
+        maxItems:
+          10
+      },
+
+      avoid_environment_elements: {
+        type:
+          'array',
+
+        items: {
+          type:
+            'string'
+        },
+
+        maxItems:
+          10
+      },
+
+      confidence: {
+        type:
+          'number',
+
+        minimum:
+          0,
+
+        maximum:
+          1
+      }
+    }
+  };
+
+  const content = [
+    {
+      type:
+        'input_text',
+
+      text:
+        `You are planning a premium Etsy wall-art hero scene.
+
+Listing title:
+${title || ''}
+
+The supplied images are product-truth references. Analyze the ACTUAL ARTWORK/PRODUCT, not the room mockup around it.
+
+Your job is to describe the artwork and recommend several scene families that fit it without changing the artwork.
+
+Important:
+- Different artworks should produce different presentation choices.
+- Do not default every product to a console table, vase, books, plant, or amber luxury room.
+- Prefer bright neutral daylight presentation.
+- A warm/sunset artwork may remain warm INSIDE the artwork, but the generated room/environment should stay neutral rather than yellow/amber.
+- Preserve subject identity, composition, orientation, visible signatures/text that belong to the artwork, and color identity.
+
+Available scene family IDs:
+${SCENE_FAMILIES.map((item) => `${item.id}: ${item.description}`).join('\n')}`
+    },
+
+    ...referenceImages.map(
+      (image) => ({
+        type:
+          'input_image',
+
+        image_url:
+          `data:image/jpeg;base64,${image.toString('base64')}`,
+
+        detail:
+          'high'
+      })
+    )
+  ];
+
+  try {
+    const response =
+      await openai()
+        .responses
+        .create({
+          model:
+            QA_MODEL,
+
+          store:
+            false,
+
+          input: [
+            {
+              role:
+                'user',
+
+              content
+            }
+          ],
+
+          text: {
+            format: {
+              type:
+                'json_schema',
+
+              name:
+                'vaelons_artwork_context',
+
+              strict:
+                true,
+
+              schema
+            }
+          }
+        });
+
+    const parsed =
+      JSON.parse(
+        response.output_text ||
+        '{}'
+      );
+
+    return {
+      ...parsed,
+
+      recommended_scene_families:
+        Array.isArray(
+          parsed?.recommended_scene_families
+        )
+          ? parsed.recommended_scene_families.filter(
+              (id) =>
+                allowedSceneIds.includes(id)
+            )
+          : allowedSceneIds.slice(0, 5)
+    };
+
+  } catch (
+    error
+  ) {
+    console.warn(
+      'Artwork context fallback:',
+      error.message
+    );
+
+    return {
+      artwork_subject:
+        title ||
+        'wall art',
+
+      artwork_style:
+        'unknown',
+
+      visual_mood:
+        'unknown',
+
+      palette:
+        [],
+
+      orientation:
+        'unknown',
+
+      recommended_scene_families:
+        allowedSceneIds,
+
+      must_preserve:
+        [
+          'exact artwork identity',
+          'subject and composition',
+          'orientation and color identity'
+        ],
+
+      avoid_environment_elements:
+        [],
+
+      confidence:
+        0
+    };
+  }
+}
+
+function chooseScenePlan({
+  listingId,
+  title,
+  artworkContext,
+  recentHistory,
+  extraExcluded = []
+}) {
+  const allIds =
+    SCENE_FAMILIES.map(
+      (item) => item.id
+    );
+
+  const preferred =
+    Array.from(
+      new Set([
+        ...(
+          Array.isArray(
+            artworkContext
+              ?.recommended_scene_families
+          )
+            ? artworkContext
+                .recommended_scene_families
+            : []
+        ),
+        ...allIds
+      ])
+    ).filter(
+      (id) =>
+        allIds.includes(id)
+    );
+
+  const recentIds =
+    (recentHistory || [])
+      .map(
+        (item) =>
+          String(
+            item?.scene_family ||
+            ''
+          )
+      )
+      .filter(Boolean);
+
+  const excluded =
+    new Set([
+      ...recentIds.slice(0, 5),
+      ...extraExcluded.map(String)
+    ]);
+
+  let choices =
+    preferred.filter(
+      (id) =>
+        !excluded.has(id)
+    );
+
+  if (!choices.length) {
+    const counts =
+      new Map(
+        allIds.map(
+          (id) => [id, 0]
+        )
+      );
+
+    for (
+      const id of recentIds
+    ) {
+      counts.set(
+        id,
+        (counts.get(id) || 0) + 1
+      );
+    }
+
+    const minCount =
+      Math.min(
+        ...preferred.map(
+          (id) =>
+            counts.get(id) || 0
+        )
+      );
+
+    choices =
+      preferred.filter(
+        (id) =>
+          (counts.get(id) || 0) ===
+          minCount &&
+          !extraExcluded.includes(id)
+      );
+  }
+
+  if (!choices.length) {
+    choices =
+      preferred;
+  }
+
+  const seed =
+    stableNumber(
+      `${listingId}:${title}:${Date.now()}`
+    );
+
+  const sceneId =
+    choices[
+      seed %
+      choices.length
+    ];
+
+  const family =
+    SCENE_FAMILIES.find(
+      (item) =>
+        item.id === sceneId
+    ) ||
+    SCENE_FAMILIES[0];
+
+  const recentDecor =
+    Array.from(
+      new Set(
+        (recentHistory || [])
+          .slice(0, 8)
+          .map(
+            (item) =>
+              item?.decor_signature
+          )
+          .filter(Boolean)
+      )
+    );
+
+  return {
+    scene_family:
+      family.id,
+
+    scene_label:
+      family.label,
+
+    scene_description:
+      family.description,
+
+    decor_signature:
+      family.decor_signature,
+
+    family_forbidden:
+      family.forbidden,
+
+    recent_scene_families:
+      recentIds.slice(0, 8),
+
+    recent_decor_signatures:
+      recentDecor,
+
+    artwork_subject:
+      artworkContext
+        ?.artwork_subject ||
+      title ||
+      'wall art',
+
+    artwork_style:
+      artworkContext
+        ?.artwork_style ||
+      'unknown',
+
+    visual_mood:
+      artworkContext
+        ?.visual_mood ||
+      'unknown',
+
+    palette:
+      artworkContext
+        ?.palette ||
+      [],
+
+    must_preserve:
+      artworkContext
+        ?.must_preserve ||
+      [],
+
+    avoid_environment_elements:
+      artworkContext
+        ?.avoid_environment_elements ||
+      []
+  };
+}
+
+
+/* =========================================================
    GENERATION PROMPT
 ========================================================= */
 
 function buildGenerationPrompt({
   title,
-  reason
+  reason,
+  scenePlan
 }) {
   return `
-Create a premium Etsy first-image hero thumbnail for the exact product shown in the supplied reference image or images.
+Create a premium Etsy FIRST-IMAGE hero thumbnail for the exact product shown in the supplied reference image or images.
 
 LISTING TITLE:
 ${title || 'Unknown'}
@@ -1409,23 +2101,46 @@ ${title || 'Unknown'}
 WHY A NEW THUMBNAIL IS NEEDED:
 ${reason}
 
+ARTWORK-AWARE SCENE PLAN:
+- Scene family: ${scenePlan?.scene_label || scenePlan?.scene_family || 'bright neutral premium interior'}
+- Direction: ${scenePlan?.scene_description || ''}
+- Artwork subject: ${scenePlan?.artwork_subject || ''}
+- Artwork style: ${scenePlan?.artwork_style || ''}
+- Visual mood: ${scenePlan?.visual_mood || ''}
+- Artwork palette: ${JSON.stringify(scenePlan?.palette || [])}
+- Preserve especially: ${JSON.stringify(scenePlan?.must_preserve || [])}
+- Avoid for this artwork/environment: ${JSON.stringify(scenePlan?.avoid_environment_elements || [])}
+
+ANTI-REPETITION MEMORY:
+- Recent scene families already used: ${JSON.stringify(scenePlan?.recent_scene_families || [])}
+- Recent decor signatures already used: ${JSON.stringify(scenePlan?.recent_decor_signatures || [])}
+- Current decor signature must be: ${scenePlan?.decor_signature || 'minimal'}
+- Family-specific prohibition: ${scenePlan?.family_forbidden || ''}
+- Do NOT fall back to the repetitive console/table + vase + stacked books formula.
+- Never use the trio of console/table, decorative vase/branches, and stacked coffee-table books together.
+- Keep secondary decor sparse: normally zero to two quiet secondary objects only.
+- Do not imitate a generic stock mockup template.
+
 PRODUCT TRUTH — NON-NEGOTIABLE:
 - The supplied reference image or images are the product truth.
-- Preserve the same actual artwork/product identity.
-- Preserve the subject, important composition, important elements, orientation, and color identity of the actual product.
-- Do not redesign, repaint, reinterpret, simplify, add, remove, or invent product/artwork content.
+- Preserve the exact same actual artwork/product identity.
+- Preserve the subject, important composition, important elements, orientation/aspect ratio, visible artwork text/signature, and color identity.
+- Do not redesign, repaint, reinterpret, simplify, add, remove, crop away, or invent artwork/product content.
 - Do not substitute a similar artwork or different product.
-- Do not create text, badges, labels, logos, or watermarks.
-- If the actual artwork contains a signature or text, preserve it only as part of the artwork; do not invent new text.
+- Do not create new text, badges, labels, logos, signatures, or watermarks.
+- If the actual artwork contains a signature or text, preserve it only as part of the artwork.
 
 PRESENTATION:
-- Create a NEW professional Etsy hero presentation around the exact product.
-- The environment/mockup may be newly created, but the product itself must remain faithful to the reference.
-- Make the product visually dominant and immediately understandable on a mobile screen.
-- Use bright natural lighting, realistic shadows, clean tonal separation, and premium home-decor styling when appropriate.
-- Avoid dark moody exposure, clutter, heavy HDR, extreme saturation, clipped highlights, and aggressive color grading.
-- Use a square Etsy-ready composition with the product safely centered for thumbnail crops.
-- Make it commercially attractive without changing what the customer is actually buying.
+- Create a NEW professional Etsy hero environment around the exact product.
+- Follow the chosen scene family instead of inventing a generic room formula.
+- Make the artwork/product LARGE and visually dominant: roughly 45–70% of the visible composition when practical.
+- Keep the full product understandable on a mobile thumbnail. Do not hide important artwork behind furniture or decor.
+- Use bright, neutral, high-end natural daylight with realistic shadows and clean tonal separation.
+- The ROOM/ENVIRONMENT must remain neutral white, cream, pale stone, soft beige, or soft grey without a yellow/orange/amber cast.
+- If the artwork itself contains sunset, gold, orange, or warm colors, preserve those INSIDE the artwork while keeping surrounding room light neutral.
+- Avoid dark cinematic room lighting, tungsten/amber color grading, heavy HDR, haze, excessive saturation, clipped highlights, and clutter.
+- Use a square Etsy-ready composition with safe margins for thumbnail crops.
+- The result should feel bespoke to THIS artwork, not like the previous listing's mockup.
 
 Return only the finished image.
 `.trim();
@@ -1440,6 +2155,7 @@ async function generateThumbnail({
   title,
   references,
   reason,
+  scenePlan,
   retryNote = ''
 }) {
   const imageFiles =
@@ -1471,7 +2187,8 @@ async function generateThumbnail({
   const prompt =
     `${buildGenerationPrompt({
       title,
-      reason
+      reason,
+      scenePlan
     })}${
       retryNote
         ? `
@@ -1479,7 +2196,7 @@ async function generateThumbnail({
 QUALITY-CHECK FEEDBACK FROM THE PREVIOUS ATTEMPT:
 ${retryNote}
 
-Fix that problem while preserving the exact product identity.`
+This is a regeneration. Correct every cited issue. If the previous result looked generic or repeated a recent room, the new result MUST visibly use the newly supplied scene plan. Preserve the exact product identity.`
         : ''
     }`;
 
@@ -1508,9 +2225,7 @@ Fix that problem while preserving the exact product identity.`
       ?.[0]
       ?.b64_json;
 
-  if (
-    !b64
-  ) {
+  if (!b64) {
     throw new Error(
       'OpenAI image response did not contain image data'
     );
@@ -1534,14 +2249,14 @@ Fix that problem while preserving the exact product identity.`
 async function qualityCheck({
   title,
   referenceBuffers,
-  generatedBuffer
+  generatedBuffer,
+  scenePlan,
+  recentGenerated = []
 }) {
   const references =
     await Promise.all(
       referenceBuffers.map(
-        (
-          buffer
-        ) =>
+        (buffer) =>
           normalizeJpeg(
             buffer,
             1200,
@@ -1555,6 +2270,21 @@ async function qualityCheck({
       generatedBuffer,
       1200,
       90
+    );
+
+  const comparisons =
+    await Promise.all(
+      recentGenerated.map(
+        async (item) => ({
+          ...item,
+          normalized:
+            await normalizeJpeg(
+              item.buffer,
+              900,
+              82
+            )
+        })
+      )
     );
 
   const generatedAnalysis =
@@ -1591,6 +2321,13 @@ async function qualityCheck({
       'color_identity_preserved',
       'invented_product_content',
       'thumbnail_readable',
+      'artwork_dominant',
+      'scene_fit',
+      'generic_mockup',
+      'repeated_scene',
+      'excessive_decor',
+      'warm_room_cast',
+      'invented_text_or_logo',
       'confidence',
       'reason'
     ],
@@ -1631,6 +2368,41 @@ async function qualityCheck({
           'boolean'
       },
 
+      artwork_dominant: {
+        type:
+          'boolean'
+      },
+
+      scene_fit: {
+        type:
+          'boolean'
+      },
+
+      generic_mockup: {
+        type:
+          'boolean'
+      },
+
+      repeated_scene: {
+        type:
+          'boolean'
+      },
+
+      excessive_decor: {
+        type:
+          'boolean'
+      },
+
+      warm_room_cast: {
+        type:
+          'boolean'
+      },
+
+      invented_text_or_logo: {
+        type:
+          'boolean'
+      },
+
       confidence: {
         type:
           'number',
@@ -1655,30 +2427,54 @@ async function qualityCheck({
         'input_text',
 
       text:
-        `You are the final safety gate for an Etsy thumbnail replacement.
+        `You are the final strict safety and merchandising gate for an Etsy thumbnail replacement.
 
 Listing title:
 ${title || ''}
 
-Every image except the final image is a product-truth reference.
-The final image is the generated candidate.
+Chosen scene plan:
+${JSON.stringify({
+  scene_family:
+    scenePlan?.scene_family,
+  scene_description:
+    scenePlan?.scene_description,
+  decor_signature:
+    scenePlan?.decor_signature,
+  artwork_subject:
+    scenePlan?.artwork_subject
+})}
 
-PASS only when:
-- candidate clearly shows the same actual product/artwork
-- important subject and composition remain faithful
-- color identity remains faithful
-- no product content was invented
-- no different product was substituted
-- candidate is readable as a mobile Etsy thumbnail
+The PRODUCT-TRUTH reference images appear first.
+Then, if supplied, RECENT GENERATED HEROES from other VAELONS previews appear for repetition comparison.
+The FINAL image is the new generated candidate.
 
-The presentation environment may differ.
+PASS only when ALL are true:
+- candidate clearly shows the exact same product/artwork
+- important subject/composition and artwork color identity remain faithful
+- no product/artwork content is invented, removed, or substituted
+- no new text, logo, watermark, signature, or label is invented
+- candidate is readable on a mobile Etsy thumbnail
+- artwork/product is clearly dominant, not a tiny accessory in a large room
+- environment visibly fits the chosen scene plan
+- result is NOT a generic stock mockup
+- result does NOT substantially repeat the room layout/decor/composition of supplied recent generated heroes
+- decor is sparse and does NOT use the repetitive console/table + vase/branches + stacked-books formula
+- surrounding ROOM lighting has no yellow/orange/amber cast; warmth naturally inside the artwork is allowed and must be preserved
+
+Set repeated_scene=false when no recent generated comparison images are supplied.
 Be strict.`
     },
 
+    {
+      type:
+        'input_text',
+
+      text:
+        'PRODUCT-TRUTH REFERENCES:'
+    },
+
     ...references.map(
-      (
-        reference
-      ) => ({
+      (reference) => ({
         type:
           'input_image',
 
@@ -1688,19 +2484,62 @@ Be strict.`
         detail:
           'high'
       })
-    ),
-
-    {
-      type:
-        'input_image',
-
-      image_url:
-        `data:image/jpeg;base64,${generated.toString('base64')}`,
-
-      detail:
-        'high'
-    }
+    )
   ];
+
+  if (
+    comparisons.length
+  ) {
+    content.push({
+      type:
+        'input_text',
+
+      text:
+        'RECENT GENERATED HEROES — use only to detect repeated staging, NOT as product truth:'
+    });
+
+    for (
+      const item of comparisons
+    ) {
+      content.push({
+        type:
+          'input_text',
+
+        text:
+          `Recent scene family: ${item.scene_family || 'unknown'}, decor signature: ${item.decor_signature || 'unknown'}`
+      });
+
+      content.push({
+        type:
+          'input_image',
+
+        image_url:
+          `data:image/jpeg;base64,${item.normalized.toString('base64')}`,
+
+        detail:
+          'low'
+      });
+    }
+  }
+
+  content.push({
+    type:
+      'input_text',
+
+    text:
+      'FINAL GENERATED CANDIDATE:'
+  });
+
+  content.push({
+    type:
+      'input_image',
+
+    image_url:
+      `data:image/jpeg;base64,${generated.toString('base64')}`,
+
+    detail:
+      'high'
+  });
 
   let semantic;
 
@@ -1730,7 +2569,7 @@ Be strict.`
                 'json_schema',
 
               name:
-                'etsy_thumbnail_qc',
+                'etsy_thumbnail_qc_v3',
 
               strict:
                 true,
@@ -1771,6 +2610,27 @@ Be strict.`
       thumbnail_readable:
         false,
 
+      artwork_dominant:
+        false,
+
+      scene_fit:
+        false,
+
+      generic_mockup:
+        true,
+
+      repeated_scene:
+        false,
+
+      excessive_decor:
+        true,
+
+      warm_room_cast:
+        true,
+
+      invented_text_or_logo:
+        true,
+
       confidence:
         0,
 
@@ -1794,11 +2654,25 @@ Be strict.`
       false &&
     semantic.thumbnail_readable ===
       true &&
+    semantic.artwork_dominant ===
+      true &&
+    semantic.scene_fit ===
+      true &&
+    semantic.generic_mockup ===
+      false &&
+    semantic.repeated_scene ===
+      false &&
+    semantic.excessive_decor ===
+      false &&
+    semantic.warm_room_cast ===
+      false &&
+    semantic.invented_text_or_logo ===
+      false &&
     Number(
       semantic.confidence ||
       0
     ) >=
-      0.75;
+      0.8;
 
   return {
     passed:
@@ -1813,6 +2687,20 @@ Be strict.`
 
     generated_analysis:
       generatedAnalysis,
+
+    scene_plan: {
+      scene_family:
+        scenePlan?.scene_family ||
+        null,
+
+      scene_label:
+        scenePlan?.scene_label ||
+        null,
+
+      decor_signature:
+        scenePlan?.decor_signature ||
+        null
+    },
 
     semantic
   };
@@ -1830,7 +2718,9 @@ async function savePreview({
   referenceImageIds,
   generatedBuffer,
   qc,
-  reason
+  reason,
+  artworkContext,
+  scenePlan
 }) {
   const token =
     randomBytes(
@@ -1868,6 +2758,14 @@ async function savePreview({
         String
       ),
 
+    artworkContext:
+      artworkContext ||
+      null,
+
+    scenePlan:
+      scenePlan ||
+      null,
+
     qc,
 
     reason,
@@ -1901,6 +2799,31 @@ async function savePreview({
       }
     )
   ]);
+
+  await addSceneHistory({
+    preview_token:
+      token,
+
+    listing_id:
+      String(
+        listingId
+      ),
+
+    scene_family:
+      scenePlan
+        ?.scene_family ||
+      null,
+
+    decor_signature:
+      scenePlan
+        ?.decor_signature ||
+      null,
+
+    artwork_subject:
+      scenePlan
+        ?.artwork_subject ||
+      null
+  });
 
   return {
     ...meta,
@@ -2807,11 +3730,43 @@ async function prepareListing(
         )
     );
 
+  const recentHistory =
+    await getRecentSceneHistory();
+
+  const artworkContext =
+    await analyzeArtworkContext({
+      title:
+        exact
+          ?.title ||
+        '',
+
+      references
+    });
+
+  let scenePlan =
+    chooseScenePlan({
+      listingId,
+
+      title:
+        exact
+          ?.title ||
+        '',
+
+      artworkContext,
+      recentHistory
+    });
+
+  const recentGenerated =
+    await loadRecentGeneratedComparisons();
+
   let generated =
     null;
 
   let qc =
     null;
+
+  const attemptedScenes =
+    [];
 
   for (
     let attempt = 1;
@@ -2820,6 +3775,10 @@ async function prepareListing(
     attempt +=
       1
   ) {
+    attemptedScenes.push(
+      scenePlan.scene_family
+    );
+
     generated =
       await generateThumbnail({
         title:
@@ -2834,13 +3793,15 @@ async function prepareListing(
             ? 'A new Etsy listing was detected and needs a fresh hero thumbnail.'
             : `The current Etsy thumbnail quality score is ${rank1Score}/100 and needs improvement.`,
 
+        scenePlan,
+
         retryNote:
           attempt ===
           2
             ? qc
                 ?.semantic
                 ?.reason ||
-              'Preserve the product identity more strictly and improve mobile readability.'
+              'Use the new scene plan, avoid generic staging, preserve product identity, and improve mobile readability.'
             : ''
       });
 
@@ -2853,20 +3814,44 @@ async function prepareListing(
 
         referenceBuffers:
           references.map(
-            (
-              ref
-            ) =>
+            (ref) =>
               ref.buffer
           ),
 
         generatedBuffer:
-          generated
+          generated,
+
+        scenePlan,
+
+        recentGenerated
       });
 
     if (
       qc.passed
     ) {
       break;
+    }
+
+    if (
+      attempt <
+      2
+    ) {
+      scenePlan =
+        chooseScenePlan({
+          listingId,
+
+          title:
+            exact
+              ?.title ||
+            '',
+
+          artworkContext,
+
+          recentHistory,
+
+          extraExcluded:
+            attemptedScenes
+        });
     }
   }
 
@@ -2891,6 +3876,10 @@ async function prepareListing(
         referenceImageIds.map(
           String
         ),
+
+      artworkContext,
+
+      scenePlan,
 
       qc
     };
@@ -2925,6 +3914,12 @@ async function prepareListing(
       reference_image_ids:
         referenceImageIds,
 
+      artwork_context:
+        artworkContext,
+
+      scene_plan:
+        scenePlan,
+
       qc,
 
       etsy_modified:
@@ -2950,7 +3945,11 @@ async function prepareListing(
 
       qc,
 
-      reason
+      reason,
+
+      artworkContext,
+
+      scenePlan
     });
 
   await setJson(
@@ -2981,55 +3980,13 @@ async function prepareListing(
           String
         ),
 
+      artworkContext,
+
+      scenePlan,
+
       qc
     }
   );
-
-  if (
-    WORKER_MODE ===
-    'auto'
-  ) {
-    const publish =
-      await publishPreview(
-        {
-          ...preview,
-
-          generatedBuffer:
-            generated
-        },
-        {
-          deleteOld:
-            AUTO_DELETE_OLD_RANK1
-        }
-      );
-
-    return {
-      listing_id:
-        Number(
-          listingId
-        ),
-
-      exact_title:
-        exact
-          ?.title ||
-        null,
-
-      action:
-        'auto_published',
-
-      reason,
-
-      previous_rank1_score:
-        rank1Score,
-
-      reference_image_ids:
-        referenceImageIds,
-
-      qc,
-
-      publish
-    };
-  }
 
   return {
     listing_id:
@@ -3063,6 +4020,12 @@ async function prepareListing(
       preview.previewUrl,
 
     qc,
+
+    artwork_context:
+      artworkContext,
+
+    scene_plan:
+      scenePlan,
 
     approval_required:
       'ONAYLIYORUM',
@@ -3571,7 +4534,7 @@ app.get(
         'vaelons-ai-thumbnail-worker',
 
       version:
-        '2.0.1',
+        '3.0.0',
 
       worker_mode:
         WORKER_MODE,
@@ -3586,7 +4549,16 @@ app.get(
         'VAELONS_OPENAI_API_KEY',
 
       safe_replace_order:
-        'generate -> QA -> upload -> verify rank1 -> delete old'
+        'analyze artwork -> anti-repeat scene plan -> generate -> QA -> preview -> ONAYLIYORUM -> upload -> verify rank1 -> delete old -> verify',
+
+      approval_required:
+        'ONAYLIYORUM',
+
+      artwork_aware_scene_planner:
+        true,
+
+      anti_repeat_memory:
+        true
     });
   }
 );
@@ -4018,7 +4990,7 @@ app.get(
           'vaelons-ai-thumbnail-worker',
 
         version:
-          '2.0.1',
+          '3.0.0',
 
         mode:
           WORKER_MODE,
@@ -4053,6 +5025,15 @@ app.get(
 
         openai_key_source:
           'VAELONS_OPENAI_API_KEY',
+
+        approval_required:
+          'ONAYLIYORUM',
+
+        anti_repeat_memory:
+          true,
+
+        recent_scene_count:
+          (await getRecentSceneHistory()).length,
 
         etsy_modified:
           false
@@ -4432,15 +5413,470 @@ app.get(
             .listingId
         );
 
-      res.json(
+      const data =
         await getListingImages(
           listingId
-        )
-      );
+        );
+
+      const ordered =
+        [
+          ...(data?.results || [])
+        ].sort(
+          (a, b) =>
+            Number(
+              a?.rank ??
+              9999
+            ) -
+            Number(
+              b?.rank ??
+              9999
+            )
+        );
+
+      const rank1 =
+        ordered.find(
+          (image) =>
+            Number(
+              image?.rank
+            ) ===
+            1
+        ) ||
+        ordered[0] ||
+        null;
+
+      res.json({
+        listing_id:
+          Number(
+            listingId
+          ),
+
+        count:
+          ordered.length,
+
+        rank1_image_id:
+          rank1
+            ? getImageId(rank1)
+            : null,
+
+        rank1_image_url:
+          rank1
+            ? getImageUrl(rank1)
+            : null,
+
+        images:
+          ordered.map(
+            (image) => ({
+              image_id:
+                getImageId(image),
+
+              rank:
+                Number(
+                  image?.rank ??
+                  0
+                ),
+
+              image_url:
+                getImageUrl(image)
+            })
+          ),
+
+        // Preserve raw Etsy-compatible results for existing callers.
+        results:
+          ordered,
+
+        etsy_modified:
+          false
+      });
 
     } catch (
       error
     ) {
+      next(
+        error
+      );
+    }
+  }
+);
+
+app.post(
+  '/api/listings/:listingId/images',
+  async (
+    req,
+    res,
+    next
+  ) => {
+    let etsyModified =
+      false;
+
+    try {
+      const listingId =
+        asListingId(
+          req.params
+            .listingId
+        );
+
+      const approval =
+        String(
+          req.body
+            ?.approval ||
+          ''
+        ).trim();
+
+      if (
+        approval !==
+        'ONAYLIYORUM'
+      ) {
+        return res
+          .status(400)
+          .json({
+            error:
+              'Exact approval text ONAYLIYORUM is required',
+
+            etsy_modified:
+              false
+          });
+      }
+
+      const refs =
+        req.body
+          ?.openaiFileIdRefs;
+
+      if (
+        !Array.isArray(refs) ||
+        refs.length !==
+        1
+      ) {
+        return res
+          .status(400)
+          .json({
+            error:
+              'Exactly one image file is required',
+
+            etsy_modified:
+              false
+          });
+      }
+
+      const fileRef =
+        refs[0];
+
+      if (
+        !fileRef ||
+        typeof fileRef !==
+          'object' ||
+        !fileRef.download_link
+      ) {
+        return res
+          .status(400)
+          .json({
+            error:
+              'Valid file reference with download_link is required',
+
+            etsy_modified:
+              false
+          });
+      }
+
+      const before =
+        await getListingImages(
+          listingId
+        );
+
+      if (
+        (before?.results || [])
+          .length >=
+        20
+      ) {
+        return res
+          .status(409)
+          .json({
+            error:
+              'Listing already has 20 images',
+
+            etsy_modified:
+              false
+          });
+      }
+
+      const imageBuffer =
+        await downloadImage(
+          fileRef.download_link
+        );
+
+      const requestedRank =
+        Number(
+          req.body
+            ?.rank
+        );
+
+      const rank =
+        Number.isInteger(
+          requestedRank
+        ) &&
+        requestedRank >
+          0
+          ? requestedRank
+          : (before?.results || [])
+              .length +
+            1;
+
+      const result =
+        await uploadListingImage({
+          shopId:
+            await getShopId(),
+
+          listingId,
+
+          imageBuffer,
+
+          filename:
+            fileRef.name ||
+            `vaelons-${listingId}-image.jpg`,
+
+          contentType:
+            fileRef.mime_type ||
+            'image/jpeg',
+
+          rank,
+
+          overwrite:
+            false,
+
+          altText:
+            String(
+              req.body
+                ?.alt_text ||
+              ''
+            ).slice(
+              0,
+              500
+            )
+        });
+
+      etsyModified =
+        true;
+
+      const verified =
+        await getListingImages(
+          listingId
+        );
+
+      res.json({
+        success:
+          true,
+
+        listing_id:
+          Number(
+            listingId
+          ),
+
+        upload_result:
+          result,
+
+        image_count:
+          (verified?.results || [])
+            .length,
+
+        images:
+          verified?.results ||
+          [],
+
+        etsy_modified:
+          true
+      });
+
+    } catch (
+      error
+    ) {
+      error.etsyModified =
+        etsyModified;
+
+      next(
+        error
+      );
+    }
+  }
+);
+
+app.post(
+  '/api/listings/:listingId/images/:imageId/rank',
+  async (
+    req,
+    res,
+    next
+  ) => {
+    let etsyModified =
+      false;
+
+    try {
+      const listingId =
+        asListingId(
+          req.params
+            .listingId
+        );
+
+      const imageId =
+        asListingId(
+          req.params
+            .imageId
+        );
+
+      const approval =
+        String(
+          req.body
+            ?.approval ||
+          ''
+        ).trim();
+
+      if (
+        approval !==
+        'ONAYLIYORUM'
+      ) {
+        return res
+          .status(400)
+          .json({
+            error:
+              'Exact approval text ONAYLIYORUM is required',
+
+            etsy_modified:
+              false
+          });
+      }
+
+      const rank =
+        Number(
+          req.body
+            ?.rank
+        );
+
+      if (
+        !Number.isInteger(rank) ||
+        rank <
+          1
+      ) {
+        return res
+          .status(400)
+          .json({
+            error:
+              'rank must be a positive integer',
+
+            etsy_modified:
+              false
+          });
+      }
+
+      const result =
+        await setListingImageRank({
+          shopId:
+            await getShopId(),
+
+          listingId,
+
+          listingImageId:
+            imageId,
+
+          rank
+        });
+
+      etsyModified =
+        true;
+
+      res.json({
+        ...result,
+
+        etsy_modified:
+          true
+      });
+
+    } catch (
+      error
+    ) {
+      error.etsyModified =
+        etsyModified;
+
+      next(
+        error
+      );
+    }
+  }
+);
+
+app.delete(
+  '/api/listings/:listingId/images/:imageId',
+  async (
+    req,
+    res,
+    next
+  ) => {
+    let etsyModified =
+      false;
+
+    try {
+      const listingId =
+        asListingId(
+          req.params
+            .listingId
+        );
+
+      const imageId =
+        asListingId(
+          req.params
+            .imageId
+        );
+
+      const approval =
+        String(
+          req.body
+            ?.approval ||
+          ''
+        ).trim();
+
+      if (
+        approval !==
+        'ONAYLIYORUM'
+      ) {
+        return res
+          .status(400)
+          .json({
+            error:
+              'Exact approval text ONAYLIYORUM is required',
+
+            etsy_modified:
+              false
+          });
+      }
+
+      const result =
+        await deleteListingImage({
+          shopId:
+            await getShopId(),
+
+          listingId,
+
+          listingImageId:
+            imageId,
+
+          verify:
+            true
+        });
+
+      etsyModified =
+        result?.deleted ===
+        true;
+
+      res.json({
+        ...result,
+
+        etsy_modified:
+          etsyModified
+      });
+
+    } catch (
+      error
+    ) {
+      error.etsyModified =
+        etsyModified;
+
       next(
         error
       );
@@ -4504,7 +5940,7 @@ if (
     port,
     () => {
       console.log(
-        `VAELONS AI Thumbnail Worker listening on :${port}`
+        `VAELONS AI Thumbnail Worker v3 listening on :${port}`
       );
     }
   );
