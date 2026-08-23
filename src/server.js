@@ -105,10 +105,45 @@ const COMPLIANCE_MODEL =
 const MAX_GENERATION_ATTEMPTS =
   clampInt(
     process.env.MAX_GENERATION_ATTEMPTS ||
-    3,
+    2,
     1,
-    5
+    3
   );
+
+const OPENAI_REVIEW_TIMEOUT_MS =
+  clampInt(
+    process.env.OPENAI_REVIEW_TIMEOUT_MS ||
+    45000,
+    15000,
+    90000
+  );
+
+const IMAGE_GENERATION_TIMEOUT_MS =
+  clampInt(
+    process.env.IMAGE_GENERATION_TIMEOUT_MS ||
+    105000,
+    30000,
+    150000
+  );
+
+const PREPARE_TOTAL_BUDGET_MS =
+  clampInt(
+    process.env.PREPARE_TOTAL_BUDGET_MS ||
+    270000,
+    120000,
+    275000
+  );
+
+const QA_TIME_RESERVE_MS =
+  clampInt(
+    process.env.QA_TIME_RESERVE_MS ||
+    95000,
+    60000,
+    120000
+  );
+
+const MIN_GENERATION_WINDOW_MS =
+  30000;
 
 const IMAGE_SIZE =
   process.env.OPENAI_IMAGE_SIZE ||
@@ -611,7 +646,7 @@ async function buildManagerWorkerStatus() {
       'vaelons-ai-thumbnail-worker',
 
     version:
-      '3.2.0',
+      '3.3.0',
 
     mode:
       WORKER_MODE,
@@ -657,6 +692,15 @@ async function buildManagerWorkerStatus() {
 
     max_generation_attempts:
       MAX_GENERATION_ATTEMPTS,
+
+    image_generation_timeout_ms:
+      IMAGE_GENERATION_TIMEOUT_MS,
+
+    openai_review_timeout_ms:
+      OPENAI_REVIEW_TIMEOUT_MS,
+
+    prepare_total_budget_ms:
+      PREPARE_TOTAL_BUDGET_MS,
 
     recent_scene_count:
       recentSceneHistory.length,
@@ -788,7 +832,13 @@ function openai() {
         apiKey:
           required(
             'VAELONS_OPENAI_API_KEY'
-          )
+          ),
+
+        timeout:
+          OPENAI_REVIEW_TIMEOUT_MS,
+
+        maxRetries:
+          0
       });
   }
 
@@ -3028,7 +3078,9 @@ async function generateThumbnail({
   references,
   reason,
   scenePlan,
-  retryNote = ''
+  retryNote = '',
+  timeoutMs =
+    IMAGE_GENERATION_TIMEOUT_MS
 }) {
   const imageFiles =
     await Promise.all(
@@ -3075,21 +3127,31 @@ This is a regeneration. Correct every cited issue. If the previous result looked
   const response =
     await openai()
       .images
-      .edit({
-        model:
-          IMAGE_MODEL,
+      .edit(
+        {
+          model:
+            IMAGE_MODEL,
 
-        image:
-          imageFiles,
+          image:
+            imageFiles,
 
-        prompt,
+          prompt,
 
-        size:
-          IMAGE_SIZE,
+          size:
+            IMAGE_SIZE,
 
-        quality:
-          IMAGE_QUALITY
-      });
+          quality:
+            IMAGE_QUALITY
+        },
+        {
+          timeout:
+            clampInt(
+              timeoutMs,
+              MIN_GENERATION_WINDOW_MS,
+              IMAGE_GENERATION_TIMEOUT_MS
+            )
+        }
+      );
 
   const b64 =
     response
@@ -4248,13 +4310,6 @@ async function qualityCheck({
       recentGenerated
     });
 
-  const environmentAudit =
-    await auditForbiddenEnvironment({
-      generatedBuffer,
-      artworkBox:
-        staging.artwork_box
-    });
-
   let candidateArtworkBuffer =
     generatedBuffer;
 
@@ -4284,13 +4339,24 @@ async function qualityCheck({
     }
   }
 
-  const identity =
-    await artworkIdentityCheck({
-      title,
-      referenceBuffers,
-      candidateArtworkBuffer,
-      artworkContext
-    });
+  const [
+    environmentAudit,
+    identity
+  ] =
+    await Promise.all([
+      auditForbiddenEnvironment({
+        generatedBuffer,
+        artworkBox:
+          staging.artwork_box
+      }),
+
+      artworkIdentityCheck({
+        title,
+        referenceBuffers,
+        candidateArtworkBuffer,
+        artworkContext
+      })
+    ]);
 
   return {
     passed:
@@ -5157,6 +5223,20 @@ async function prepareListing(
     force = false
   } = {}
 ) {
+  const prepareStartedAt =
+    Date.now();
+
+  const remainingBudgetMs =
+    () =>
+      Math.max(
+        0,
+        PREPARE_TOTAL_BUDGET_MS -
+          (
+            Date.now() -
+            prepareStartedAt
+          )
+      );
+
   const listingId =
     asListingId(
       listing.listing_id ||
@@ -5468,6 +5548,15 @@ async function prepareListing(
   let qc =
     null;
 
+  let finalGenerationError =
+    null;
+
+  let generationAttempts =
+    0;
+
+  const generationErrors =
+    [];
+
   const attemptedScenes =
     [];
 
@@ -5481,61 +5570,238 @@ async function prepareListing(
     attempt +=
       1
   ) {
+    const remainingBeforeGeneration =
+      remainingBudgetMs();
+
+    if (
+      remainingBeforeGeneration <=
+      QA_TIME_RESERVE_MS +
+        MIN_GENERATION_WINDOW_MS
+    ) {
+      finalGenerationError = {
+        code:
+          'PREPARE_BUDGET_EXHAUSTED',
+
+        message:
+          'Not enough safe execution time remains for another image generation and QA cycle.',
+
+        timeout:
+          true,
+
+        attempt,
+
+        remaining_ms:
+          remainingBeforeGeneration
+      };
+
+      generationErrors.push(
+        finalGenerationError
+      );
+
+      break;
+    }
+
+    const generationTimeoutMs =
+      Math.min(
+        IMAGE_GENERATION_TIMEOUT_MS,
+        Math.max(
+          MIN_GENERATION_WINDOW_MS,
+          remainingBeforeGeneration -
+            QA_TIME_RESERVE_MS
+        )
+      );
+
     attemptedScenes.push(
       scenePlan.scene_family
     );
 
-    generated =
-      await generateThumbnail({
-        title:
-          exact
-            ?.title ||
-          '',
+    generationAttempts =
+      attempt;
 
-        references,
+    try {
+      generated =
+        await generateThumbnail({
+          title:
+            exact
+              ?.title ||
+            '',
 
-        reason:
-          isNew
-            ? 'A new Etsy listing was detected and needs a fresh hero thumbnail.'
-            : `The current Etsy thumbnail quality score is ${rank1Score}/100 and needs improvement.`,
+          references,
 
-        scenePlan,
+          reason:
+            isNew
+              ? 'A new Etsy listing was detected and needs a fresh hero thumbnail.'
+              : `The current Etsy thumbnail quality score is ${rank1Score}/100 and needs improvement.`,
 
-        retryNote:
-          attempt >
-          1
-            ? qc
-                ?.semantic
-                ?.reason ||
-              'Previous attempt failed. Change architecture and camera visibly, preserve exact artwork identity, and remove every forbidden staging object.'
-            : ''
-      });
+          scenePlan,
 
-    qc =
-      await qualityCheck({
-        title:
-          exact
-            ?.title ||
-          '',
+          retryNote:
+            attempt >
+            1
+              ? qc
+                  ?.semantic
+                  ?.reason ||
+                finalGenerationError
+                  ?.message ||
+                'Previous attempt failed. Change architecture and camera visibly, preserve exact artwork identity, and remove every forbidden staging object.'
+              : '',
 
-        referenceBuffers:
-          references.map(
-            (ref) =>
-              ref.buffer
-          ),
+          timeoutMs:
+            generationTimeoutMs
+        });
 
-        generatedBuffer:
-          generated,
+      finalGenerationError =
+        null;
 
-        scenePlan,
+    } catch (
+      error
+    ) {
+      const message =
+        String(
+          error?.message ||
+          error ||
+          'Image generation failed'
+        );
 
-        artworkContext,
+      const timeout =
+        error?.name ===
+          'APIConnectionTimeoutError' ||
+        error?.name ===
+          'AbortError' ||
+        /timeout|timed out|aborted/i.test(
+          message
+        );
 
-        recentGenerated: [
-          ...failedGenerated,
-          ...recentGenerated
-        ]
-      });
+      finalGenerationError = {
+        code:
+          timeout
+            ? 'IMAGE_GENERATION_TIMEOUT'
+            : 'IMAGE_GENERATION_FAILED',
+
+        message,
+
+        timeout,
+
+        attempt,
+
+        timeout_ms:
+          generationTimeoutMs,
+
+        remaining_ms:
+          remainingBudgetMs()
+      };
+
+      generationErrors.push(
+        finalGenerationError
+      );
+
+      generated =
+        null;
+
+      if (
+        attempt <
+          MAX_GENERATION_ATTEMPTS &&
+        remainingBudgetMs() >
+          QA_TIME_RESERVE_MS +
+            MIN_GENERATION_WINDOW_MS
+      ) {
+        scenePlan =
+          chooseScenePlan({
+            listingId,
+
+            title:
+              exact
+                ?.title ||
+              '',
+
+            artworkContext,
+
+            recentHistory,
+
+            extraExcluded:
+              attemptedScenes
+          });
+
+        continue;
+      }
+
+      break;
+    }
+
+    try {
+      qc =
+        await qualityCheck({
+          title:
+            exact
+              ?.title ||
+            '',
+
+          referenceBuffers:
+            references.map(
+              (ref) =>
+                ref.buffer
+            ),
+
+          generatedBuffer:
+            generated,
+
+          scenePlan,
+
+          artworkContext,
+
+          recentGenerated: [
+            ...failedGenerated,
+            ...recentGenerated
+          ]
+        });
+
+    } catch (
+      error
+    ) {
+      const message =
+        String(
+          error?.message ||
+          error ||
+          'Thumbnail QA failed'
+        );
+
+      qc = {
+        passed:
+          false,
+
+        technical_passed:
+          false,
+
+        staging_passed:
+          false,
+
+        environment_audit_passed:
+          false,
+
+        identity_passed:
+          false,
+
+        semantic: {
+          pass:
+            false,
+
+          confidence:
+            0,
+
+          reason:
+            `QA execution error: ${message}`
+        },
+
+        execution_error: {
+          message,
+
+          timeout:
+            /timeout|timed out|aborted/i.test(
+              message
+            )
+        }
+      };
+    }
 
     if (
       qc.passed
@@ -5587,7 +5853,10 @@ async function prepareListing(
 
     if (
       attempt <
-      MAX_GENERATION_ATTEMPTS
+        MAX_GENERATION_ATTEMPTS &&
+      remainingBudgetMs() >
+        QA_TIME_RESERVE_MS +
+          MIN_GENERATION_WINDOW_MS
     ) {
       scenePlan =
         chooseScenePlan({
@@ -5605,7 +5874,92 @@ async function prepareListing(
           extraExcluded:
             attemptedScenes
         });
+    } else {
+      break;
     }
+  }
+
+  if (
+    finalGenerationError &&
+    !qc
+      ?.passed
+  ) {
+    const state = {
+      status:
+        'generation_failed',
+
+      sourceImageId,
+
+      checkedAt:
+        Date.now(),
+
+      rank1Score,
+
+      rank1Analysis,
+
+      referenceImageIds:
+        referenceImageIds.map(
+          String
+        ),
+
+      artworkContext,
+
+      scenePlan,
+
+      generationAttempts,
+
+      generationErrors,
+
+      qc,
+
+      etsy_modified:
+        false
+    };
+
+    await setJson(
+      stateKey(
+        listingId
+      ),
+      state
+    );
+
+    return {
+      listing_id:
+        Number(
+          listingId
+        ),
+
+      exact_title:
+        exact
+          ?.title ||
+        null,
+
+      action:
+        'error',
+
+      status:
+        'generation_failed',
+
+      reason:
+        finalGenerationError
+          .timeout
+          ? 'generation_timeout'
+          : 'generation_failed',
+
+      generation_attempts:
+        generationAttempts,
+
+      generation_errors:
+        generationErrors,
+
+      previous_rank1_score:
+        rank1Score,
+
+      qc,
+
+      etsy_modified:
+        false
+    };
   }
 
   if (
@@ -6315,7 +6669,7 @@ app.get(
         'vaelons-ai-thumbnail-worker',
 
       version:
-        '3.2.0',
+        '3.3.0',
 
       worker_mode:
         WORKER_MODE,
@@ -6343,6 +6697,15 @@ app.get(
 
       max_generation_attempts:
         MAX_GENERATION_ATTEMPTS,
+
+      image_generation_timeout_ms:
+        IMAGE_GENERATION_TIMEOUT_MS,
+
+      openai_review_timeout_ms:
+        OPENAI_REVIEW_TIMEOUT_MS,
+
+      prepare_total_budget_ms:
+        PREPARE_TOTAL_BUDGET_MS,
 
       openai_key_source:
         'VAELONS_OPENAI_API_KEY',
@@ -6789,7 +7152,7 @@ app.get(
           'vaelons-ai-thumbnail-worker',
 
         version:
-          '3.2.0',
+          '3.3.0',
 
         mode:
           WORKER_MODE,
@@ -6842,6 +7205,15 @@ app.get(
 
         max_generation_attempts:
           MAX_GENERATION_ATTEMPTS,
+
+        image_generation_timeout_ms:
+          IMAGE_GENERATION_TIMEOUT_MS,
+
+        openai_review_timeout_ms:
+          OPENAI_REVIEW_TIMEOUT_MS,
+
+        prepare_total_budget_ms:
+          PREPARE_TOTAL_BUDGET_MS,
 
         recent_scene_count:
           (await getRecentSceneHistory()).length,
