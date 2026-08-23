@@ -4,13 +4,7 @@ import OpenAI, { toFile } from 'openai';
 import { Redis } from '@upstash/redis';
 import { randomBytes, createHash } from 'node:crypto';
 
-import {
-  randomBase64Url,
-  pkceChallenge,
-  sealJson,
-  openJson
-} from './crypto.js';
-
+import { randomBase64Url, pkceChallenge, sealJson, openJson } from './crypto.js';
 import {
   etsyRequest,
   getShopId,
@@ -24,955 +18,391 @@ import {
 } from './etsy.js';
 
 const app = express();
-
-app.use(
-  express.json({
-    limit: '2mb'
-  })
-);
-
-app.use(
-  express.urlencoded({
-    extended: false
-  })
-);
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: false }));
 
 let openaiClient = null;
 let redisClient = null;
 
+const WORKER_VERSION = '3.1.0';
+const PREFIX = 'vaelons:thumbnail-worker:v2';
+const PREVIEW_TTL_SECONDS = 24 * 60 * 60;
+const QA_RETRY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+const LOCK_TTL_SECONDS = 10 * 60;
+const WORKER_MODE = 'safe';
+const WORKER_BATCH_SIZE = clampInt(process.env.WORKER_BATCH_SIZE || 2, 1, 5);
+const BAD_SCORE_THRESHOLD = clampInt(process.env.BAD_SCORE_THRESHOLD || 65, 20, 95);
+const DARK_BRIGHTNESS_THRESHOLD = clampInt(process.env.DARK_BRIGHTNESS_THRESHOLD || 78, 30, 150);
+const AUTO_DELETE_OLD_RANK1 = envBool('AUTO_DELETE_OLD_RANK1', true);
+const IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2';
+const QA_MODEL = process.env.OPENAI_QA_MODEL || 'gpt-5.6-luna';
+const COMPLIANCE_MODEL = process.env.OPENAI_COMPLIANCE_MODEL || QA_MODEL;
+const IMAGE_SIZE = process.env.OPENAI_IMAGE_SIZE || '1024x1024';
+const IMAGE_QUALITY = process.env.OPENAI_IMAGE_QUALITY || 'high';
+const STRICT_MAX_ATTEMPTS = clampInt(process.env.THUMBNAIL_MAX_ATTEMPTS || 3, 2, 3);
+const RECENT_SCENE_HISTORY_LIMIT = 12;
+const RECENT_QA_COMPARISON_LIMIT = 3;
 
-/* =========================================================
-   CONFIG
-========================================================= */
-
-const PREFIX =
-  'vaelons:thumbnail-worker:v2';
-
-const PREVIEW_TTL_SECONDS =
-  24 * 60 * 60;
-
-const QA_RETRY_COOLDOWN_MS =
-  24 * 60 * 60 * 1000;
-
-const LOCK_TTL_SECONDS =
-  10 * 60;
-
-const WORKER_MODE =
-  'safe';
-
-const WORKER_BATCH_SIZE =
-  clampInt(
-    process.env.WORKER_BATCH_SIZE ||
-    2,
-    1,
-    5
-  );
-
-const BAD_SCORE_THRESHOLD =
-  clampInt(
-    process.env.BAD_SCORE_THRESHOLD ||
-    65,
-    20,
-    95
-  );
-
-const DARK_BRIGHTNESS_THRESHOLD =
-  clampInt(
-    process.env.DARK_BRIGHTNESS_THRESHOLD ||
-    78,
-    30,
-    150
-  );
-
-const AUTO_DELETE_OLD_RANK1 =
-  envBool(
-    'AUTO_DELETE_OLD_RANK1',
-    true
-  );
-
-const IMAGE_MODEL =
-  process.env.OPENAI_IMAGE_MODEL ||
-  'gpt-image-2';
-
-const QA_MODEL =
-  process.env.OPENAI_QA_MODEL ||
-  'gpt-5.6-luna';
-
-const IMAGE_SIZE =
-  process.env.OPENAI_IMAGE_SIZE ||
-  '1024x1024';
-
-const IMAGE_QUALITY =
-  process.env.OPENAI_IMAGE_QUALITY ||
-  'high';
-
-const RECENT_SCENE_HISTORY_LIMIT =
-  12;
-
-const RECENT_QA_COMPARISON_LIMIT =
-  3;
+const HARD_FORBIDDEN = [
+  'potted plant', 'indoor plant', 'planter', 'flower pot', 'vase', 'decorative vessel',
+  'bouquet', 'decorative branches', 'books', 'magazines', 'console table', 'sideboard',
+  'credenza', 'styled shelf', 'styled tabletop'
+];
 
 const SCENE_FAMILIES = [
   {
-    id: 'bright_gallery',
-    label: 'Bright Gallery Wall',
-    description:
-      'A bright neutral gallery wall with generous negative space and either no furniture or one slim bench well below the artwork.',
-    decor_signature:
-      'gallery_wall+optional_slim_bench',
-    forbidden:
-      'No console table, no stacked books, no vase, no shelf styling.'
+    id: 'bare_gallery', label: 'Bare Gallery Wall', signature: 'bare_gallery+zero_props',
+    description: 'Bright frontal gallery wall, generous negative space, no furniture below the artwork.',
+    allowed: ['wall', 'floor', 'architectural trim', 'neutral daylight'],
+    rule: 'Nothing may sit directly below the artwork.'
   },
   {
-    id: 'airy_living',
-    label: 'Airy Living Room',
-    description:
-      'A daylight-filled refined living room with a low neutral sofa entering only the lower edge of frame; the artwork remains the dominant object.',
-    decor_signature:
-      'low_sofa+open_wall',
-    forbidden:
-      'No console below the artwork, no stacked books, no decorative vase cluster.'
+    id: 'low_sofa_wall', label: 'Low Sofa Wall', signature: 'low_sofa+empty_wall',
+    description: 'Bright living space with only the top edge of one low neutral sofa at the bottom.',
+    allowed: ['one low neutral sofa', 'wall', 'floor', 'neutral daylight'],
+    rule: 'Sofa stays low and bare. No object or furniture centered under artwork.'
   },
   {
-    id: 'stone_niche',
-    label: 'Architectural Stone Niche',
-    description:
-      'A pale limestone or soft plaster architectural wall/niche with clean daylight and one quiet pedestal or nothing below the artwork.',
-    decor_signature:
-      'stone_niche+minimal_pedestal',
-    forbidden:
-      'No books, no tabletop styling, no vase-and-branch composition.'
+    id: 'headboard_wall', label: 'Headboard Wall', signature: 'headboard+empty_wall',
+    description: 'Bright calm bedroom with low headboard and plain bedding only.',
+    allowed: ['low headboard', 'plain bedding', 'wall', 'neutral daylight'],
+    rule: 'No bedside tables, lamps, props, plants, vessels or books.'
   },
   {
-    id: 'refined_office',
-    label: 'Refined Home Office',
-    description:
-      'A bright sophisticated home office with only a clean desk edge or chair visible low in frame; the wall art is large and unobstructed.',
-    decor_signature:
-      'desk_edge+chair',
-    forbidden:
-      'No book stacks below the art, no vase on a console, no cluttered shelves.'
+    id: 'stair_landing', label: 'Architectural Stair Landing', signature: 'stairs+empty_wall',
+    description: 'Bright stair landing with clean railing geometry and no decorative furniture.',
+    allowed: ['stairs', 'railing', 'wall', 'neutral daylight'],
+    rule: 'Architecture only; no movable decor.'
   },
   {
-    id: 'calm_bedroom',
-    label: 'Calm Bedroom',
-    description:
-      'A serene neutral bedroom with a low headboard or bedding at the bottom edge and a large artwork centered above, lit by neutral natural daylight.',
-    decor_signature:
-      'low_bed+open_wall',
-    forbidden:
-      'No console, no book stacks, no large vase, no amber bedside glow.'
+    id: 'dining_wall', label: 'Clean Dining Wall', signature: 'bare_table_edge+chairs',
+    description: 'Bright dining wall with simple chair backs and optionally a bare table edge low in frame.',
+    allowed: ['simple chairs', 'bare dining table edge', 'wall', 'neutral daylight'],
+    rule: 'Table surface must be completely bare.'
   },
   {
-    id: 'modern_dining',
-    label: 'Modern Dining Space',
-    description:
-      'A bright modern dining space where a table edge and simple chairs sit low in the composition while the artwork dominates the wall.',
-    decor_signature:
-      'dining_table_edge+chairs',
-    forbidden:
-      'No vase-and-books pairing, no heavy centerpiece, no warm restaurant lighting.'
+    id: 'arched_hall', label: 'Arched Hall', signature: 'arches+architecture_only',
+    description: 'Bright plaster or limestone hall with arches and no decorative furniture.',
+    allowed: ['arches', 'plaster or limestone wall', 'floor', 'neutral daylight'],
+    rule: 'Architecture provides all visual interest.'
   },
   {
-    id: 'quiet_entry',
-    label: 'Quiet Entry Gallery',
-    description:
-      'A clean high-end entry or hallway with a simple bench or sculptural pedestal and strong daylight; the artwork is the clear focal point.',
-    decor_signature:
-      'entry_bench_or_pedestal',
-    forbidden:
-      'No console-table styling, no stacked books, no vase with branches.'
+    id: 'loft_wall', label: 'Modern Loft Wall', signature: 'loft+single_chair',
+    description: 'Bright clean loft wall with at most one simple chair far from the artwork.',
+    allowed: ['one simple chair', 'plaster or concrete wall', 'floor', 'neutral daylight'],
+    rule: 'At most one chair; no table, shelf, lamp or decor cluster.'
   },
   {
-    id: 'architectural_hall',
-    label: 'Architectural Hall',
-    description:
-      'A bright architectural corridor, loft, or softly arched interior with minimal furniture and a museum-like presentation of the artwork.',
-    decor_signature:
-      'architectural_hall+minimal_furniture',
-    forbidden:
-      'No console, no books, no decorative vase, no dark cinematic spotlighting.'
+    id: 'window_side_wall', label: 'Window-Side Wall', signature: 'window+empty_wall',
+    description: 'Bright wall beside a clean architectural window opening.',
+    allowed: ['window opening', 'wall', 'floor', 'neutral daylight'],
+    rule: 'Window is architecture only; no indoor greenery or furniture styling.'
   },
   {
-    id: 'museum_wall',
-    label: 'Museum Minimal',
-    description:
-      'A nearly furniture-free museum-style wall with soft natural or diffused neutral light and premium architectural texture.',
-    decor_signature:
-      'museum_wall+no_decor',
-    forbidden:
-      'No furniture styling under the artwork, no books, no vase, no plant cluster.'
+    id: 'museum_wall', label: 'Museum Minimal', signature: 'museum+zero_props',
+    description: 'Premium museum-like wall with subtle texture and no furniture or decor.',
+    allowed: ['museum wall', 'floor', 'architectural texture', 'diffuse neutral light'],
+    rule: 'Zero props and zero furniture.'
   }
 ];
 
-
-/* =========================================================
-   BASIC HELPERS
-========================================================= */
-
 function required(name) {
-  const value =
-    process.env[name];
-
-  if (!value) {
-    throw new Error(
-      `Missing environment variable: ${name}`
-    );
-  }
-
+  const value = process.env[name];
+  if (!value) throw new Error(`Missing environment variable: ${name}`);
   return value;
 }
 
 function publicBase() {
-  return required(
-    'PUBLIC_BASE_URL'
-  ).replace(
-    /\/$/,
-    ''
-  );
+  return required('PUBLIC_BASE_URL').replace(/\/$/, '');
 }
 
-function envBool(
-  name,
-  fallback = false
-) {
-  const raw =
-    process.env[name];
-
-  if (
-    raw == null ||
-    raw === ''
-  ) {
-    return fallback;
-  }
-
-  return [
-    '1',
-    'true',
-    'yes',
-    'on'
-  ].includes(
-    String(
-      raw
-    ).toLowerCase()
-  );
+function envBool(name, fallback = false) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(String(raw).toLowerCase());
 }
 
-function clamp(
-  value,
-  min,
-  max
-) {
-  return Math.max(
-    min,
-    Math.min(
-      max,
-      Number(
-        value
-      )
-    )
-  );
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, Number(value)));
 }
 
-function clampInt(
-  value,
-  min,
-  max
-) {
-  return Math.round(
-    clamp(
-      value,
-      min,
-      max
-    )
-  );
+function clampInt(value, min, max) {
+  return Math.round(clamp(value, min, max));
 }
 
 function round1(value) {
-  return (
-    Math.round(
-      Number(
-        value
-      ) *
-      10
-    ) /
-    10
-  );
+  return Math.round(Number(value) * 10) / 10;
 }
 
-function asListingId(
-  value
-) {
-  const id =
-    String(
-      value ||
-      ''
-    ).trim();
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
-  if (
-    !/^\d+$/.test(
-      id
-    )
-  ) {
-    const err =
-      new Error(
-        'Invalid listingId'
-      );
-
-    err.status =
-      400;
-
-    throw err;
+function asListingId(value) {
+  const id = String(value || '').trim();
+  if (!/^\d+$/.test(id)) {
+    const e = new Error('Invalid listingId');
+    e.status = 400;
+    throw e;
   }
-
   return id;
 }
 
-function getImageId(
-  image
-) {
-  return (
-    image
-      ?.listing_image_id ??
-    image
-      ?.image_id ??
-    null
-  );
+function getImageId(image) {
+  return image?.listing_image_id ?? image?.image_id ?? null;
 }
 
-function getImageUrl(
-  image
-) {
-  return (
-    image
-      ?.url_fullxfull ||
-    image
-      ?.url_570xN ||
-    image
-      ?.url_300x300 ||
-    image
-      ?.url_170x135 ||
-    null
-  );
+function getImageUrl(image) {
+  return image?.url_fullxfull ||
+    image?.url_570xN ||
+    image?.url_300x300 ||
+    image?.url_170x135 ||
+    null;
 }
 
-function parseCookies(
-  req
-) {
-  const result =
-    {};
-
-  for (
-    const part of
-    (
-      req.headers.cookie ||
-      ''
-    ).split(';')
-  ) {
-    const idx =
-      part.indexOf('=');
-
-    if (
-      idx >
-      -1
-    ) {
-      result[
-        part
-          .slice(
-            0,
-            idx
-          )
-          .trim()
-      ] =
-        decodeURIComponent(
-          part
-            .slice(
-              idx + 1
-            )
-            .trim()
-        );
+function parseCookies(req) {
+  const out = {};
+  for (const part of (req.headers.cookie || '').split(';')) {
+    const i = part.indexOf('=');
+    if (i > -1) {
+      out[part.slice(0, i).trim()] =
+        decodeURIComponent(part.slice(i + 1).trim());
     }
   }
-
-  return result;
+  return out;
 }
 
-
-/* =========================================================
-   AUTH
-========================================================= */
-
-function bridgeAuth(
-  req,
-  res,
-  next
-) {
-  const auth =
-    req.get(
-      'authorization'
-    ) ||
-    '';
-
-  const key =
-    process.env
-      .BRIDGE_API_KEY ||
-    '';
-
+function bridgeAuth(req, res, next) {
+  const key = process.env.BRIDGE_API_KEY || '';
   if (
     !key ||
-    auth !==
-      `Bearer ${key}`
+    (req.get('authorization') || '') !== `Bearer ${key}`
   ) {
-    return res
-      .status(
-        401
-      )
-      .json({
-        error:
-          'unauthorized'
-      });
+    return res.status(401).json({ error: 'unauthorized' });
   }
-
   next();
 }
 
-function workerAuth(
-  req,
-  res,
-  next
-) {
-  const auth =
-    req.get(
-      'authorization'
-    ) ||
-    '';
-
-  const cronSecret =
-    process.env
-      .CRON_SECRET ||
-    '';
-
-  const bridgeKey =
-    process.env
-      .BRIDGE_API_KEY ||
-    '';
-
-  const allowed =
-    (
-      cronSecret &&
-      auth ===
-        `Bearer ${cronSecret}`
-    ) ||
-    (
-      bridgeKey &&
-      auth ===
-        `Bearer ${bridgeKey}`
-    );
+function workerAuth(req, res, next) {
+  const auth = req.get('authorization') || '';
+  const cron = process.env.CRON_SECRET || '';
+  const bridge = process.env.BRIDGE_API_KEY || '';
 
   if (
-    !allowed
+    !(
+      (cron && auth === `Bearer ${cron}`) ||
+      (bridge && auth === `Bearer ${bridge}`)
+    )
   ) {
-    return res
-      .status(
-        401
-      )
-      .json({
-        error:
-          'unauthorized'
-      });
+    return res.status(401).json({ error: 'unauthorized' });
   }
 
   next();
 }
-
-
-/* =========================================================
-   CLIENTS
-========================================================= */
 
 function openai() {
-  if (
-    !openaiClient
-  ) {
-    openaiClient =
-      new OpenAI({
-        apiKey:
-          required(
-            'VAELONS_OPENAI_API_KEY'
-          )
-      });
+  if (!openaiClient) {
+    openaiClient = new OpenAI({
+      apiKey: required('VAELONS_OPENAI_API_KEY')
+    });
   }
-
   return openaiClient;
 }
 
 function redis() {
-  if (
-    !redisClient
-  ) {
+  if (!redisClient) {
     const url =
-      process.env
-        .UPSTASH_REDIS_REST_KV_REST_API_URL ||
-      process.env
-        .UPSTASH_REDIS_REST_URL;
+      process.env.UPSTASH_REDIS_REST_KV_REST_API_URL ||
+      process.env.UPSTASH_REDIS_REST_URL;
 
     const token =
-      process.env
-        .UPSTASH_REDIS_REST_KV_REST_API_TOKEN ||
-      process.env
-        .UPSTASH_REDIS_REST_TOKEN;
+      process.env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN ||
+      process.env.UPSTASH_REDIS_REST_TOKEN;
 
-    if (
-      !url ||
-      !token
-    ) {
+    if (!url || !token) {
       throw new Error(
-        'Missing Upstash Redis environment variables. Expected UPSTASH_REDIS_REST_KV_REST_API_URL and UPSTASH_REDIS_REST_KV_REST_API_TOKEN.'
+        'Missing Upstash Redis REST environment variables'
       );
     }
 
-    redisClient =
-      new Redis({
-        url,
-        token,
-        enableTelemetry:
-          false
-      });
+    redisClient = new Redis({
+      url,
+      token,
+      enableTelemetry: false
+    });
   }
 
   return redisClient;
 }
 
+const stateKey = id => `${PREFIX}:listing:${id}`;
+const previewKey = token => `${PREFIX}:preview:${token}`;
+const previewImageKey = token => `${PREFIX}:preview-image:${token}`;
+const sceneHistoryKey = () => `${PREFIX}:scene-history`;
 
-/* =========================================================
-   REDIS KEYS
-========================================================= */
+async function getJson(key) {
+  const raw = await redis().get(key);
 
-function stateKey(
-  listingId
-) {
-  return (
-    `${PREFIX}:listing:${listingId}`
-  );
-}
-
-function previewKey(
-  token
-) {
-  return (
-    `${PREFIX}:preview:${token}`
-  );
-}
-
-function previewImageKey(
-  token
-) {
-  return (
-    `${PREFIX}:preview-image:${token}`
-  );
-}
-
-async function getJson(
-  key
-) {
-  const raw =
-    await redis().get(
-      key
-    );
-
-  if (
-    raw == null
-  ) {
-    return null;
-  }
-
-  if (
-    typeof raw ===
-    'object'
-  ) {
-    return raw;
-  }
+  if (raw == null) return null;
+  if (typeof raw === 'object') return raw;
 
   try {
-    return JSON.parse(
-      raw
-    );
-
+    return JSON.parse(raw);
   } catch {
     return null;
   }
 }
 
-async function setJson(
-  key,
-  value,
-  options = {}
-) {
+async function setJson(key, value, options = {}) {
   return redis().set(
     key,
-    JSON.stringify(
-      value
-    ),
+    JSON.stringify(value),
     options
   );
 }
 
+async function downloadImage(url) {
+  const parsed = new URL(url);
 
-/* =========================================================
-   IMAGE DOWNLOAD
-========================================================= */
-
-async function downloadImage(
-  url
-) {
-  const parsed =
-    new URL(
-      url
-    );
-
-  if (
-    parsed.protocol !==
-    'https:'
-  ) {
-    throw new Error(
-      'Image URL must use HTTPS'
-    );
+  if (parsed.protocol !== 'https:') {
+    throw new Error('Image URL must use HTTPS');
   }
 
-  const response =
-    await fetch(
-      url
-    );
+  const response = await fetch(url);
 
-  if (
-    !response.ok
-  ) {
+  if (!response.ok) {
     throw new Error(
       `Could not download image (${response.status})`
     );
   }
 
-  const buffer =
-    Buffer.from(
-      await response
-        .arrayBuffer()
-    );
+  const buffer = Buffer.from(
+    await response.arrayBuffer()
+  );
 
-  if (
-    buffer.length >
-    20 *
-    1024 *
-    1024
-  ) {
-    const err =
-      new Error(
-        'Image is larger than 20 MB'
-      );
-
-    err.status =
-      413;
-
-    throw err;
+  if (buffer.length > 20 * 1024 * 1024) {
+    const e = new Error('Image is larger than 20 MB');
+    e.status = 413;
+    throw e;
   }
 
   return buffer;
 }
-
-
-/* =========================================================
-   IMAGE NORMALIZATION
-========================================================= */
 
 async function normalizeJpeg(
   buffer,
   max = 1600,
   quality = 90
 ) {
-  return sharp(
-    buffer
-  )
+  return sharp(buffer)
     .rotate()
     .removeAlpha()
-    .toColourspace(
-      'srgb'
-    )
+    .toColourspace('srgb')
     .resize({
-      width:
-        max,
-
-      height:
-        max,
-
-      fit:
-        'inside',
-
-      withoutEnlargement:
-        true
+      width: max,
+      height: max,
+      fit: 'inside',
+      withoutEnlargement: true
     })
     .jpeg({
       quality,
-
-      chromaSubsampling:
-        '4:4:4'
+      chromaSubsampling: '4:4:4'
     })
     .toBuffer();
 }
 
+async function analyzeImage(buffer) {
+  const meta = await sharp(buffer).metadata();
 
-/* =========================================================
-   IMAGE ANALYSIS
-========================================================= */
-
-async function analyzeImage(
-  buffer
-) {
-  const meta =
-    await sharp(
-      buffer
-    ).metadata();
-
-  const {
-    data,
-    info
-  } =
-    await sharp(
-      buffer
-    )
+  const { data, info } =
+    await sharp(buffer)
       .rotate()
       .removeAlpha()
       .greyscale()
       .resize({
-        width:
-          360,
-
-        height:
-          360,
-
-        fit:
-          'inside',
-
-        withoutEnlargement:
-          true
+        width: 360,
+        height: 360,
+        fit: 'inside',
+        withoutEnlargement: true
       })
       .raw()
       .toBuffer({
-        resolveWithObject:
-          true
+        resolveWithObject: true
       });
 
-  let sum =
-    0;
-
-  let sumSq =
-    0;
-
-  let shadow =
-    0;
-
-  let deepShadow =
-    0;
-
-  let highlight =
-    0;
+  let sum = 0;
+  let sumSq = 0;
+  let shadow = 0;
+  let deepShadow = 0;
+  let highlight = 0;
 
   const count =
     Math.max(
       1,
-      info.width *
-      info.height
+      info.width * info.height
     );
 
   for (
     let i = 0;
-    i <
-    data.length;
-    i +=
-      info.channels
+    i < data.length;
+    i += info.channels
   ) {
-    const y =
-      data[i];
+    const y = data[i];
 
-    sum +=
-      y;
+    sum += y;
+    sumSq += y * y;
 
-    sumSq +=
-      y *
-      y;
-
-    if (
-      y <
-      55
-    ) {
-      shadow +=
-        1;
-    }
-
-    if (
-      y <
-      28
-    ) {
-      deepShadow +=
-        1;
-    }
-
-    if (
-      y >
-      235
-    ) {
-      highlight +=
-        1;
-    }
+    if (y < 55) shadow++;
+    if (y < 28) deepShadow++;
+    if (y > 235) highlight++;
   }
 
-  const mean =
-    sum /
-    count;
-
-  const variance =
-    Math.max(
-      0,
-      sumSq /
-      count -
-      mean *
-      mean
-    );
+  const mean = sum / count;
 
   return {
-    width:
-      meta.width ||
-      null,
-
-    height:
-      meta.height ||
-      null,
-
-    brightness:
-      round1(
-        mean
-      ),
-
-    contrast:
-      round1(
-        Math.sqrt(
-          variance
+    width: meta.width || null,
+    height: meta.height || null,
+    brightness: round1(mean),
+    contrast: round1(
+      Math.sqrt(
+        Math.max(
+          0,
+          sumSq / count - mean * mean
         )
-      ),
-
+      )
+    ),
     shadow_percent:
       round1(
-        shadow /
-        count *
-        100
+        shadow / count * 100
       ),
-
     deep_shadow_percent:
       round1(
-        deepShadow /
-        count *
-        100
+        deepShadow / count * 100
       ),
-
     highlight_percent:
       round1(
-        highlight /
-        count *
-        100
+        highlight / count * 100
       )
   };
 }
 
+function thumbnailScore(a) {
+  let score = 100;
 
-/* =========================================================
-   THUMBNAIL SCORE
-========================================================= */
+  if (a.brightness < 50) score -= 40;
+  else if (a.brightness < 65) score -= 30;
+  else if (a.brightness < 78) score -= 18;
+  else if (a.brightness < 90) score -= 8;
 
-function thumbnailScore(
-  a
-) {
-  let score =
-    100;
+  if (a.shadow_percent > 60) score -= 25;
+  else if (a.shadow_percent > 48) score -= 15;
+  else if (a.shadow_percent > 38) score -= 8;
 
-  if (
-    a.brightness <
-    50
-  ) {
-    score -=
-      40;
+  if (a.deep_shadow_percent > 35) score -= 12;
+  else if (a.deep_shadow_percent > 25) score -= 6;
 
-  } else if (
-    a.brightness <
-    65
-  ) {
-    score -=
-      30;
-
-  } else if (
-    a.brightness <
-    78
-  ) {
-    score -=
-      18;
-
-  } else if (
-    a.brightness <
-    90
-  ) {
-    score -=
-      8;
-  }
-
-  if (
-    a.shadow_percent >
-    60
-  ) {
-    score -=
-      25;
-
-  } else if (
-    a.shadow_percent >
-    48
-  ) {
-    score -=
-      15;
-
-  } else if (
-    a.shadow_percent >
-    38
-  ) {
-    score -=
-      8;
-  }
-
-  if (
-    a.deep_shadow_percent >
-    35
-  ) {
-    score -=
-      12;
-
-  } else if (
-    a.deep_shadow_percent >
-    25
-  ) {
-    score -=
-      6;
-  }
-
-  if (
-    a.contrast <
-    25
-  ) {
-    score -=
-      10;
-  }
-
-  if (
-    a.highlight_percent >
-    16
-  ) {
-    score -=
-      8;
-  }
+  if (a.contrast < 25) score -= 10;
+  if (a.highlight_percent > 16) score -= 8;
 
   return clampInt(
     score,
@@ -981,246 +411,146 @@ function thumbnailScore(
   );
 }
 
-
-/* =========================================================
-   REFERENCE SCORE
-========================================================= */
-
 function heuristicReferenceScore(
-  analysis,
+  a,
   rank
 ) {
-  const brightnessPenalty =
-    Math.abs(
-      analysis.brightness -
-      120
-    ) *
-    0.35;
-
-  const contrastBonus =
-    clamp(
-      analysis.contrast -
-      25,
-      0,
-      30
-    ) *
-    0.7;
-
   const resolution =
     Math.max(
       1,
-      (
-        analysis.width ||
-        1
-      ) *
-      (
-        analysis.height ||
-        1
-      )
+      (a.width || 1) *
+      (a.height || 1)
     );
-
-  const resolutionBonus =
-    clamp(
-      Math.log10(
-        resolution
-      ) -
-      5.5,
-      0,
-      1.5
-    ) *
-    8;
-
-  const rankBonus =
-    rank ===
-    2
-      ? 8
-      : rank ===
-        3
-        ? 4
-        : 0;
 
   return round1(
     70 -
-    brightnessPenalty +
-    contrastBonus +
-    resolutionBonus +
-    rankBonus
+    Math.abs(a.brightness - 120) * 0.35 +
+    clamp(a.contrast - 25, 0, 30) * 0.7 +
+    clamp(
+      Math.log10(resolution) - 5.5,
+      0,
+      1.5
+    ) * 8 +
+    (
+      rank === 2
+        ? 8
+        : rank === 3
+          ? 4
+          : 0
+    )
   );
 }
 
-
-/* =========================================================
-   ETSY IMAGE SET
-========================================================= */
-
-async function getImageSet(
-  listingId
-) {
+async function getImageSet(listingId) {
   const data =
     await getListingImages(
       listingId
     );
 
   const images =
-    Array.isArray(
-      data?.results
-    )
+    Array.isArray(data?.results)
       ? data.results
       : [];
 
-  if (
-    !images.length
-  ) {
-    const err =
+  if (!images.length) {
+    const e =
       new Error(
         'No listing images found'
       );
-
-    err.status =
-      404;
-
-    throw err;
+    e.status = 404;
+    throw e;
   }
 
   const ordered =
-    [
-      ...images
-    ].sort(
-      (
-        a,
-        b
-      ) =>
-        Number(
-          a.rank ??
-          9999
-        ) -
-        Number(
-          b.rank ??
-          9999
-        )
+    [...images].sort(
+      (a, b) =>
+        Number(a.rank ?? 9999) -
+        Number(b.rank ?? 9999)
     );
 
   const rank1 =
     images.find(
-      (
-        img
-      ) =>
-        Number(
-          img.rank
-        ) ===
-        1
+      x => Number(x.rank) === 1
     ) ||
     ordered[0];
 
   if (
     !rank1 ||
-    !getImageUrl(
-      rank1
-    )
+    !getImageUrl(rank1)
   ) {
-    const err =
+    const e =
       new Error(
         'No usable rank 1 image'
       );
-
-    err.status =
-      404;
-
-    throw err;
+    e.status = 404;
+    throw e;
   }
 
   return {
-    images:
-      ordered,
-
+    images: ordered,
     rank1
   };
 }
-
-
-/* =========================================================
-   AI REFERENCE SELECTION
-========================================================= */
 
 async function selectReferencesWithVision(
   title,
   candidates
 ) {
-  if (
-    candidates.length ===
-    1
-  ) {
-    return [
-      candidates[0]
-    ];
+  if (candidates.length === 1) {
+    return [candidates[0]];
   }
 
   const content = [
     {
-      type:
-        'input_text',
-
+      type: 'input_text',
       text:
-        `You are selecting product-truth reference images for a new Etsy hero thumbnail.
+        `Select product-truth references for an Etsy wall-art hero image.
 
-Listing title:
-${title || ''}
+Listing: ${title || ''}
 
-Choose the candidate that shows the actual product/artwork most clearly and faithfully.
+Only the wall art/canvas/frame is the product.
 
-Prefer straight, complete, uncropped, faithful product views.
-Avoid dark, heavily perspectived, cropped, obstructed, or altered views.
+The surrounding room, furniture, plants, pots, vases, books, shelves, tables and decor are NOT product truth.
 
-A second candidate may be selected only if it adds useful product-truth detail.
+Prefer close, straight, complete, high-resolution artwork views over lifestyle room mockups.
 
-Candidate images follow in order and are indexed from 0.`
+Choose one primary and at most one useful secondary.
+
+Candidate images follow, indexed from 0.`
     }
   ];
 
   for (
     let i = 0;
-    i <
-    candidates.length;
-    i +=
-      1
+    i < candidates.length;
+    i++
   ) {
-    const candidate =
-      candidates[i];
+    const c = candidates[i];
 
     const jpeg =
       await normalizeJpeg(
-        candidate.buffer,
+        c.buffer,
         1200,
         88
       );
 
     content.push({
-      type:
-        'input_text',
-
+      type: 'input_text',
       text:
-        `Candidate ${i}: Etsy rank ${candidate.rank}, image ID ${candidate.imageId}`
+        `Candidate ${i}: rank ${c.rank}, image ${c.imageId}`
     });
 
     content.push({
-      type:
-        'input_image',
-
+      type: 'input_image',
       image_url:
         `data:image/jpeg;base64,${jpeg.toString('base64')}`,
-
-      detail:
-        'high'
+      detail: 'high'
     });
   }
 
   const schema = {
-    type:
-      'object',
-
-    additionalProperties:
-      false,
-
+    type: 'object',
+    additionalProperties: false,
     required: [
       'primary_index',
       'use_secondary',
@@ -1228,206 +558,130 @@ Candidate images follow in order and are indexed from 0.`
       'confidence',
       'reason'
     ],
-
     properties: {
       primary_index: {
-        type:
-          'integer'
+        type: 'integer'
       },
-
       use_secondary: {
-        type:
-          'boolean'
+        type: 'boolean'
       },
-
       secondary_index: {
-        type:
-          'integer'
+        type: 'integer'
       },
-
       confidence: {
-        type:
-          'number',
-
-        minimum:
-          0,
-
-        maximum:
-          1
+        type: 'number',
+        minimum: 0,
+        maximum: 1
       },
-
       reason: {
-        type:
-          'string'
+        type: 'string'
       }
     }
   };
 
   try {
-    const response =
+    const r =
       await openai()
         .responses
         .create({
-          model:
-            QA_MODEL,
-
-          store:
-            false,
-
+          model: QA_MODEL,
+          store: false,
           input: [
             {
-              role:
-                'user',
-
+              role: 'user',
               content
             }
           ],
-
           text: {
             format: {
-              type:
-                'json_schema',
-
-              name:
-                'reference_selector',
-
-              strict:
-                true,
-
+              type: 'json_schema',
+              name: 'reference_selector_v31',
+              strict: true,
               schema
             }
           }
         });
 
-    const parsed =
+    const p =
       JSON.parse(
-        response.output_text ||
+        r.output_text ||
         '{}'
       );
 
-    const primaryIndex =
+    const a =
       Number(
-        parsed.primary_index
+        p.primary_index
       );
 
-    const secondaryIndex =
+    const b =
       Number(
-        parsed.secondary_index
+        p.secondary_index
       );
 
     if (
-      Number.isInteger(
-        primaryIndex
-      ) &&
-      primaryIndex >=
-        0 &&
-      primaryIndex <
-        candidates.length
+      Number.isInteger(a) &&
+      a >= 0 &&
+      a < candidates.length
     ) {
-      const selected = [
-        candidates[
-          primaryIndex
-        ]
+      const out = [
+        candidates[a]
       ];
 
       if (
-        parsed.use_secondary ===
-          true &&
-        Number.isInteger(
-          secondaryIndex
-        ) &&
-        secondaryIndex >=
-          0 &&
-        secondaryIndex <
-          candidates.length &&
-        secondaryIndex !==
-          primaryIndex
+        p.use_secondary === true &&
+        Number.isInteger(b) &&
+        b >= 0 &&
+        b < candidates.length &&
+        b !== a
       ) {
-        selected.push(
-          candidates[
-            secondaryIndex
-          ]
+        out.push(
+          candidates[b]
         );
       }
 
-      return selected.slice(
-        0,
-        2
-      );
+      return out.slice(0, 2);
     }
-
-  } catch (
-    error
-  ) {
+  } catch (e) {
     console.warn(
       'Reference selector fallback:',
-      error.message
+      e.message
     );
   }
 
-  return [
-    ...candidates
-  ]
+  return [...candidates]
     .sort(
-      (
-        a,
-        b
-      ) =>
+      (a, b) =>
         b.heuristicScore -
         a.heuristicScore
     )
-    .slice(
-      0,
-      Math.min(
-        2,
-        candidates.length
-      )
-    );
+    .slice(0, 2);
 }
 
 async function selectReferences(
   title,
   imageSet
 ) {
-  const sourceCandidates =
+  const raw =
     imageSet.images
       .filter(
-        (
-          img
-        ) =>
-          Number(
-            img.rank
-          ) !==
-            1 &&
-          getImageUrl(
-            img
-          )
+        x =>
+          Number(x.rank) !== 1 &&
+          getImageUrl(x)
       )
-      .slice(
-        0,
-        6
-      );
+      .slice(0, 6);
 
-  const fallback =
-    sourceCandidates.length
-      ? sourceCandidates
-      : [
-          imageSet.rank1
-        ];
+  const source =
+    raw.length
+      ? raw
+      : [imageSet.rank1];
 
-  const candidates =
-    [];
+  const candidates = [];
 
-  for (
-    const image of
-    fallback
-  ) {
+  for (const image of source) {
     try {
       const buffer =
         await downloadImage(
-          getImageUrl(
-            image
-          )
+          getImageUrl(image)
         );
 
       const analysis =
@@ -1437,47 +691,32 @@ async function selectReferences(
 
       const rank =
         Number(
-          image.rank ||
-          99
+          image.rank || 99
         );
 
       candidates.push({
         image,
-
         imageId:
-          getImageId(
-            image
-          ),
-
+          getImageId(image),
         rank,
-
         buffer,
-
         analysis,
-
         heuristicScore:
           heuristicReferenceScore(
             analysis,
             rank
           )
       });
-
-    } catch (
-      error
-    ) {
+    } catch (e) {
       console.warn(
         'Reference candidate failed:',
-        getImageId(
-          image
-        ),
-        error.message
+        getImageId(image),
+        e.message
       );
     }
   }
 
-  if (
-    !candidates.length
-  ) {
+  if (!candidates.length) {
     throw new Error(
       'Could not obtain a usable reference image'
     );
@@ -1489,46 +728,382 @@ async function selectReferences(
   );
 }
 
+async function isolateArtworkReference(
+  title,
+  buffer,
+  index
+) {
+  const image =
+    await normalizeJpeg(
+      buffer,
+      1600,
+      94
+    );
 
-/* =========================================================
-   ARTWORK-AWARE SCENE PLANNER
-========================================================= */
+  const schema = {
+    type: 'object',
+    additionalProperties: false,
+    required: [
+      'found',
+      'confidence',
+      'x',
+      'y',
+      'width',
+      'height',
+      'reason'
+    ],
+    properties: {
+      found: {
+        type: 'boolean'
+      },
+      confidence: {
+        type: 'number',
+        minimum: 0,
+        maximum: 1
+      },
+      x: {
+        type: 'number',
+        minimum: 0,
+        maximum: 1
+      },
+      y: {
+        type: 'number',
+        minimum: 0,
+        maximum: 1
+      },
+      width: {
+        type: 'number',
+        minimum: 0,
+        maximum: 1
+      },
+      height: {
+        type: 'number',
+        minimum: 0,
+        maximum: 1
+      },
+      reason: {
+        type: 'string'
+      }
+    }
+  };
 
-function sceneHistoryKey() {
-  return `${PREFIX}:scene-history`;
+  try {
+    const r =
+      await openai()
+        .responses
+        .create({
+          model:
+            COMPLIANCE_MODEL,
+          store: false,
+          input: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'input_text',
+                  text:
+                    `Locate ONLY the physical wall-art product.
+
+Listing: ${title || ''}.
+Reference ${index}.
+
+Return a normalized bounding box around the complete artwork/canvas/frame.
+
+Exclude the entire surrounding room and every furniture/decor object.
+
+Include a visible frame only if it belongs to the product.
+
+If not reliable set found=false.
+
+Do not guess.`
+                },
+                {
+                  type: 'input_image',
+                  image_url:
+                    `data:image/jpeg;base64,${image.toString('base64')}`,
+                  detail: 'high'
+                }
+              ]
+            }
+          ],
+          text: {
+            format: {
+              type: 'json_schema',
+              name: 'artwork_bbox_v31',
+              strict: true,
+              schema
+            }
+          }
+        });
+
+    const p =
+      JSON.parse(
+        r.output_text ||
+        '{}'
+      );
+
+    if (
+      p.found !== true ||
+      Number(
+        p.confidence || 0
+      ) < 0.72
+    ) {
+      return {
+        ok: false,
+        reason:
+          p.reason ||
+          'bbox_not_confident',
+        confidence:
+          Number(
+            p.confidence || 0
+          )
+      };
+    }
+
+    const meta =
+      await sharp(image)
+        .metadata();
+
+    const W =
+      Number(
+        meta.width || 0
+      );
+
+    const H =
+      Number(
+        meta.height || 0
+      );
+
+    const x =
+      clamp(p.x, 0, 1);
+
+    const y =
+      clamp(p.y, 0, 1);
+
+    const w =
+      clamp(
+        p.width,
+        0,
+        1
+      );
+
+    const h =
+      clamp(
+        p.height,
+        0,
+        1
+      );
+
+    if (
+      !W ||
+      !H ||
+      w < 0.12 ||
+      h < 0.12 ||
+      w * h < 0.025 ||
+      x + w > 1.02 ||
+      y + h > 1.02
+    ) {
+      return {
+        ok: false,
+        reason:
+          'bbox_invalid',
+        confidence:
+          Number(
+            p.confidence || 0
+          )
+      };
+    }
+
+    const mx = w * 0.012;
+    const my = h * 0.012;
+
+    const l =
+      clamp(
+        x - mx,
+        0,
+        1
+      );
+
+    const t =
+      clamp(
+        y - my,
+        0,
+        1
+      );
+
+    const rgt =
+      clamp(
+        x + w + mx,
+        0,
+        1
+      );
+
+    const bot =
+      clamp(
+        y + h + my,
+        0,
+        1
+      );
+
+    const left =
+      Math.floor(
+        l * W
+      );
+
+    const top =
+      Math.floor(
+        t * H
+      );
+
+    const width =
+      Math.max(
+        1,
+        Math.min(
+          W - left,
+          Math.ceil(
+            (rgt - l) * W
+          )
+        )
+      );
+
+    const height =
+      Math.max(
+        1,
+        Math.min(
+          H - top,
+          Math.ceil(
+            (bot - t) * H
+          )
+        )
+      );
+
+    const cropped =
+      await sharp(image)
+        .extract({
+          left,
+          top,
+          width,
+          height
+        })
+        .jpeg({
+          quality: 95,
+          chromaSubsampling:
+            '4:4:4'
+        })
+        .toBuffer();
+
+    return {
+      ok: true,
+      buffer: cropped,
+      confidence:
+        Number(
+          p.confidence || 0
+        ),
+      bbox: {
+        x,
+        y,
+        width: w,
+        height: h
+      },
+      reason:
+        p.reason ||
+        'isolated'
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      reason:
+        `isolation_failed: ${e.message}`,
+      confidence: 0
+    };
+  }
+}
+
+async function isolateArtworkReferences(
+  title,
+  references
+) {
+  const checked =
+    await Promise.all(
+      references.map(
+        async (ref, i) => ({
+          ref,
+          iso:
+            await isolateArtworkReference(
+              title,
+              ref.buffer,
+              i
+            )
+        })
+      )
+    );
+
+  return checked
+    .filter(
+      x => x.iso.ok
+    )
+    .map(
+      x => ({
+        ...x.ref,
+        originalBuffer:
+          x.ref.buffer,
+        buffer:
+          x.iso.buffer,
+        isolation: {
+          isolated: true,
+          confidence:
+            x.iso.confidence,
+          bbox:
+            x.iso.bbox,
+          reason:
+            x.iso.reason
+        }
+      })
+    );
 }
 
 function stableNumber(value) {
-  const hex =
+  return Number.parseInt(
     createHash('sha256')
-      .update(String(value || ''))
+      .update(
+        String(
+          value || ''
+        )
+      )
       .digest('hex')
-      .slice(0, 8);
-
-  return Number.parseInt(hex, 16) || 0;
+      .slice(0, 8),
+    16
+  ) || 0;
 }
 
 async function getRecentSceneHistory(
-  limit = RECENT_SCENE_HISTORY_LIMIT
+  limit =
+    RECENT_SCENE_HISTORY_LIMIT
 ) {
   const rows =
     await redis().lrange(
       sceneHistoryKey(),
       0,
-      Math.max(0, limit - 1)
+      Math.max(
+        0,
+        limit - 1
+      )
     );
 
   return (rows || [])
-    .map((row) => {
+    .map(row => {
       if (
         row &&
-        typeof row === 'object'
+        typeof row ===
+          'object'
       ) {
         return row;
       }
 
       try {
-        return JSON.parse(String(row));
+        return JSON.parse(
+          String(row)
+        );
       } catch {
         return null;
       }
@@ -1554,24 +1129,24 @@ async function addSceneHistory(item) {
 }
 
 async function loadRecentGeneratedComparisons(
-  limit = RECENT_QA_COMPARISON_LIMIT
+  limit =
+    RECENT_QA_COMPARISON_LIMIT
 ) {
   const history =
     await getRecentSceneHistory(
       Math.max(
-        limit * 3,
+        limit * 4,
         limit
       )
     );
 
-  const result = [];
-  const usedTokens = new Set();
+  const out = [];
+  const seen =
+    new Set();
 
-  for (
-    const item of history
-  ) {
+  for (const item of history) {
     if (
-      result.length >= limit
+      out.length >= limit
     ) {
       break;
     }
@@ -1584,119 +1159,96 @@ async function loadRecentGeneratedComparisons(
 
     if (
       !token ||
-      usedTokens.has(token)
+      seen.has(token)
     ) {
       continue;
     }
 
-    const base64 =
+    const b64 =
       await redis().get(
-        previewImageKey(token)
+        previewImageKey(
+          token
+        )
       );
 
-    if (!base64) {
+    if (!b64) {
       continue;
     }
 
-    try {
-      result.push({
-        scene_family:
-          item?.scene_family ||
-          null,
+    out.push({
+      scene_family:
+        item.scene_family ||
+        null,
+      signature:
+        item.signature ||
+        item.decor_signature ||
+        null,
+      buffer:
+        Buffer.from(
+          String(b64),
+          'base64'
+        )
+    });
 
-        decor_signature:
-          item?.decor_signature ||
-          null,
-
-        buffer:
-          Buffer.from(
-            String(base64),
-            'base64'
-          )
-      });
-
-      usedTokens.add(token);
-    } catch {
-      // Ignore stale/corrupt comparison entries.
-    }
+    seen.add(token);
   }
 
-  return result;
+  return out;
 }
 
-async function analyzeArtworkContext({
+async function analyzeArtworkContext(
   title,
   references
-}) {
-  const referenceImages =
+) {
+  const imgs =
     await Promise.all(
       references.map(
-        (ref) =>
+        x =>
           normalizeJpeg(
-            ref.buffer,
+            x.buffer,
             1200,
             90
           )
       )
     );
 
-  const allowedSceneIds =
+  const ids =
     SCENE_FAMILIES.map(
-      (item) => item.id
+      x => x.id
     );
 
   const schema = {
-    type:
-      'object',
-
-    additionalProperties:
-      false,
-
+    type: 'object',
+    additionalProperties: false,
     required: [
-      'artwork_subject',
-      'artwork_style',
-      'visual_mood',
+      'subject',
+      'style',
+      'mood',
       'palette',
       'orientation',
       'recommended_scene_families',
       'must_preserve',
-      'avoid_environment_elements',
       'confidence'
     ],
-
     properties: {
-      artwork_subject: {
-        type:
-          'string'
+      subject: {
+        type: 'string'
       },
-
-      artwork_style: {
-        type:
-          'string'
+      style: {
+        type: 'string'
       },
-
-      visual_mood: {
-        type:
-          'string'
+      mood: {
+        type: 'string'
       },
-
       palette: {
-        type:
-          'array',
-
+        type: 'array',
         items: {
-          type:
-            'string'
+          type: 'string'
         },
-
-        maxItems:
-          8
+        maxItems: 8
       },
-
       orientation: {
-        type:
-          'string',
-
+        type: 'string',
         enum: [
           'portrait',
           'landscape',
@@ -1704,201 +1256,126 @@ async function analyzeArtworkContext({
           'unknown'
         ]
       },
-
       recommended_scene_families: {
-        type:
-          'array',
-
+        type: 'array',
         items: {
-          type:
-            'string',
-
-          enum:
-            allowedSceneIds
+          type: 'string',
+          enum: ids
         },
-
-        minItems:
-          3,
-
-        maxItems:
-          6
+        minItems: 3,
+        maxItems: 6
       },
-
       must_preserve: {
-        type:
-          'array',
-
+        type: 'array',
         items: {
-          type:
-            'string'
+          type: 'string'
         },
-
-        maxItems:
-          10
+        maxItems: 10
       },
-
-      avoid_environment_elements: {
-        type:
-          'array',
-
-        items: {
-          type:
-            'string'
-        },
-
-        maxItems:
-          10
-      },
-
       confidence: {
-        type:
-          'number',
-
-        minimum:
-          0,
-
-        maximum:
-          1
+        type: 'number',
+        minimum: 0,
+        maximum: 1
       }
     }
   };
 
   const content = [
     {
-      type:
-        'input_text',
-
+      type: 'input_text',
       text:
-        `You are planning a premium Etsy wall-art hero scene.
+        `Analyze the isolated wall-art product, not any room.
 
-Listing title:
-${title || ''}
+Listing: ${title || ''}.
 
-The supplied images are product-truth references. Analyze the ACTUAL ARTWORK/PRODUCT, not the room mockup around it.
+Describe subject/style/mood/palette/orientation, list must-preserve details, and recommend 3-6 fitting scene families.
 
-Your job is to describe the artwork and recommend several scene families that fit it without changing the artwork.
+Different artworks should not default to the same room.
 
-Important:
-- Different artworks should produce different presentation choices.
-- Do not default every product to a console table, vase, books, plant, or amber luxury room.
-- Prefer bright neutral daylight presentation.
-- A warm/sunset artwork may remain warm INSIDE the artwork, but the generated room/environment should stay neutral rather than yellow/amber.
-- Preserve subject identity, composition, orientation, visible signatures/text that belong to the artwork, and color identity.
+Prefer neutral daylight.
 
-Available scene family IDs:
-${SCENE_FAMILIES.map((item) => `${item.id}: ${item.description}`).join('\n')}`
+Available families:
+${SCENE_FAMILIES.map(
+  x =>
+    `${x.id}: ${x.description}`
+).join('\n')}`
     },
-
-    ...referenceImages.map(
-      (image) => ({
-        type:
-          'input_image',
-
+    ...imgs.map(
+      img => ({
+        type: 'input_image',
         image_url:
-          `data:image/jpeg;base64,${image.toString('base64')}`,
-
-        detail:
-          'high'
+          `data:image/jpeg;base64,${img.toString('base64')}`,
+        detail: 'high'
       })
     )
   ];
 
   try {
-    const response =
+    const r =
       await openai()
         .responses
         .create({
-          model:
-            QA_MODEL,
-
-          store:
-            false,
-
+          model: QA_MODEL,
+          store: false,
           input: [
             {
-              role:
-                'user',
-
+              role: 'user',
               content
             }
           ],
-
           text: {
             format: {
-              type:
-                'json_schema',
-
+              type: 'json_schema',
               name:
-                'vaelons_artwork_context',
-
-              strict:
-                true,
-
+                'artwork_context_v31',
+              strict: true,
               schema
             }
           }
         });
 
-    const parsed =
+    const p =
       JSON.parse(
-        response.output_text ||
+        r.output_text ||
         '{}'
       );
 
+    p.recommended_scene_families =
+      (
+        p.recommended_scene_families ||
+        []
+      ).filter(
+        id =>
+          ids.includes(id)
+      );
+
+    if (
+      !p.recommended_scene_families
+        .length
+    ) {
+      p.recommended_scene_families =
+        ids;
+    }
+
+    return p;
+  } catch (e) {
     return {
-      ...parsed,
-
-      recommended_scene_families:
-        Array.isArray(
-          parsed?.recommended_scene_families
-        )
-          ? parsed.recommended_scene_families.filter(
-              (id) =>
-                allowedSceneIds.includes(id)
-            )
-          : allowedSceneIds.slice(0, 5)
-    };
-
-  } catch (
-    error
-  ) {
-    console.warn(
-      'Artwork context fallback:',
-      error.message
-    );
-
-    return {
-      artwork_subject:
+      subject:
         title ||
         'wall art',
-
-      artwork_style:
-        'unknown',
-
-      visual_mood:
-        'unknown',
-
-      palette:
-        [],
-
+      style: 'unknown',
+      mood: 'unknown',
+      palette: [],
       orientation:
         'unknown',
-
       recommended_scene_families:
-        allowedSceneIds,
-
-      must_preserve:
-        [
-          'exact artwork identity',
-          'subject and composition',
-          'orientation and color identity'
-        ],
-
-      avoid_environment_elements:
-        [],
-
-      confidence:
-        0
+        ids,
+      must_preserve: [
+        'exact artwork identity',
+        'subject and composition',
+        'orientation and color identity'
+      ],
+      confidence: 0
     };
   }
 }
@@ -1906,323 +1383,288 @@ ${SCENE_FAMILIES.map((item) => `${item.id}: ${item.description}`).join('\n')}`
 function chooseScenePlan({
   listingId,
   title,
-  artworkContext,
-  recentHistory,
-  extraExcluded = []
+  context,
+  recent,
+  excluded = []
 }) {
-  const allIds =
+  const all =
     SCENE_FAMILIES.map(
-      (item) => item.id
+      x => x.id
     );
 
   const preferred =
-    Array.from(
-      new Set([
+    [
+      ...new Set([
         ...(
-          Array.isArray(
-            artworkContext
-              ?.recommended_scene_families
-          )
-            ? artworkContext
-                .recommended_scene_families
-            : []
+          context
+            ?.recommended_scene_families ||
+          []
         ),
-        ...allIds
+        ...all
       ])
-    ).filter(
-      (id) =>
-        allIds.includes(id)
+    ].filter(
+      x =>
+        all.includes(x)
     );
 
   const recentIds =
-    (recentHistory || [])
+    (recent || [])
       .map(
-        (item) =>
+        x =>
           String(
-            item?.scene_family ||
+            x.scene_family ||
             ''
           )
       )
       .filter(Boolean);
 
-  const excluded =
+  const banned =
     new Set([
-      ...recentIds.slice(0, 5),
-      ...extraExcluded.map(String)
+      ...recentIds.slice(
+        0,
+        5
+      ),
+      ...excluded
     ]);
 
   let choices =
     preferred.filter(
-      (id) =>
-        !excluded.has(id)
+      x =>
+        !banned.has(x)
     );
 
   if (!choices.length) {
     const counts =
       new Map(
-        allIds.map(
-          (id) => [id, 0]
+        all.map(
+          x => [
+            x,
+            0
+          ]
         )
       );
 
-    for (
-      const id of recentIds
-    ) {
-      counts.set(
-        id,
-        (counts.get(id) || 0) + 1
-      );
-    }
+    recentIds.forEach(
+      x =>
+        counts.set(
+          x,
+          (
+            counts.get(x) ||
+            0
+          ) + 1
+        )
+    );
 
-    const minCount =
+    const min =
       Math.min(
         ...preferred.map(
-          (id) =>
-            counts.get(id) || 0
+          x =>
+            counts.get(x) ||
+            0
         )
       );
 
     choices =
       preferred.filter(
-        (id) =>
-          (counts.get(id) || 0) ===
-          minCount &&
-          !extraExcluded.includes(id)
+        x =>
+          (
+            counts.get(x) ||
+            0
+          ) === min &&
+          !excluded.includes(x)
       );
   }
 
   if (!choices.length) {
-    choices =
-      preferred;
+    choices = preferred;
   }
 
-  const seed =
-    stableNumber(
-      `${listingId}:${title}:${Date.now()}`
-    );
-
-  const sceneId =
+  const id =
     choices[
-      seed %
+      stableNumber(
+        `${listingId}:${title}:${Date.now()}`
+      ) %
       choices.length
     ];
 
-  const family =
+  const f =
     SCENE_FAMILIES.find(
-      (item) =>
-        item.id === sceneId
+      x => x.id === id
     ) ||
     SCENE_FAMILIES[0];
 
-  const recentDecor =
-    Array.from(
-      new Set(
-        (recentHistory || [])
+  return {
+    scene_family: f.id,
+    scene_label: f.label,
+    scene_description:
+      f.description,
+    signature:
+      f.signature,
+    allowed:
+      f.allowed,
+    rule:
+      f.rule,
+    recent_scene_families:
+      recentIds.slice(
+        0,
+        8
+      ),
+    recent_signatures: [
+      ...new Set(
+        (recent || [])
           .slice(0, 8)
           .map(
-            (item) =>
-              item?.decor_signature
+            x =>
+              x.signature ||
+              x.decor_signature
           )
           .filter(Boolean)
       )
-    );
-
-  return {
-    scene_family:
-      family.id,
-
-    scene_label:
-      family.label,
-
-    scene_description:
-      family.description,
-
-    decor_signature:
-      family.decor_signature,
-
-    family_forbidden:
-      family.forbidden,
-
-    recent_scene_families:
-      recentIds.slice(0, 8),
-
-    recent_decor_signatures:
-      recentDecor,
-
+    ],
     artwork_subject:
-      artworkContext
-        ?.artwork_subject ||
+      context?.subject ||
       title ||
       'wall art',
-
     artwork_style:
-      artworkContext
-        ?.artwork_style ||
+      context?.style ||
       'unknown',
-
-    visual_mood:
-      artworkContext
-        ?.visual_mood ||
+    mood:
+      context?.mood ||
       'unknown',
-
     palette:
-      artworkContext
-        ?.palette ||
+      context?.palette ||
       [],
-
     must_preserve:
-      artworkContext
-        ?.must_preserve ||
-      [],
-
-    avoid_environment_elements:
-      artworkContext
-        ?.avoid_environment_elements ||
+      context?.must_preserve ||
       []
   };
 }
 
-
-/* =========================================================
-   GENERATION PROMPT
-========================================================= */
-
 function buildGenerationPrompt({
   title,
   reason,
-  scenePlan
+  plan
 }) {
   return `
-Create a premium Etsy FIRST-IMAGE hero thumbnail for the exact product shown in the supplied reference image or images.
+Create a premium Etsy FIRST-IMAGE hero thumbnail for the exact WALL-ART PRODUCT in the supplied isolated reference image(s).
 
-LISTING TITLE:
-${title || 'Unknown'}
+LISTING:
+${title || ''}
 
-WHY A NEW THUMBNAIL IS NEEDED:
+REASON:
 ${reason}
 
-ARTWORK-AWARE SCENE PLAN:
-- Scene family: ${scenePlan?.scene_label || scenePlan?.scene_family || 'bright neutral premium interior'}
-- Direction: ${scenePlan?.scene_description || ''}
-- Artwork subject: ${scenePlan?.artwork_subject || ''}
-- Artwork style: ${scenePlan?.artwork_style || ''}
-- Visual mood: ${scenePlan?.visual_mood || ''}
-- Artwork palette: ${JSON.stringify(scenePlan?.palette || [])}
-- Preserve especially: ${JSON.stringify(scenePlan?.must_preserve || [])}
-- Avoid for this artwork/environment: ${JSON.stringify(scenePlan?.avoid_environment_elements || [])}
+CRITICAL PRODUCT-TRUTH RULE:
+The reference input has been cropped to the artwork/canvas/frame.
 
-ANTI-REPETITION MEMORY:
-- Recent scene families already used: ${JSON.stringify(scenePlan?.recent_scene_families || [])}
-- Recent decor signatures already used: ${JSON.stringify(scenePlan?.recent_decor_signatures || [])}
-- Current decor signature must be: ${scenePlan?.decor_signature || 'minimal'}
-- Family-specific prohibition: ${scenePlan?.family_forbidden || ''}
-- Do NOT fall back to the repetitive console/table + vase + stacked books formula.
-- Never use the trio of console/table, decorative vase/branches, and stacked coffee-table books together.
-- Keep secondary decor sparse: normally zero to two quiet secondary objects only.
-- Do not imitate a generic stock mockup template.
+Preserve that exact product identity, subject, composition, orientation, color identity, visible product text/signature and frame geometry.
 
-PRODUCT TRUTH — NON-NEGOTIABLE:
-- The supplied reference image or images are the product truth.
-- Preserve the exact same actual artwork/product identity.
-- Preserve the subject, important composition, important elements, orientation/aspect ratio, visible artwork text/signature, and color identity.
-- Do not redesign, repaint, reinterpret, simplify, add, remove, crop away, or invent artwork/product content.
-- Do not substitute a similar artwork or different product.
-- Do not create new text, badges, labels, logos, signatures, or watermarks.
-- If the actual artwork contains a signature or text, preserve it only as part of the artwork.
+Do not redesign, repaint, substitute, simplify, add or remove artwork content.
+
+NEW SCENE PLAN:
+Family: ${plan.scene_label}
+Direction: ${plan.scene_description}
+Allowed elements ONLY: ${JSON.stringify(plan.allowed)}
+Layout rule: ${plan.rule}
+Artwork subject/style/mood: ${plan.artwork_subject} / ${plan.artwork_style} / ${plan.mood}
+Palette: ${JSON.stringify(plan.palette)}
+Must preserve: ${JSON.stringify(plan.must_preserve)}
+
+ZERO-TOLERANCE FORBIDDEN STAGING:
+${HARD_FORBIDDEN.map(
+  x => `- NO ${x}`
+).join('\n')}
+
+- NO wall-art-over-console composition.
+- NO object directly below the artwork unless explicitly listed in allowed elements.
+- NO substitute prop that recreates the old plant/vase/books/console mockup.
+- If a forbidden prop would appear, leave empty architectural space instead.
+
+ANTI-REPEAT:
+Recent scene families: ${JSON.stringify(plan.recent_scene_families)}
+Recent signatures: ${JSON.stringify(plan.recent_signatures)}
+Current signature: ${plan.signature}
+
+Do not reuse the same furniture layout, camera framing, wall/floor relationship or decorative rhythm.
 
 PRESENTATION:
-- Create a NEW professional Etsy hero environment around the exact product.
-- Follow the chosen scene family instead of inventing a generic room formula.
-- Make the artwork/product LARGE and visually dominant: roughly 45–70% of the visible composition when practical.
-- Keep the full product understandable on a mobile thumbnail. Do not hide important artwork behind furniture or decor.
-- Use bright, neutral, high-end natural daylight with realistic shadows and clean tonal separation.
-- The ROOM/ENVIRONMENT must remain neutral white, cream, pale stone, soft beige, or soft grey without a yellow/orange/amber cast.
-- If the artwork itself contains sunset, gold, orange, or warm colors, preserve those INSIDE the artwork while keeping surrounding room light neutral.
-- Avoid dark cinematic room lighting, tungsten/amber color grading, heavy HDR, haze, excessive saturation, clipped highlights, and clutter.
-- Use a square Etsy-ready composition with safe margins for thumbnail crops.
-- The result should feel bespoke to THIS artwork, not like the previous listing's mockup.
+Artwork must be large and dominant, about 50-75% of useful composition where practical.
+
+It must remain front-readable on mobile.
+
+Use bright neutral daylight and realistic shadows.
+
+Use neutral white, cream, pale stone, soft beige or soft grey room tones.
+
+Warm colors may remain inside the artwork, but the surrounding room must not have an amber/yellow/orange cast.
+
+No HDR, haze, dark cinematic exposure, clutter, fake glow or aggressive grading.
+
+Square Etsy-ready composition.
 
 Return only the finished image.
 `.trim();
 }
 
-
-/* =========================================================
-   OPENAI IMAGE GENERATION
-========================================================= */
-
 async function generateThumbnail({
   title,
   references,
   reason,
-  scenePlan,
+  plan,
   retryNote = ''
 }) {
-  const imageFiles =
+  const files =
     await Promise.all(
       references.map(
-        async (
-          ref,
-          index
-        ) => {
-          const jpeg =
+        async (ref, i) =>
+          toFile(
             await normalizeJpeg(
               ref.buffer,
               1600,
               95
-            );
-
-          return toFile(
-            jpeg,
-            `reference-${index + 1}.jpg`,
+            ),
+            `artwork-${i + 1}.jpg`,
             {
               type:
                 'image/jpeg'
             }
-          );
-        }
+          )
       )
     );
 
   const prompt =
-    `${buildGenerationPrompt({
+    buildGenerationPrompt({
       title,
       reason,
-      scenePlan
-    })}${
+      plan
+    }) +
+    (
       retryNote
         ? `
 
-QUALITY-CHECK FEEDBACK FROM THE PREVIOUS ATTEMPT:
+PREVIOUS ATTEMPT FAILED:
 ${retryNote}
 
-This is a regeneration. Correct every cited issue. If the previous result looked generic or repeated a recent room, the new result MUST visibly use the newly supplied scene plan. Preserve the exact product identity.`
-        : ''
-    }`;
+Use the NEW scene family and correct every failure.
 
-  const response =
+Never reintroduce a forbidden prop.`
+        : ''
+    );
+
+  const r =
     await openai()
       .images
       .edit({
-        model:
-          IMAGE_MODEL,
-
-        image:
-          imageFiles,
-
+        model: IMAGE_MODEL,
+        image: files,
         prompt,
-
-        size:
-          IMAGE_SIZE,
-
+        size: IMAGE_SIZE,
         quality:
           IMAGE_QUALITY
       });
 
   const b64 =
-    response
-      ?.data
-      ?.[0]
+    r?.data?.[0]
       ?.b64_json;
 
   if (!b64) {
@@ -2241,31 +1683,190 @@ This is a regeneration. Correct every cited issue. If the previous result looked
   );
 }
 
+async function strictStagingCheck(
+  buffer,
+  plan
+) {
+  const image =
+    await normalizeJpeg(
+      buffer,
+      1200,
+      92
+    );
 
-/* =========================================================
-   AI QUALITY GATE
-========================================================= */
+  const bools = [
+    'potted_plant_or_planter',
+    'vase_or_vessel',
+    'flowers_or_branches',
+    'books_or_magazines',
+    'console_sideboard_credenza',
+    'styled_shelf_or_tabletop',
+    'generic_console_mockup',
+    'artwork_too_small',
+    'artwork_obscured_or_distorted',
+    'warm_amber_room_cast',
+    'scene_family_mismatch'
+  ];
+
+  const schema = {
+    type: 'object',
+    additionalProperties: false,
+    required: [
+      ...bools,
+      'confidence',
+      'reason'
+    ],
+    properties:
+      Object.fromEntries([
+        ...bools.map(
+          x => [
+            x,
+            {
+              type:
+                'boolean'
+            }
+          ]
+        ),
+        [
+          'confidence',
+          {
+            type: 'number',
+            minimum: 0,
+            maximum: 1
+          }
+        ],
+        [
+          'reason',
+          {
+            type:
+              'string'
+          }
+        ]
+      ])
+  };
+
+  try {
+    const r =
+      await openai()
+        .responses
+        .create({
+          model:
+            COMPLIANCE_MODEL,
+          store: false,
+          input: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'input_text',
+                  text:
+                    `ZERO-TOLERANCE visual compliance gate.
+
+Chosen family:
+${plan.scene_label}
+
+Allowed elements:
+${JSON.stringify(plan.allowed)}
+
+Rule:
+${plan.rule}
+
+Set a forbidden field TRUE if visibly present.
+
+If uncertain, choose TRUE.
+
+Reject any:
+- potted plant / planter / pot
+- vase / vessel
+- flowers / branches
+- books / magazines
+- console / sideboard / credenza
+- styled shelf / tabletop
+- generic wall-art-over-console scene
+- artwork too small
+- artwork obscured or distorted
+- amber/yellow room cast
+- scene-family mismatch
+
+Warm colors inside the artwork do not count as room cast.
+
+Do not excuse a forbidden object because the image looks attractive.`
+                },
+                {
+                  type: 'input_image',
+                  image_url:
+                    `data:image/jpeg;base64,${image.toString('base64')}`,
+                  detail: 'high'
+                }
+              ]
+            }
+          ],
+          text: {
+            format: {
+              type: 'json_schema',
+              name:
+                'strict_staging_gate_v31',
+              strict: true,
+              schema
+            }
+          }
+        });
+
+    const p =
+      JSON.parse(
+        r.output_text ||
+        '{}'
+      );
+
+    const forbidden =
+      bools.filter(
+        k =>
+          p[k] === true
+      );
+
+    return {
+      ...p,
+      forbidden,
+      passed:
+        forbidden.length === 0 &&
+        Number(
+          p.confidence || 0
+        ) >= 0.82
+    };
+  } catch (e) {
+    return {
+      passed: false,
+      forbidden: [
+        'compliance_check_failed'
+      ],
+      confidence: 0,
+      reason:
+        `Compliance check failed: ${e.message}`
+    };
+  }
+}
 
 async function qualityCheck({
   title,
-  referenceBuffers,
+  references,
   generatedBuffer,
-  scenePlan,
-  recentGenerated = []
+  plan,
+  recentGenerated,
+  hardGate
 }) {
-  const references =
+  const refs =
     await Promise.all(
-      referenceBuffers.map(
-        (buffer) =>
+      references.map(
+        x =>
           normalizeJpeg(
-            buffer,
+            x.buffer,
             1200,
             90
           )
       )
     );
 
-  const generated =
+  const gen =
     await normalizeJpeg(
       generatedBuffer,
       1200,
@@ -2274,442 +1875,268 @@ async function qualityCheck({
 
   const comparisons =
     await Promise.all(
-      recentGenerated.map(
-        async (item) => ({
-          ...item,
-          normalized:
-            await normalizeJpeg(
-              item.buffer,
-              900,
-              82
-            )
-        })
-      )
+      (recentGenerated || [])
+        .map(
+          async x => ({
+            ...x,
+            normalized:
+              await normalizeJpeg(
+                x.buffer,
+                900,
+                82
+              )
+          })
+        )
     );
 
-  const generatedAnalysis =
-    await analyzeImage(
-      generated
-    );
+  const analysis =
+    await analyzeImage(gen);
 
-  const technicalPass =
-    generatedAnalysis
-      .brightness >=
-      82 &&
-    generatedAnalysis
-      .shadow_percent <=
-      50 &&
-    generatedAnalysis
-      .highlight_percent <=
-      18 &&
-    generatedAnalysis
-      .contrast >=
-      24;
+  const technical =
+    analysis.brightness >= 82 &&
+    analysis.shadow_percent <= 50 &&
+    analysis.highlight_percent <= 18 &&
+    analysis.contrast >= 24;
+
+  const keys = [
+    'pass',
+    'same_product',
+    'same_artwork_identity',
+    'important_elements_preserved',
+    'color_identity_preserved',
+    'invented_product_content',
+    'thumbnail_readable',
+    'artwork_dominant',
+    'scene_fit',
+    'generic_mockup',
+    'repeated_scene',
+    'excessive_decor',
+    'warm_room_cast',
+    'invented_text_or_logo'
+  ];
 
   const schema = {
-    type:
-      'object',
-
-    additionalProperties:
-      false,
-
+    type: 'object',
+    additionalProperties: false,
     required: [
-      'pass',
-      'same_product',
-      'same_artwork_identity',
-      'important_elements_preserved',
-      'color_identity_preserved',
-      'invented_product_content',
-      'thumbnail_readable',
-      'artwork_dominant',
-      'scene_fit',
-      'generic_mockup',
-      'repeated_scene',
-      'excessive_decor',
-      'warm_room_cast',
-      'invented_text_or_logo',
+      ...keys,
       'confidence',
       'reason'
     ],
-
-    properties: {
-      pass: {
-        type:
-          'boolean'
-      },
-
-      same_product: {
-        type:
-          'boolean'
-      },
-
-      same_artwork_identity: {
-        type:
-          'boolean'
-      },
-
-      important_elements_preserved: {
-        type:
-          'boolean'
-      },
-
-      color_identity_preserved: {
-        type:
-          'boolean'
-      },
-
-      invented_product_content: {
-        type:
-          'boolean'
-      },
-
-      thumbnail_readable: {
-        type:
-          'boolean'
-      },
-
-      artwork_dominant: {
-        type:
-          'boolean'
-      },
-
-      scene_fit: {
-        type:
-          'boolean'
-      },
-
-      generic_mockup: {
-        type:
-          'boolean'
-      },
-
-      repeated_scene: {
-        type:
-          'boolean'
-      },
-
-      excessive_decor: {
-        type:
-          'boolean'
-      },
-
-      warm_room_cast: {
-        type:
-          'boolean'
-      },
-
-      invented_text_or_logo: {
-        type:
-          'boolean'
-      },
-
-      confidence: {
-        type:
-          'number',
-
-        minimum:
-          0,
-
-        maximum:
-          1
-      },
-
-      reason: {
-        type:
-          'string'
-      }
-    }
+    properties:
+      Object.fromEntries([
+        ...keys.map(
+          x => [
+            x,
+            {
+              type:
+                'boolean'
+            }
+          ]
+        ),
+        [
+          'confidence',
+          {
+            type: 'number',
+            minimum: 0,
+            maximum: 1
+          }
+        ],
+        [
+          'reason',
+          {
+            type:
+              'string'
+          }
+        ]
+      ])
   };
 
   const content = [
     {
-      type:
-        'input_text',
-
+      type: 'input_text',
       text:
-        `You are the final strict safety and merchandising gate for an Etsy thumbnail replacement.
+        `Final independent QA for Etsy wall art.
 
-Listing title:
+Listing:
 ${title || ''}
 
-Chosen scene plan:
-${JSON.stringify({
-  scene_family:
-    scenePlan?.scene_family,
-  scene_description:
-    scenePlan?.scene_description,
-  decor_signature:
-    scenePlan?.decor_signature,
-  artwork_subject:
-    scenePlan?.artwork_subject
-})}
+Chosen scene:
+${plan.scene_label}
 
-The PRODUCT-TRUTH reference images appear first.
-Then, if supplied, RECENT GENERATED HEROES from other VAELONS previews appear for repetition comparison.
-The FINAL image is the new generated candidate.
+Product-truth images first are isolated artwork/canvas/frame.
 
-PASS only when ALL are true:
-- candidate clearly shows the exact same product/artwork
-- important subject/composition and artwork color identity remain faithful
-- no product/artwork content is invented, removed, or substituted
-- no new text, logo, watermark, signature, or label is invented
-- candidate is readable on a mobile Etsy thumbnail
-- artwork/product is clearly dominant, not a tiny accessory in a large room
-- environment visibly fits the chosen scene plan
-- result is NOT a generic stock mockup
-- result does NOT substantially repeat the room layout/decor/composition of supplied recent generated heroes
-- decor is sparse and does NOT use the repetitive console/table + vase/branches + stacked-books formula
-- surrounding ROOM lighting has no yellow/orange/amber cast; warmth naturally inside the artwork is allowed and must be preserved
+Recent generated heroes, if present, are only for staging repetition comparison.
 
-Set repeated_scene=false when no recent generated comparison images are supplied.
-Be strict.`
+Final candidate is last.
+
+PASS only if:
+- exact artwork identity is preserved
+- content, colors and composition are faithful
+- no invented product content
+- no invented text/logo/watermark
+- artwork is large and mobile-readable
+- scene fits the selected family
+- result is not generic
+- architecture/furniture/camera/layout does not substantially repeat recent generated heroes
+- decor is minimal
+- room light is neutral
+
+Be conservative.
+
+The hard staging gate is separate and cannot be overridden.`
     },
-
     {
-      type:
-        'input_text',
-
+      type: 'input_text',
       text:
-        'PRODUCT-TRUTH REFERENCES:'
+        'ISOLATED PRODUCT TRUTH:'
     },
-
-    ...references.map(
-      (reference) => ({
-        type:
-          'input_image',
-
+    ...refs.map(
+      x => ({
+        type: 'input_image',
         image_url:
-          `data:image/jpeg;base64,${reference.toString('base64')}`,
-
-        detail:
-          'high'
+          `data:image/jpeg;base64,${x.toString('base64')}`,
+        detail: 'high'
       })
     )
   ];
 
-  if (
-    comparisons.length
-  ) {
+  if (comparisons.length) {
     content.push({
-      type:
-        'input_text',
-
+      type: 'input_text',
       text:
-        'RECENT GENERATED HEROES — use only to detect repeated staging, NOT as product truth:'
+        'RECENT GENERATED HEROES — compare staging/layout only:'
     });
 
     for (
-      const item of comparisons
+      const x of comparisons
     ) {
       content.push({
-        type:
-          'input_text',
-
+        type: 'input_text',
         text:
-          `Recent scene family: ${item.scene_family || 'unknown'}, decor signature: ${item.decor_signature || 'unknown'}`
+          `Recent family ${x.scene_family || 'unknown'}, signature ${x.signature || 'unknown'}`
       });
 
       content.push({
-        type:
-          'input_image',
-
+        type: 'input_image',
         image_url:
-          `data:image/jpeg;base64,${item.normalized.toString('base64')}`,
-
-        detail:
-          'low'
+          `data:image/jpeg;base64,${x.normalized.toString('base64')}`,
+        detail: 'low'
       });
     }
   }
 
   content.push({
-    type:
-      'input_text',
-
+    type: 'input_text',
     text:
-      'FINAL GENERATED CANDIDATE:'
+      'FINAL CANDIDATE:'
   });
 
   content.push({
-    type:
-      'input_image',
-
+    type: 'input_image',
     image_url:
-      `data:image/jpeg;base64,${generated.toString('base64')}`,
-
-    detail:
-      'high'
+      `data:image/jpeg;base64,${gen.toString('base64')}`,
+    detail: 'high'
   });
 
-  let semantic;
+  let p;
 
   try {
-    const response =
+    const r =
       await openai()
         .responses
         .create({
-          model:
-            QA_MODEL,
-
-          store:
-            false,
-
+          model: QA_MODEL,
+          store: false,
           input: [
             {
-              role:
-                'user',
-
+              role: 'user',
               content
             }
           ],
-
           text: {
             format: {
-              type:
-                'json_schema',
-
+              type: 'json_schema',
               name:
-                'etsy_thumbnail_qc_v3',
-
-              strict:
-                true,
-
+                'thumbnail_qc_v31',
+              strict: true,
               schema
             }
           }
         });
 
-    semantic =
+    p =
       JSON.parse(
-        response.output_text ||
+        r.output_text ||
         '{}'
       );
-
-  } catch (
-    error
-  ) {
-    semantic = {
-      pass:
-        false,
-
-      same_product:
-        false,
-
-      same_artwork_identity:
-        false,
-
-      important_elements_preserved:
-        false,
-
-      color_identity_preserved:
-        false,
-
-      invented_product_content:
-        true,
-
-      thumbnail_readable:
-        false,
-
-      artwork_dominant:
-        false,
-
-      scene_fit:
-        false,
-
-      generic_mockup:
-        true,
-
-      repeated_scene:
-        false,
-
-      excessive_decor:
-        true,
-
-      warm_room_cast:
-        true,
-
-      invented_text_or_logo:
-        true,
-
-      confidence:
-        0,
-
+  } catch (e) {
+    p = {
+      pass: false,
+      same_product: false,
+      same_artwork_identity: false,
+      important_elements_preserved: false,
+      color_identity_preserved: false,
+      invented_product_content: true,
+      thumbnail_readable: false,
+      artwork_dominant: false,
+      scene_fit: false,
+      generic_mockup: true,
+      repeated_scene: false,
+      excessive_decor: true,
+      warm_room_cast: true,
+      invented_text_or_logo: true,
+      confidence: 0,
       reason:
-        `Quality-control request failed: ${error.message}`
+        `QA failed: ${e.message}`
     };
   }
 
-  const semanticPass =
-    semantic.pass ===
-      true &&
-    semantic.same_product ===
-      true &&
-    semantic.same_artwork_identity ===
-      true &&
-    semantic.important_elements_preserved ===
-      true &&
-    semantic.color_identity_preserved ===
-      true &&
-    semantic.invented_product_content ===
-      false &&
-    semantic.thumbnail_readable ===
-      true &&
-    semantic.artwork_dominant ===
-      true &&
-    semantic.scene_fit ===
-      true &&
-    semantic.generic_mockup ===
-      false &&
-    semantic.repeated_scene ===
-      false &&
-    semantic.excessive_decor ===
-      false &&
-    semantic.warm_room_cast ===
-      false &&
-    semantic.invented_text_or_logo ===
-      false &&
+  const semantic =
+    p.pass === true &&
+    p.same_product === true &&
+    p.same_artwork_identity === true &&
+    p.important_elements_preserved === true &&
+    p.color_identity_preserved === true &&
+    p.invented_product_content === false &&
+    p.thumbnail_readable === true &&
+    p.artwork_dominant === true &&
+    p.scene_fit === true &&
+    p.generic_mockup === false &&
+    p.repeated_scene === false &&
+    p.excessive_decor === false &&
+    p.warm_room_cast === false &&
+    p.invented_text_or_logo === false &&
     Number(
-      semantic.confidence ||
-      0
-    ) >=
-      0.8;
+      p.confidence || 0
+    ) >= 0.82;
 
   return {
     passed:
-      technicalPass &&
-      semanticPass,
-
+      hardGate?.passed === true &&
+      technical &&
+      semantic,
+    hard_gate_passed:
+      hardGate?.passed === true,
+    hard_gate:
+      hardGate,
     technical_passed:
-      technicalPass,
-
+      technical,
     semantic_passed:
-      semanticPass,
-
+      semantic,
     generated_analysis:
-      generatedAnalysis,
-
+      analysis,
     scene_plan: {
       scene_family:
-        scenePlan?.scene_family ||
-        null,
-
+        plan.scene_family,
       scene_label:
-        scenePlan?.scene_label ||
-        null,
-
-      decor_signature:
-        scenePlan?.decor_signature ||
-        null
+        plan.scene_label,
+      signature:
+        plan.signature
     },
-
-    semantic
+    semantic: p
   };
 }
-
-
-/* =========================================================
-   PREVIEW STORAGE
-========================================================= */
 
 async function savePreview({
   listingId,
@@ -2720,14 +2147,14 @@ async function savePreview({
   qc,
   reason,
   artworkContext,
-  scenePlan
+  scenePlan,
+  referenceIsolation
 }) {
   const token =
-    randomBytes(
-      24
-    ).toString(
-      'base64url'
-    );
+    randomBytes(24)
+      .toString(
+        'base64url'
+      );
 
   const compact =
     await normalizeJpeg(
@@ -2738,58 +2165,38 @@ async function savePreview({
 
   const meta = {
     token,
-
+    generatorVersion:
+      WORKER_VERSION,
     listingId:
-      String(
-        listingId
-      ),
-
+      String(listingId),
     title:
-      title ||
-      null,
-
+      title || null,
     sourceImageId:
-      String(
-        sourceImageId
-      ),
-
+      String(sourceImageId),
     referenceImageIds:
       referenceImageIds.map(
         String
       ),
-
-    artworkContext:
-      artworkContext ||
-      null,
-
-    scenePlan:
-      scenePlan ||
-      null,
-
+    artworkContext,
+    scenePlan,
+    referenceIsolation,
     qc,
-
     reason,
-
     createdAt:
       Date.now()
   };
 
   await Promise.all([
     setJson(
-      previewKey(
-        token
-      ),
+      previewKey(token),
       meta,
       {
         ex:
           PREVIEW_TTL_SECONDS
       }
     ),
-
     redis().set(
-      previewImageKey(
-        token
-      ),
+      previewImageKey(token),
       compact.toString(
         'base64'
       ),
@@ -2803,149 +2210,97 @@ async function savePreview({
   await addSceneHistory({
     preview_token:
       token,
-
     listing_id:
-      String(
-        listingId
-      ),
-
+      String(listingId),
     scene_family:
-      scenePlan
-        ?.scene_family ||
-      null,
-
-    decor_signature:
-      scenePlan
-        ?.decor_signature ||
-      null,
-
+      scenePlan.scene_family,
+    signature:
+      scenePlan.signature,
     artwork_subject:
-      scenePlan
-        ?.artwork_subject ||
-      null
+      scenePlan.artwork_subject
   });
 
   return {
     ...meta,
-
     previewUrl:
       `${publicBase()}/preview/worker/${token}`
   };
 }
 
-async function loadPreview(
-  token
-) {
+async function loadPreview(token) {
   const meta =
     await getJson(
-      previewKey(
-        token
-      )
+      previewKey(token)
     );
 
-  const base64 =
+  const b64 =
     await redis().get(
-      previewImageKey(
-        token
-      )
+      previewImageKey(token)
     );
 
   if (
     !meta ||
-    !base64
+    !b64
   ) {
-    const err =
+    const e =
       new Error(
         'Preview not found or expired'
       );
-
-    err.status =
-      404;
-
-    throw err;
+    e.status = 404;
+    throw e;
   }
 
   return {
     ...meta,
-
     generatedBuffer:
       Buffer.from(
-        String(
-          base64
-        ),
+        String(b64),
         'base64'
       )
   };
 }
-
-
-/* =========================================================
-   SAFE OLD IMAGE DELETE
-========================================================= */
 
 async function deleteOldRank1IfSafe({
   listingId,
   oldImageId,
   replacementImageId
 }) {
-  const imageSet =
+  const set =
     await getImageSet(
       listingId
     );
 
-  const currentRank1 =
-    imageSet.images.find(
-      (
-        img
-      ) =>
-        Number(
-          img.rank
-        ) ===
-        1
+  const rank1 =
+    set.images.find(
+      x =>
+        Number(x.rank) === 1
     ) ||
-    imageSet.images[0];
+    set.images[0];
 
   if (
     String(
-      getImageId(
-        currentRank1
-      )
+      getImageId(rank1)
     ) !==
-    String(
-      replacementImageId
-    )
+    String(replacementImageId)
   ) {
     return {
-      deleted:
-        false,
-
+      deleted: false,
       reason:
         'replacement_is_not_rank1'
     };
   }
 
-  const oldImage =
-    imageSet.images.find(
-      (
-        img
-      ) =>
-        String(
-          getImageId(
-            img
-          )
-        ) ===
-        String(
-          oldImageId
-        )
-    );
-
   if (
-    !oldImage
+    !set.images.some(
+      x =>
+        String(
+          getImageId(x)
+        ) ===
+        String(oldImageId)
+    )
   ) {
     return {
-      deleted:
-        false,
-
+      deleted: false,
       reason:
         'old_image_already_absent'
     };
@@ -2958,96 +2313,41 @@ async function deleteOldRank1IfSafe({
       await etsyRequest(
         `/shops/${await getShopId()}/listings/${listingId}/variation-images`
       );
-
-  } catch (
-    error
-  ) {
+  } catch (e) {
     return {
-      deleted:
-        false,
-
+      deleted: false,
       reason:
         'variation_safety_check_failed',
-
       detail:
-        error.message
+        e.message
     };
   }
 
-  const usedByVariation =
+  if (
     (
-      variationData
-        ?.results ||
+      variationData?.results ||
       []
     ).some(
-      (
-        item
-      ) =>
+      x =>
         String(
-          item
-            ?.image_id
+          x?.image_id
         ) ===
-        String(
-          oldImageId
-        )
-    );
-
-  if (
-    usedByVariation
+        String(oldImageId)
+    )
   ) {
     return {
-      deleted:
-        false,
-
+      deleted: false,
       reason:
         'old_image_used_by_variation'
     };
   }
 
-  try {
-    await etsyRequest(
-      `/shops/${await getShopId()}/listings/${listingId}/images/${oldImageId}`,
-      {
-        method:
-          'DELETE'
-      }
-    );
-
-  } catch (
-    error
-  ) {
-    const probe =
-      await getImageSet(
-        listingId
-      ).catch(
-        () =>
-          null
-      );
-
-    const stillThere =
-      probe
-        ?.images
-        ?.some(
-          (
-            img
-          ) =>
-            String(
-              getImageId(
-                img
-              )
-            ) ===
-            String(
-              oldImageId
-            )
-        );
-
-    if (
-      !probe ||
-      stillThere
-    ) {
-      throw error;
+  await etsyRequest(
+    `/shops/${await getShopId()}/listings/${listingId}/images/${oldImageId}`,
+    {
+      method: 'DELETE'
     }
-  }
+  );
 
   const after =
     await getImageSet(
@@ -3056,36 +2356,27 @@ async function deleteOldRank1IfSafe({
 
   const afterRank1 =
     after.images.find(
-      (
-        img
-      ) =>
-        Number(
-          img.rank
-        ) ===
-        1
+      x =>
+        Number(x.rank) === 1
     ) ||
     after.images[0];
 
   return {
     deleted:
-      true,
-
+      !after.images.some(
+        x =>
+          String(
+            getImageId(x)
+          ) ===
+          String(oldImageId)
+      ),
     replacement_still_rank1:
       String(
-        getImageId(
-          afterRank1
-        )
+        getImageId(afterRank1)
       ) ===
-      String(
-        replacementImageId
-      )
+      String(replacementImageId)
   };
 }
-
-
-/* =========================================================
-   SAFE PUBLISH
-========================================================= */
 
 async function publishPreview(
   preview,
@@ -3099,355 +2390,236 @@ async function publishPreview(
   try {
     const listingId =
       asListingId(
-        preview
-          .listingId
+        preview.listingId
       );
 
-    const imageSet =
+    const before =
       await getImageSet(
         listingId
       );
 
-    const currentRank1 =
-      imageSet.rank1;
-
     if (
       String(
         getImageId(
-          currentRank1
+          before.rank1
         )
       ) !==
       String(
-        preview
-          .sourceImageId
+        preview.sourceImageId
       )
     ) {
-      const err =
+      const e =
         new Error(
           'Rank 1 changed after preview was created. Generate a fresh preview.'
         );
-
-      err.status =
-        409;
-
-      throw err;
+      e.status = 409;
+      throw e;
     }
 
     if (
-      imageSet
-        .images
-        .length >=
-      20
+      before.images.length >= 20
     ) {
-      const err =
+      const e =
         new Error(
           'Listing already has 20 images. Safe upload-before-delete is blocked.'
         );
-
-      err.status =
-        409;
-
-      throw err;
+      e.status = 409;
+      throw e;
     }
 
     if (
-      preview
-        ?.qc
-        ?.passed !==
-      true
+      preview?.qc?.passed !== true ||
+      preview?.qc
+        ?.hard_gate_passed !== true
     ) {
-      const err =
+      const e =
         new Error(
-          'Preview did not pass the quality gate'
+          'Preview did not pass all quality gates'
         );
-
-      err.status =
-        409;
-
-      throw err;
+      e.status = 409;
+      throw e;
     }
 
     const beforeIds =
       new Set(
-        imageSet
-          .images
+        before.images
           .map(
-            (
-              img
-            ) =>
+            x =>
               String(
-                getImageId(
-                  img
-                )
+                getImageId(x)
               )
           )
-          .filter(
-            Boolean
-          )
+          .filter(Boolean)
       );
 
-    const uploadResult =
+    const up =
       await uploadListingImage({
         shopId:
           await getShopId(),
-
         listingId,
-
         imageBuffer:
-          preview
-            .generatedBuffer,
-
+          preview.generatedBuffer,
         filename:
           `vaelons-thumbnail-${listingId}.jpg`,
-
         contentType:
-          'image/jpeg'
+          'image/jpeg',
+        rank: 1
       });
 
-    uploadOccurred =
-      true;
+    uploadOccurred = true;
 
-    const uploadRecord =
+    const rec =
       Array.isArray(
-        uploadResult
-          ?.results
+        up?.results
       )
-        ? uploadResult
-            .results[0]
-        : uploadResult;
+        ? up.results[0]
+        : up;
 
-    let uploadedImageId =
-      getImageId(
-        uploadRecord
-      );
+    let uploadedId =
+      getImageId(rec);
 
-    let verifiedSet =
-      null;
+    let verified = null;
 
     for (
-      let attempt = 0;
-      attempt <
-      5;
-      attempt +=
-      1
+      let i = 0;
+      i < 5;
+      i++
     ) {
-      if (
-        attempt >
-        0
-      ) {
-        await new Promise(
-          (
-            resolve
-          ) =>
-            setTimeout(
-              resolve,
-              900
-            )
-        );
+      if (i) {
+        await sleep(900);
       }
 
-      verifiedSet =
+      verified =
         await getImageSet(
           listingId
         );
 
-      if (
-        !uploadedImageId
-      ) {
+      if (!uploadedId) {
         const added =
-          verifiedSet
-            .images
-            .filter(
-              (
-                img
-              ) =>
-                !beforeIds.has(
-                  String(
-                    getImageId(
-                      img
-                    )
-                  )
+          verified.images.filter(
+            x =>
+              !beforeIds.has(
+                String(
+                  getImageId(x)
                 )
-            );
+              )
+          );
 
         if (
-          added.length ===
-          1
+          added.length === 1
         ) {
-          uploadedImageId =
+          uploadedId =
             getImageId(
               added[0]
             );
         }
       }
 
-      const rank1 =
-        verifiedSet
-          .images
-          .find(
-            (
-              img
-            ) =>
-              Number(
-                img.rank
-              ) ===
-              1
-          ) ||
-        verifiedSet
-          .images[0];
+      const r1 =
+        verified.images.find(
+          x =>
+            Number(x.rank) === 1
+        ) ||
+        verified.images[0];
 
       if (
-        uploadedImageId &&
+        uploadedId &&
         String(
-          getImageId(
-            rank1
-          )
+          getImageId(r1)
         ) ===
-        String(
-          uploadedImageId
-        )
+        String(uploadedId)
       ) {
         break;
       }
     }
 
-    const finalRank1 =
-      verifiedSet
-        ?.images
-        ?.find(
-          (
-            img
-          ) =>
-            Number(
-              img.rank
-            ) ===
-            1
-        ) ||
-      verifiedSet
-        ?.images
-        ?.[0] ||
+    const finalR1 =
+      verified?.images?.find(
+        x =>
+          Number(x.rank) === 1
+      ) ||
+      verified?.images?.[0] ||
       null;
 
-    const replacementIsRank1 =
+    const ok =
       Boolean(
-        uploadedImageId &&
+        uploadedId &&
         String(
-          getImageId(
-            finalRank1
-          )
+          getImageId(finalR1)
         ) ===
-        String(
-          uploadedImageId
-        )
+        String(uploadedId)
       );
 
     let cleanup = {
-      deleted:
-        false,
-
+      deleted: false,
       reason:
         'not_requested'
     };
 
     if (
-      replacementIsRank1 &&
+      ok &&
       deleteOld
     ) {
       cleanup =
         await deleteOldRank1IfSafe({
           listingId,
-
           oldImageId:
-            preview
-              .sourceImageId,
-
+            preview.sourceImageId,
           replacementImageId:
-            uploadedImageId
+            uploadedId
         });
     }
 
     const result = {
-      success:
-        replacementIsRank1,
-
+      success: ok,
       listing_id:
-        Number(
-          listingId
-        ),
-
+        Number(listingId),
       old_rank1_image_id:
-        preview
-          .sourceImageId,
-
+        preview.sourceImageId,
       uploaded_image_id:
-        uploadedImageId ||
-        null,
-
+        uploadedId || null,
       replacement_verified_as_rank1:
-        replacementIsRank1,
-
+        ok,
       cleanup,
-
-      etsy_modified:
-        true
+      etsy_modified: true
     };
 
     await setJson(
-      stateKey(
-        listingId
-      ),
+      stateKey(listingId),
       {
         status:
-          replacementIsRank1
+          ok
             ? 'published'
             : 'manual_attention',
-
+        generatorVersion:
+          WORKER_VERSION,
         sourceImageId:
           String(
-            preview
-              .sourceImageId
+            preview.sourceImageId
           ),
-
         uploadedImageId:
-          uploadedImageId
-            ? String(
-                uploadedImageId
-              )
+          uploadedId
+            ? String(uploadedId)
             : null,
-
         previewToken:
           preview.token,
-
         publishedAt:
           Date.now(),
-
         qc:
           preview.qc,
-
         result
       }
     );
 
     return result;
-
-  } catch (
-    error
-  ) {
-    if (
-      uploadOccurred
-    ) {
-      error.etsyModified =
-        true;
+  } catch (e) {
+    if (uploadOccurred) {
+      e.etsyModified = true;
     }
 
-    throw error;
+    throw e;
   }
 }
-
-
-/* =========================================================
-   PREPARE ONE LISTING
-========================================================= */
 
 async function prepareListing(
   listing,
@@ -3464,8 +2636,7 @@ async function prepareListing(
     );
 
   const exact =
-    listing
-      ?.title
+    listing?.title
       ? listing
       : await etsyRequest(
           `/listings/${listingId}`
@@ -3485,17 +2656,14 @@ async function prepareListing(
 
   const existing =
     await getJson(
-      stateKey(
-        listingId
-      )
+      stateKey(listingId)
     );
 
   if (
     !force &&
     existing &&
     String(
-      existing
-        .sourceImageId ||
+      existing.sourceImageId ||
       ''
     ) ===
     sourceImageId
@@ -3506,26 +2674,15 @@ async function prepareListing(
     ) {
       return {
         listing_id:
-          Number(
-            listingId
-          ),
-
+          Number(listingId),
         exact_title:
-          exact
-            ?.title ||
+          exact?.title ||
           null,
-
-        action:
-          'skipped',
-
+        action: 'skipped',
         reason:
           'preview_already_ready_for_current_rank1',
-
-        state:
-          existing,
-
-        etsy_modified:
-          false
+        state: existing,
+        etsy_modified: false
       };
     }
 
@@ -3535,26 +2692,15 @@ async function prepareListing(
     ) {
       return {
         listing_id:
-          Number(
-            listingId
-          ),
-
+          Number(listingId),
         exact_title:
-          exact
-            ?.title ||
+          exact?.title ||
           null,
-
-        action:
-          'blocked',
-
+        action: 'blocked',
         reason:
           'manual_attention_required_before_retry',
-
-        state:
-          existing,
-
-        etsy_modified:
-          false
+        state: existing,
+        etsy_modified: false
       };
     }
 
@@ -3563,34 +2709,22 @@ async function prepareListing(
         'blocked_qa' &&
       Date.now() -
         Number(
-          existing
-            .checkedAt ||
+          existing.checkedAt ||
           0
         ) <
         QA_RETRY_COOLDOWN_MS
     ) {
       return {
         listing_id:
-          Number(
-            listingId
-          ),
-
+          Number(listingId),
         exact_title:
-          exact
-            ?.title ||
+          exact?.title ||
           null,
-
-        action:
-          'skipped',
-
+        action: 'skipped',
         reason:
           'qa_retry_cooldown',
-
-        state:
-          existing,
-
-        etsy_modified:
-          false
+        state: existing,
+        etsy_modified: false
       };
     }
 
@@ -3598,34 +2732,22 @@ async function prepareListing(
       existing.status ===
         'published' &&
       String(
-        existing
-          .uploadedImageId ||
+        existing.uploadedImageId ||
         ''
       ) ===
       sourceImageId
     ) {
       return {
         listing_id:
-          Number(
-            listingId
-          ),
-
+          Number(listingId),
         exact_title:
-          exact
-            ?.title ||
+          exact?.title ||
           null,
-
-        action:
-          'keep',
-
+        action: 'keep',
         reason:
           'current_rank1_was_published_by_worker',
-
-        state:
-          existing,
-
-        etsy_modified:
-          false
+        state: existing,
+        etsy_modified: false
       };
     }
   }
@@ -3664,415 +2786,395 @@ async function prepareListing(
     !isBad
   ) {
     const state = {
-      status:
-        'healthy',
-
+      status: 'healthy',
       sourceImageId,
-
       checkedAt:
         Date.now(),
-
       rank1Score,
-
       rank1Analysis
     };
 
     await setJson(
-      stateKey(
-        listingId
-      ),
+      stateKey(listingId),
       state
     );
 
     return {
       listing_id:
-        Number(
-          listingId
-        ),
-
+        Number(listingId),
       exact_title:
-        exact
-          ?.title ||
+        exact?.title ||
         null,
-
-      action:
-        'keep',
-
+      action: 'keep',
       reason:
         'thumbnail_is_healthy',
-
       rank1_score:
         rank1Score,
-
       analysis:
         rank1Analysis,
-
-      etsy_modified:
-        false
+      etsy_modified: false
     };
   }
 
-  const references =
+  const selected =
     await selectReferences(
-      exact
-        ?.title ||
-      '',
+      exact?.title || '',
       imageSet
     );
 
-  const referenceImageIds =
-    references.map(
-      (
-        ref
-      ) =>
-        getImageId(
-          ref.image
-        )
+  const references =
+    await isolateArtworkReferences(
+      exact?.title || '',
+      selected
     );
 
-  const recentHistory =
+  const referenceImageIds =
+    selected.map(
+      x =>
+        getImageId(x.image)
+    );
+
+  if (!references.length) {
+    const state = {
+      status:
+        'blocked_qa',
+      generatorVersion:
+        WORKER_VERSION,
+      sourceImageId,
+      checkedAt:
+        Date.now(),
+      rank1Score,
+      rank1Analysis,
+      referenceImageIds:
+        referenceImageIds.map(
+          String
+        ),
+      qc: {
+        passed: false,
+        reason:
+          'artwork_isolation_failed'
+      }
+    };
+
+    await setJson(
+      stateKey(listingId),
+      state
+    );
+
+    return {
+      listing_id:
+        Number(listingId),
+      exact_title:
+        exact?.title ||
+        null,
+      action: 'blocked',
+      generator_version:
+        WORKER_VERSION,
+      reason:
+        'artwork_isolation_failed',
+      rank1_score:
+        rank1Score,
+      etsy_modified: false
+    };
+  }
+
+  const recent =
     await getRecentSceneHistory();
 
-  const artworkContext =
-    await analyzeArtworkContext({
-      title:
-        exact
-          ?.title ||
-        '',
-
+  const context =
+    await analyzeArtworkContext(
+      exact?.title || '',
       references
-    });
-
-  let scenePlan =
-    chooseScenePlan({
-      listingId,
-
-      title:
-        exact
-          ?.title ||
-        '',
-
-      artworkContext,
-      recentHistory
-    });
+    );
 
   const recentGenerated =
     await loadRecentGeneratedComparisons();
 
-  let generated =
-    null;
+  const attempted = [];
 
-  let qc =
-    null;
+  let plan =
+    chooseScenePlan({
+      listingId,
+      title:
+        exact?.title || '',
+      context,
+      recent,
+      excluded:
+        attempted
+    });
 
-  const attemptedScenes =
-    [];
+  let generated = null;
+  let qc = null;
 
   for (
     let attempt = 1;
     attempt <=
-    2;
-    attempt +=
-      1
+      STRICT_MAX_ATTEMPTS;
+    attempt++
   ) {
-    attemptedScenes.push(
-      scenePlan.scene_family
+    attempted.push(
+      plan.scene_family
     );
+
+    const retry =
+      attempt > 1
+        ? (
+            qc?.hard_gate
+              ?.reason ||
+            qc?.semantic
+              ?.reason ||
+            'Previous candidate failed. Remove every forbidden prop and use the new scene.'
+          )
+        : '';
 
     generated =
       await generateThumbnail({
         title:
-          exact
-            ?.title ||
-          '',
-
+          exact?.title || '',
         references,
-
         reason:
           isNew
-            ? 'A new Etsy listing was detected and needs a fresh hero thumbnail.'
-            : `The current Etsy thumbnail quality score is ${rank1Score}/100 and needs improvement.`,
-
-        scenePlan,
-
+            ? 'New listing needs a fresh hero thumbnail.'
+            : `Current thumbnail score ${rank1Score}/100 needs improvement.`,
+        plan,
         retryNote:
-          attempt ===
-          2
-            ? qc
-                ?.semantic
-                ?.reason ||
-              'Use the new scene plan, avoid generic staging, preserve product identity, and improve mobile readability.'
-            : ''
+          retry
       });
 
-    qc =
-      await qualityCheck({
-        title:
-          exact
-            ?.title ||
-          '',
+    const hardGate =
+      await strictStagingCheck(
+        generated,
+        plan
+      );
 
-        referenceBuffers:
-          references.map(
-            (ref) =>
-              ref.buffer
+    if (!hardGate.passed) {
+      qc = {
+        passed: false,
+        hard_gate_passed:
+          false,
+        hard_gate:
+          hardGate,
+        technical_passed:
+          null,
+        semantic_passed:
+          null,
+        generated_analysis:
+          await analyzeImage(
+            generated
           ),
+        scene_plan: {
+          scene_family:
+            plan.scene_family,
+          scene_label:
+            plan.scene_label,
+          signature:
+            plan.signature
+        },
+        semantic: null
+      };
+    } else {
+      qc =
+        await qualityCheck({
+          title:
+            exact?.title || '',
+          references,
+          generatedBuffer:
+            generated,
+          plan,
+          recentGenerated,
+          hardGate
+        });
+    }
 
-        generatedBuffer:
-          generated,
-
-        scenePlan,
-
-        recentGenerated
-      });
-
-    if (
-      qc.passed
-    ) {
+    if (qc.passed) {
       break;
     }
 
     if (
       attempt <
-      2
+      STRICT_MAX_ATTEMPTS
     ) {
-      scenePlan =
+      plan =
         chooseScenePlan({
           listingId,
-
           title:
-            exact
-              ?.title ||
-            '',
-
-          artworkContext,
-
-          recentHistory,
-
-          extraExcluded:
-            attemptedScenes
+            exact?.title || '',
+          context,
+          recent,
+          excluded:
+            attempted
         });
     }
   }
 
-  if (
-    !qc
-      ?.passed
-  ) {
+  const isolation =
+    references.map(
+      x =>
+        x.isolation
+    );
+
+  if (!qc?.passed) {
     const state = {
       status:
         'blocked_qa',
-
+      generatorVersion:
+        WORKER_VERSION,
       sourceImageId,
-
       checkedAt:
         Date.now(),
-
       rank1Score,
-
       rank1Analysis,
-
       referenceImageIds:
         referenceImageIds.map(
           String
         ),
-
-      artworkContext,
-
-      scenePlan,
-
+      artworkContext:
+        context,
+      referenceIsolation:
+        isolation,
+      scenePlan:
+        plan,
       qc
     };
 
     await setJson(
-      stateKey(
-        listingId
-      ),
+      stateKey(listingId),
       state
     );
 
     return {
       listing_id:
-        Number(
-          listingId
-        ),
-
+        Number(listingId),
       exact_title:
-        exact
-          ?.title ||
+        exact?.title ||
         null,
-
-      action:
-        'blocked',
-
+      action: 'blocked',
+      generator_version:
+        WORKER_VERSION,
       reason:
         'generated_thumbnail_failed_quality_gate',
-
       rank1_score:
         rank1Score,
-
       reference_image_ids:
         referenceImageIds,
-
       artwork_context:
-        artworkContext,
-
+        context,
+      reference_isolation:
+        isolation,
       scene_plan:
-        scenePlan,
-
+        plan,
       qc,
-
-      etsy_modified:
-        false
+      etsy_modified: false
     };
   }
 
   const preview =
     await savePreview({
       listingId,
-
       title:
-        exact
-          ?.title ||
+        exact?.title ||
         null,
-
       sourceImageId,
-
       referenceImageIds,
-
       generatedBuffer:
         generated,
-
       qc,
-
       reason,
-
-      artworkContext,
-
-      scenePlan
+      artworkContext:
+        context,
+      scenePlan:
+        plan,
+      referenceIsolation:
+        isolation
     });
 
   await setJson(
-    stateKey(
-      listingId
-    ),
+    stateKey(listingId),
     {
       status:
         'preview_ready',
-
+      generatorVersion:
+        WORKER_VERSION,
       sourceImageId,
-
       previewToken:
         preview.token,
-
       previewUrl:
         preview.previewUrl,
-
       checkedAt:
         Date.now(),
-
       rank1Score,
-
       rank1Analysis,
-
       referenceImageIds:
         referenceImageIds.map(
           String
         ),
-
-      artworkContext,
-
-      scenePlan,
-
+      artworkContext:
+        context,
+      referenceIsolation:
+        isolation,
+      scenePlan:
+        plan,
       qc
     }
   );
 
   return {
     listing_id:
-      Number(
-        listingId
-      ),
-
+      Number(listingId),
     exact_title:
-      exact
-        ?.title ||
+      exact?.title ||
       null,
-
     action:
       'preview_ready',
-
+    generator_version:
+      WORKER_VERSION,
     reason,
-
     previous_rank1_score:
       rank1Score,
-
     source_image_id:
       sourceImageId,
-
     reference_image_ids:
       referenceImageIds,
-
     preview_token:
       preview.token,
-
     preview_url:
       preview.previewUrl,
-
     qc,
-
     artwork_context:
-      artworkContext,
-
+      context,
+    reference_isolation:
+      isolation,
     scene_plan:
-      scenePlan,
-
+      plan,
     approval_required:
       'ONAYLIYORUM',
-
-    etsy_modified:
-      false
+    etsy_modified: false
   };
 }
-
-
-/* =========================================================
-   FETCH ALL ACTIVE LISTINGS
-========================================================= */
 
 async function fetchAllActiveListings() {
   const shopId =
     await getShopId();
 
-  const results =
-    [];
+  const results = [];
 
-  let offset =
-    0;
-
+  let offset = 0;
   let total =
     Infinity;
 
   while (
-    offset <
-    total
+    offset < total
   ) {
     const data =
       await etsyRequest(
         `/shops/${shopId}/listings`,
         {
           params: {
-            state:
-              'active',
-
-            limit:
-              100,
-
+            state: 'active',
+            limit: 100,
             offset,
-
             sort_on:
               'created',
-
             sort_order:
               'desc'
           }
@@ -4081,27 +3183,22 @@ async function fetchAllActiveListings() {
 
     const page =
       Array.isArray(
-        data
-          ?.results
+        data?.results
       )
         ? data.results
         : [];
 
     total =
       Number(
-        data
-          ?.count ??
+        data?.count ??
         page.length
       );
 
-    results.push(
-      ...page
-    );
+    results.push(...page);
 
     if (
       !page.length ||
-      page.length <
-        100
+      page.length < 100
     ) {
       break;
     }
@@ -4113,53 +3210,35 @@ async function fetchAllActiveListings() {
   return results;
 }
 
-
-/* =========================================================
-   WORKER LOCK
-========================================================= */
-
 async function acquireWorkerLock() {
   const token =
-    randomBytes(
-      12
-    ).toString(
-      'hex'
-    );
+    randomBytes(12)
+      .toString('hex');
 
-  const ok =
+  return (
     await redis().set(
       `${PREFIX}:lock`,
       token,
       {
-        nx:
-          true,
-
+        nx: true,
         ex:
           LOCK_TTL_SECONDS
       }
-    );
-
-  return ok
+    )
+  )
     ? token
     : null;
 }
 
-async function releaseWorkerLock(
-  token
-) {
-  const current =
-    await redis().get(
-      `${PREFIX}:lock`
-    );
-
+async function releaseWorkerLock(token) {
   if (
     String(
-      current ||
+      await redis().get(
+        `${PREFIX}:lock`
+      ) ||
       ''
     ) ===
-    String(
-      token
-    )
+    String(token)
   ) {
     await redis().del(
       `${PREFIX}:lock`
@@ -4167,25 +3246,14 @@ async function releaseWorkerLock(
   }
 }
 
-
-/* =========================================================
-   MAIN WORKER
-========================================================= */
-
 async function runWorker() {
-  const lockToken =
+  const lock =
     await acquireWorkerLock();
 
-  if (
-    !lockToken
-  ) {
+  if (!lock) {
     return {
-      ok:
-        false,
-
-      skipped:
-        true,
-
+      ok: false,
+      skipped: true,
       reason:
         'worker_already_running'
     };
@@ -4202,21 +3270,14 @@ async function runWorker() {
         )
       );
 
-    if (
-      !initialized
-    ) {
-      if (
-        listings.length
-      ) {
+    if (!initialized) {
+      if (listings.length) {
         await redis().sadd(
           `${PREFIX}:seen`,
           ...listings.map(
-            (
-              listing
-            ) =>
+            x =>
               String(
-                listing
-                  .listing_id
+                x.listing_id
               )
           )
         );
@@ -4226,28 +3287,20 @@ async function runWorker() {
         `${PREFIX}:initialized`,
         '1'
       );
-
     } else {
       for (
-        const listing of
-        listings
+        const x of listings
       ) {
         const id =
           String(
-            listing
-              .listing_id
-          );
-
-        const seen =
-          Boolean(
-            await redis().sismember(
-              `${PREFIX}:seen`,
-              id
-            )
+            x.listing_id
           );
 
         if (
-          !seen
+          !await redis().sismember(
+            `${PREFIX}:seen`,
+            id
+          )
         ) {
           await redis().sadd(
             `${PREFIX}:seen`,
@@ -4265,36 +3318,26 @@ async function runWorker() {
     const byId =
       new Map(
         listings.map(
-          (
-            listing
-          ) => [
+          x => [
             String(
-              listing
-                .listing_id
+              x.listing_id
             ),
-            listing
+            x
           ]
         )
       );
 
-    const pending =
-      (
-        await redis().smembers(
-          `${PREFIX}:pending-new`
-        )
-      ).map(
-        String
-      );
-
-    const selected =
-      [];
-
+    const selected = [];
     const selectedIds =
       new Set();
 
     for (
       const id of
-      pending
+      (
+        await redis().smembers(
+          `${PREFIX}:pending-new`
+        )
+      ).map(String)
     ) {
       if (
         selected.length >=
@@ -4304,24 +3347,16 @@ async function runWorker() {
       }
 
       const listing =
-        byId.get(
-          id
-        );
+        byId.get(id);
 
-      if (
-        listing
-      ) {
+      if (listing) {
         selected.push({
           listing,
-
           reason:
             'new_listing'
         });
 
-        selectedIds.add(
-          id
-        );
-
+        selectedIds.add(id);
       } else {
         await redis().srem(
           `${PREFIX}:pending-new`,
@@ -4335,18 +3370,14 @@ async function runWorker() {
         await redis().get(
           `${PREFIX}:scan-cursor`
         )
-      ) ||
-      0;
+      ) || 0;
 
-    if (
-      listings.length
-    ) {
+    if (listings.length) {
       cursor %=
         listings.length;
     }
 
-    let examined =
-      0;
+    let examined = 0;
 
     while (
       selected.length <
@@ -4354,48 +3385,36 @@ async function runWorker() {
       examined <
         listings.length
     ) {
-      const index =
-        (
-          cursor +
-          examined
-        ) %
-        listings.length;
-
       const listing =
         listings[
-          index
+          (
+            cursor +
+            examined
+          ) %
+          listings.length
         ];
 
       const id =
         String(
-          listing
-            .listing_id
+          listing.listing_id
         );
 
       if (
-        !selectedIds.has(
-          id
-        )
+        !selectedIds.has(id)
       ) {
         selected.push({
           listing,
-
           reason:
             'rolling_scan'
         });
 
-        selectedIds.add(
-          id
-        );
+        selectedIds.add(id);
       }
 
-      examined +=
-        1;
+      examined++;
     }
 
-    if (
-      listings.length
-    ) {
+    if (listings.length) {
       await redis().set(
         `${PREFIX}:scan-cursor`,
         String(
@@ -4411,12 +3430,10 @@ async function runWorker() {
       );
     }
 
-    const results =
-      [];
+    const results = [];
 
     for (
-      const item of
-      selected
+      const item of selected
     ) {
       try {
         const result =
@@ -4428,9 +3445,7 @@ async function runWorker() {
             }
           );
 
-        results.push(
-          result
-        );
+        results.push(result);
 
         if (
           item.reason ===
@@ -4441,165 +3456,115 @@ async function runWorker() {
           await redis().srem(
             `${PREFIX}:pending-new`,
             String(
-              item
-                .listing
+              item.listing
                 .listing_id
             )
           );
         }
-
-      } catch (
-        error
-      ) {
+      } catch (e) {
         results.push({
           listing_id:
             Number(
-              item
-                .listing
+              item.listing
                 .listing_id
             ),
-
           exact_title:
-            item
-              .listing
+            item.listing
               .title ||
             null,
-
-          action:
-            'error',
-
+          action: 'error',
           reason:
             item.reason,
-
           error:
-            error.message,
-
+            e.message,
           etsy_modified:
-            error
-              .etsyModified ===
+            e.etsyModified ===
             true
         });
       }
     }
 
     return {
-      ok:
-        true,
-
+      ok: true,
       mode:
         WORKER_MODE,
-
       bootstrap_run:
         !initialized,
-
       active_listing_count:
         listings.length,
-
       processed_count:
         results.length,
-
       pending_new_count:
         Number(
           await redis().scard(
             `${PREFIX}:pending-new`
           )
         ),
-
       results
     };
-
   } finally {
     await releaseWorkerLock(
-      lockToken
+      lock
     );
   }
 }
 
-
-/* =========================================================
-   HEALTH
-========================================================= */
-
 app.get(
   '/health',
-  (
-    _req,
-    res
-  ) => {
+  (_req, res) =>
     res.json({
-      ok:
-        true,
-
+      ok: true,
       service:
         'vaelons-ai-thumbnail-worker',
-
       version:
-        '3.0.0',
-
+        WORKER_VERSION,
       worker_mode:
         WORKER_MODE,
-
       image_model:
         IMAGE_MODEL,
-
       qa_model:
         QA_MODEL,
-
+      compliance_model:
+        COMPLIANCE_MODEL,
       openai_key_source:
         'VAELONS_OPENAI_API_KEY',
-
-      safe_replace_order:
-        'analyze artwork -> anti-repeat scene plan -> generate -> QA -> preview -> ONAYLIYORUM -> upload -> verify rank1 -> delete old -> verify',
-
       approval_required:
         'ONAYLIYORUM',
-
-      artwork_aware_scene_planner:
+      safe_replace_order:
+        'isolate artwork -> choose non-repeating scene -> generate -> hard staging gate -> identity QA -> preview -> ONAYLIYORUM -> upload -> verify rank1 -> delete old -> verify',
+      artwork_reference_isolation:
         true,
-
+      hard_staging_gate:
+        true,
       anti_repeat_memory:
-        true
-    });
-  }
+        true,
+      max_generation_attempts:
+        STRICT_MAX_ATTEMPTS
+    })
 );
-
-
-/* =========================================================
-   ETSY OAUTH
-========================================================= */
 
 app.get(
   '/oauth/etsy/start',
-  (
-    req,
-    res
-  ) => {
+  (req, res) => {
     try {
       if (
-        req.query
-          .setup_secret !==
+        req.query.setup_secret !==
         required(
           'SETUP_SECRET'
         )
       ) {
         return res
-          .status(
-            401
-          )
+          .status(401)
           .send(
             'Invalid setup secret.'
           );
       }
 
       const state =
-        randomBase64Url(
-          24
-        );
+        randomBase64Url(24);
 
       const verifier =
-        randomBase64Url(
-          48
-        );
+        randomBase64Url(48);
 
       const challenge =
         pkceChallenge(
@@ -4609,27 +3574,18 @@ app.get(
       const redirectUri =
         `${publicBase()}/oauth/etsy/callback`;
 
-      const capsule =
+      res.cookie(
+        'etsy_oauth',
         sealJson({
           state,
           verifier,
           ts:
             Date.now()
-        });
-
-      res.cookie(
-        'etsy_oauth',
-        capsule,
+        }),
         {
-          httpOnly:
-            true,
-
-          secure:
-            true,
-
-          sameSite:
-            'lax',
-
+          httpOnly: true,
+          secure: true,
+          sameSite: 'lax',
           maxAge:
             10 *
             60 *
@@ -4680,75 +3636,47 @@ app.get(
       res.redirect(
         url.toString()
       );
-
-    } catch (
-      error
-    ) {
-      res
-        .status(
-          error.status ||
-          500
-        )
-        .json({
-          error:
-            error.message
-        });
+    } catch (e) {
+      res.status(
+        e.status || 500
+      ).json({
+        error:
+          e.message
+      });
     }
   }
 );
 
 app.get(
   '/oauth/etsy/callback',
-  async (
-    req,
-    res
-  ) => {
+  async (req, res) => {
     try {
-      if (
-        req.query
-          .error
-      ) {
+      if (req.query.error) {
         return res
-          .status(
-            400
-          )
+          .status(400)
           .send(
-            `Etsy authorization failed: ${
-              req.query
-                .error_description ||
-              req.query
-                .error
-            }`
+            `Etsy authorization failed: ${req.query.error_description || req.query.error}`
           );
       }
 
       const cookie =
-        parseCookies(
-          req
-        ).etsy_oauth;
+        parseCookies(req)
+          .etsy_oauth;
 
-      if (
-        !cookie
-      ) {
+      if (!cookie) {
         return res
-          .status(
-            400
-          )
+          .status(400)
           .send(
             'OAuth session expired. Start again.'
           );
       }
 
       const flow =
-        openJson(
-          cookie
-        );
+        openJson(cookie);
 
       if (
-        !req.query
-          .state ||
-        req.query
-          .state !==
+        !req.query.state ||
+        req.query.state !==
           flow.state ||
         Date.now() -
           flow.ts >
@@ -4757,9 +3685,7 @@ app.get(
           1000
       ) {
         return res
-          .status(
-            400
-          )
+          .status(400)
           .send(
             'Invalid OAuth state.'
           );
@@ -4772,20 +3698,15 @@ app.get(
         new URLSearchParams({
           grant_type:
             'authorization_code',
-
           client_id:
             etsyApiKeyForOAuth(),
-
           redirect_uri:
             redirectUri,
-
           code:
             String(
-              req.query
-                .code ||
+              req.query.code ||
               ''
             ),
-
           code_verifier:
             flow.verifier
         });
@@ -4794,14 +3715,11 @@ app.get(
         await fetch(
           'https://api.etsy.com/v3/public/oauth/token',
           {
-            method:
-              'POST',
-
+            method: 'POST',
             headers: {
               'content-type':
                 'application/x-www-form-urlencoded; charset=utf-8'
             },
-
             body
           }
         );
@@ -4809,13 +3727,9 @@ app.get(
       const token =
         await tokenRes.json();
 
-      if (
-        !tokenRes.ok
-      ) {
+      if (!tokenRes.ok) {
         return res
-          .status(
-            400
-          )
+          .status(400)
           .send(
             `Token exchange failed: ${JSON.stringify(token)}`
           );
@@ -4828,12 +3742,10 @@ app.get(
       const shopId =
         await getShopId();
 
-      const encryptedCapsule =
+      const capsule =
         sealJson({
           refresh_token:
-            token
-              .refresh_token,
-
+            token.refresh_token,
           shop_id:
             shopId
         });
@@ -4842,93 +3754,55 @@ app.get(
         'etsy_oauth'
       );
 
-      res
-        .type(
-          'html'
-        )
-        .send(`
-<!doctype html>
+      res.type('html')
+        .send(
+          `<!doctype html>
 <meta charset="utf-8">
 <title>VAELONS Etsy Connected</title>
-
-<h2>
-VAELONS Etsy bağlantısı doğrulandı.
-</h2>
-
-<p>
-Aşağıdaki şifreli değeri
-<b>ETSY_TOKEN_CAPSULE</b>
-olarak Vercel Environment Variables bölümüne ekleyin.
-</p>
-
-<textarea
-  style="width:100%;height:150px"
-  readonly
-  onclick="this.select()"
->${encryptedCapsule}</textarea>
-        `);
-
-    } catch (
-      error
-    ) {
-      res
-        .status(
-          error.status ||
-          500
-        )
-        .json({
-          error:
-            error.message,
-
-          details:
-            error.details ||
-            null
-        });
+<h2>VAELONS Etsy bağlantısı doğrulandı.</h2>
+<p>Aşağıdaki şifreli değeri <b>ETSY_TOKEN_CAPSULE</b> olarak Vercel Environment Variables bölümüne ekleyin.</p>
+<textarea style="width:100%;height:150px" readonly onclick="this.select()">${capsule}</textarea>`
+        );
+    } catch (e) {
+      res.status(
+        e.status || 500
+      ).json({
+        error:
+          e.message,
+        details:
+          e.details ||
+          null
+      });
     }
   }
 );
 
-
-/* =========================================================
-   PUBLIC PREVIEW
-========================================================= */
-
 app.get(
   '/preview/worker/:token',
-  async (
-    req,
-    res
-  ) => {
+  async (req, res) => {
     try {
       const token =
         String(
-          req.params
-            .token ||
+          req.params.token ||
           ''
         );
 
       const meta =
         await getJson(
-          previewKey(
-            token
-          )
+          previewKey(token)
         );
 
-      const base64 =
+      const b64 =
         await redis().get(
-          previewImageKey(
-            token
-          )
+          previewImageKey(token)
         );
 
       if (
         !meta ||
-        !base64
+        !b64
       ) {
         return res
-          .status(
-            404
-          )
+          .status(404)
           .send(
             'Preview expired or not found.'
           );
@@ -4946,31 +3820,18 @@ app.get(
 
       res.send(
         Buffer.from(
-          String(
-            base64
-          ),
+          String(b64),
           'base64'
         )
       );
-
-    } catch (
-      error
-    ) {
-      res
-        .status(
-          500
-        )
+    } catch (e) {
+      res.status(500)
         .send(
-          error.message
+          e.message
         );
     }
   }
 );
-
-
-/* =========================================================
-   WORKER API
-========================================================= */
 
 app.use(
   '/api/worker',
@@ -4979,72 +3840,57 @@ app.use(
 
 app.get(
   '/api/worker/status',
-  async (
-    _req,
-    res,
-    next
-  ) => {
+  async (_req, res, next) => {
     try {
       res.json({
         service:
           'vaelons-ai-thumbnail-worker',
-
         version:
-          '3.0.0',
-
+          WORKER_VERSION,
         mode:
           WORKER_MODE,
-
         etsy:
           await getTokenStatus(),
-
         initialized:
           Boolean(
             await redis().get(
               `${PREFIX}:initialized`
             )
           ),
-
         pending_new_count:
           Number(
             await redis().scard(
               `${PREFIX}:pending-new`
             )
           ),
-
         scan_cursor:
           Number(
             await redis().get(
               `${PREFIX}:scan-cursor`
             )
-          ) ||
-          0,
-
+          ) || 0,
         auto_delete_old_rank1:
           AUTO_DELETE_OLD_RANK1,
-
         openai_key_source:
           'VAELONS_OPENAI_API_KEY',
-
         approval_required:
           'ONAYLIYORUM',
-
+        artwork_reference_isolation:
+          true,
+        hard_staging_gate:
+          true,
         anti_repeat_memory:
           true,
-
+        max_generation_attempts:
+          STRICT_MAX_ATTEMPTS,
         recent_scene_count:
-          (await getRecentSceneHistory()).length,
-
-        etsy_modified:
-          false
+          (
+            await getRecentSceneHistory()
+          ).length,
+        etsy_modified: false
       });
-
-    } catch (
-      error
-    ) {
-      next(
-        error
-      );
+    } catch (e) {
+      next(e);
     }
   }
 );
@@ -5059,13 +3905,8 @@ const runHandler =
       res.json(
         await runWorker()
       );
-
-    } catch (
-      error
-    ) {
-      next(
-        error
-      );
+    } catch (e) {
+      next(e);
     }
   };
 
@@ -5087,38 +3928,29 @@ app.post(
     next
   ) => {
     try {
-      const listingId =
+      const id =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       const listing =
         await etsyRequest(
-          `/listings/${listingId}`
+          `/listings/${id}`
         );
 
       res.json(
         await prepareListing(
           listing,
           {
-            reason:
-              'manual',
-
+            reason: 'manual',
             force:
-              req.body
-                ?.force ===
+              req.body?.force ===
               true
           }
         )
       );
-
-    } catch (
-      error
-    ) {
-      next(
-        error
-      );
+    } catch (e) {
+      next(e);
     }
   }
 );
@@ -5131,35 +3963,23 @@ app.get(
     next
   ) => {
     try {
-      const listingId =
+      const id =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       res.json({
         listing_id:
-          Number(
-            listingId
-          ),
-
+          Number(id),
         state:
           await getJson(
-            stateKey(
-              listingId
-            )
+            stateKey(id)
           ),
-
         etsy_modified:
           false
       });
-
-    } catch (
-      error
-    ) {
-      next(
-        error
-      );
+    } catch (e) {
+      next(e);
     }
   }
 );
@@ -5172,38 +3992,23 @@ app.post(
     next
   ) => {
     try {
-      const listingId =
+      const id =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
-      const approval =
-        String(
-          req.body
-            ?.approval ||
-          ''
-        ).trim();
-
-      const token =
-        String(
-          req.body
-            ?.preview_token ||
-          ''
-        ).trim();
-
       if (
-        approval !==
+        String(
+          req.body?.approval ||
+          ''
+        ).trim() !==
         'ONAYLIYORUM'
       ) {
         return res
-          .status(
-            400
-          )
+          .status(400)
           .json({
             error:
               'Exact approval text ONAYLIYORUM is required',
-
             etsy_modified:
               false
           });
@@ -5211,24 +4016,23 @@ app.post(
 
       const preview =
         await loadPreview(
-          token
+          String(
+            req.body
+              ?.preview_token ||
+            ''
+          ).trim()
         );
 
       if (
         String(
-          preview
-            .listingId
-        ) !==
-        listingId
+          preview.listingId
+        ) !== id
       ) {
         return res
-          .status(
-            409
-          )
+          .status(409)
           .json({
             error:
               'Preview token belongs to another listing',
-
             etsy_modified:
               false
           });
@@ -5245,21 +4049,11 @@ app.post(
           }
         )
       );
-
-    } catch (
-      error
-    ) {
-      next(
-        error
-      );
+    } catch (e) {
+      next(e);
     }
   }
 );
-
-
-/* =========================================================
-   BASIC ETSY READ API
-========================================================= */
 
 app.use(
   '/api',
@@ -5277,13 +4071,8 @@ app.get(
       res.json(
         await getTokenStatus()
       );
-
-    } catch (
-      error
-    ) {
-      next(
-        error
-      );
+    } catch (e) {
+      next(e);
     }
   }
 );
@@ -5301,13 +4090,8 @@ app.get(
           `/shops/${await getShopId()}`
         )
       );
-
-    } catch (
-      error
-    ) {
-      next(
-        error
-      );
+    } catch (e) {
+      next(e);
     }
   }
 );
@@ -5322,8 +4106,7 @@ app.get(
     try {
       const limit =
         clampInt(
-          req.query
-            .limit ||
+          req.query.limit ||
           25,
           1,
           100
@@ -5333,16 +4116,14 @@ app.get(
         Math.max(
           0,
           Number(
-            req.query
-              .offset ||
+            req.query.offset ||
             0
           )
         );
 
       const state =
         String(
-          req.query
-            .state ||
+          req.query.state ||
           'active'
         );
 
@@ -5358,13 +4139,8 @@ app.get(
           }
         )
       );
-
-    } catch (
-      error
-    ) {
-      next(
-        error
-      );
+    } catch (e) {
+      next(e);
     }
   }
 );
@@ -5377,24 +4153,18 @@ app.get(
     next
   ) => {
     try {
-      const listingId =
+      const id =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       res.json(
         await etsyRequest(
-          `/listings/${listingId}`
+          `/listings/${id}`
         )
       );
-
-    } catch (
-      error
-    ) {
-      next(
-        error
-      );
+    } catch (e) {
+      next(e);
     }
   }
 );
@@ -5407,16 +4177,13 @@ app.get(
     next
   ) => {
     try {
-      const listingId =
+      const id =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       const data =
-        await getListingImages(
-          listingId
-        );
+        await getListingImages(id);
 
       const ordered =
         [
@@ -5435,65 +4202,46 @@ app.get(
 
       const rank1 =
         ordered.find(
-          (image) =>
-            Number(
-              image?.rank
-            ) ===
-            1
+          x =>
+            Number(x.rank) === 1
         ) ||
         ordered[0] ||
         null;
 
       res.json({
         listing_id:
-          Number(
-            listingId
-          ),
-
+          Number(id),
         count:
           ordered.length,
-
         rank1_image_id:
           rank1
             ? getImageId(rank1)
             : null,
-
         rank1_image_url:
           rank1
             ? getImageUrl(rank1)
             : null,
-
         images:
           ordered.map(
-            (image) => ({
+            x => ({
               image_id:
-                getImageId(image),
-
+                getImageId(x),
               rank:
                 Number(
-                  image?.rank ??
+                  x?.rank ??
                   0
                 ),
-
               image_url:
-                getImageUrl(image)
+                getImageUrl(x)
             })
           ),
-
-        // Preserve raw Etsy-compatible results for existing callers.
         results:
           ordered,
-
         etsy_modified:
           false
       });
-
-    } catch (
-      error
-    ) {
-      next(
-        error
-      );
+    } catch (e) {
+      next(e);
     }
   }
 );
@@ -5505,25 +4253,19 @@ app.post(
     res,
     next
   ) => {
-    let etsyModified =
-      false;
+    let modified = false;
 
     try {
-      const listingId =
+      const id =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
-      const approval =
-        String(
-          req.body
-            ?.approval ||
-          ''
-        ).trim();
-
       if (
-        approval !==
+        String(
+          req.body?.approval ||
+          ''
+        ).trim() !==
         'ONAYLIYORUM'
       ) {
         return res
@@ -5531,7 +4273,6 @@ app.post(
           .json({
             error:
               'Exact approval text ONAYLIYORUM is required',
-
             etsy_modified:
               false
           });
@@ -5543,105 +4284,74 @@ app.post(
 
       if (
         !Array.isArray(refs) ||
-        refs.length !==
-        1
+        refs.length !== 1 ||
+        !refs[0]
+          ?.download_link
       ) {
         return res
           .status(400)
           .json({
             error:
-              'Exactly one image file is required',
-
-            etsy_modified:
-              false
-          });
-      }
-
-      const fileRef =
-        refs[0];
-
-      if (
-        !fileRef ||
-        typeof fileRef !==
-          'object' ||
-        !fileRef.download_link
-      ) {
-        return res
-          .status(400)
-          .json({
-            error:
-              'Valid file reference with download_link is required',
-
+              'Exactly one valid image file reference is required',
             etsy_modified:
               false
           });
       }
 
       const before =
-        await getListingImages(
-          listingId
-        );
+        await getListingImages(id);
 
       if (
-        (before?.results || [])
-          .length >=
-        20
+        (
+          before?.results ||
+          []
+        ).length >= 20
       ) {
         return res
           .status(409)
           .json({
             error:
               'Listing already has 20 images',
-
             etsy_modified:
               false
           });
       }
 
-      const imageBuffer =
-        await downloadImage(
-          fileRef.download_link
-        );
-
       const requestedRank =
         Number(
-          req.body
-            ?.rank
+          req.body?.rank
         );
 
       const rank =
         Number.isInteger(
           requestedRank
         ) &&
-        requestedRank >
-          0
+        requestedRank > 0
           ? requestedRank
-          : (before?.results || [])
-              .length +
-            1;
+          : (
+              before?.results ||
+              []
+            ).length + 1;
 
       const result =
         await uploadListingImage({
           shopId:
             await getShopId(),
-
-          listingId,
-
-          imageBuffer,
-
+          listingId: id,
+          imageBuffer:
+            await downloadImage(
+              refs[0]
+                .download_link
+            ),
           filename:
-            fileRef.name ||
-            `vaelons-${listingId}-image.jpg`,
-
+            refs[0].name ||
+            `vaelons-${id}-image.jpg`,
           contentType:
-            fileRef.mime_type ||
+            refs[0]
+              .mime_type ||
             'image/jpeg',
-
           rank,
-
-          overwrite:
-            false,
-
+          overwrite: false,
           altText:
             String(
               req.body
@@ -5653,47 +4363,31 @@ app.post(
             )
         });
 
-      etsyModified =
-        true;
+      modified = true;
 
       const verified =
-        await getListingImages(
-          listingId
-        );
+        await getListingImages(id);
 
       res.json({
-        success:
-          true,
-
+        success: true,
         listing_id:
-          Number(
-            listingId
-          ),
-
+          Number(id),
         upload_result:
           result,
-
         image_count:
-          (verified?.results || [])
-            .length,
-
+          (
+            verified?.results ||
+            []
+          ).length,
         images:
           verified?.results ||
           [],
-
-        etsy_modified:
-          true
+        etsy_modified: true
       });
-
-    } catch (
-      error
-    ) {
-      error.etsyModified =
-        etsyModified;
-
-      next(
-        error
-      );
+    } catch (e) {
+      e.etsyModified =
+        modified;
+      next(e);
     }
   }
 );
@@ -5705,31 +4399,24 @@ app.post(
     res,
     next
   ) => {
-    let etsyModified =
-      false;
+    let modified = false;
 
     try {
-      const listingId =
+      const id =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       const imageId =
         asListingId(
-          req.params
-            .imageId
+          req.params.imageId
         );
 
-      const approval =
-        String(
-          req.body
-            ?.approval ||
-          ''
-        ).trim();
-
       if (
-        approval !==
+        String(
+          req.body?.approval ||
+          ''
+        ).trim() !==
         'ONAYLIYORUM'
       ) {
         return res
@@ -5737,7 +4424,6 @@ app.post(
           .json({
             error:
               'Exact approval text ONAYLIYORUM is required',
-
             etsy_modified:
               false
           });
@@ -5745,21 +4431,18 @@ app.post(
 
       const rank =
         Number(
-          req.body
-            ?.rank
+          req.body?.rank
         );
 
       if (
         !Number.isInteger(rank) ||
-        rank <
-          1
+        rank < 1
       ) {
         return res
           .status(400)
           .json({
             error:
               'rank must be a positive integer',
-
             etsy_modified:
               false
           });
@@ -5769,34 +4452,23 @@ app.post(
         await setListingImageRank({
           shopId:
             await getShopId(),
-
-          listingId,
-
+          listingId: id,
           listingImageId:
             imageId,
-
           rank
         });
 
-      etsyModified =
-        true;
+      modified = true;
 
       res.json({
         ...result,
-
         etsy_modified:
           true
       });
-
-    } catch (
-      error
-    ) {
-      error.etsyModified =
-        etsyModified;
-
-      next(
-        error
-      );
+    } catch (e) {
+      e.etsyModified =
+        modified;
+      next(e);
     }
   }
 );
@@ -5808,31 +4480,24 @@ app.delete(
     res,
     next
   ) => {
-    let etsyModified =
-      false;
+    let modified = false;
 
     try {
-      const listingId =
+      const id =
         asListingId(
-          req.params
-            .listingId
+          req.params.listingId
         );
 
       const imageId =
         asListingId(
-          req.params
-            .imageId
+          req.params.imageId
         );
 
-      const approval =
-        String(
-          req.body
-            ?.approval ||
-          ''
-        ).trim();
-
       if (
-        approval !==
+        String(
+          req.body?.approval ||
+          ''
+        ).trim() !==
         'ONAYLIYORUM'
       ) {
         return res
@@ -5840,7 +4505,6 @@ app.delete(
           .json({
             error:
               'Exact approval text ONAYLIYORUM is required',
-
             etsy_modified:
               false
           });
@@ -5850,44 +4514,27 @@ app.delete(
         await deleteListingImage({
           shopId:
             await getShopId(),
-
-          listingId,
-
+          listingId: id,
           listingImageId:
             imageId,
-
-          verify:
-            true
+          verify: true
         });
 
-      etsyModified =
-        result?.deleted ===
-        true;
+      modified =
+        result?.deleted === true;
 
       res.json({
         ...result,
-
         etsy_modified:
-          etsyModified
+          modified
       });
-
-    } catch (
-      error
-    ) {
-      error.etsyModified =
-        etsyModified;
-
-      next(
-        error
-      );
+    } catch (e) {
+      e.etsyModified =
+        modified;
+      next(e);
     }
   }
 );
-
-
-/* =========================================================
-   ERROR HANDLER
-========================================================= */
 
 app.use(
   (
@@ -5896,40 +4543,27 @@ app.use(
     res,
     _next
   ) => {
-    console.error(
-      error
-    );
+    console.error(error);
 
-    res
-      .status(
-        error.status ||
-        500
-      )
-      .json({
-        error:
-          error.message ||
-          'internal_error',
-
-        details:
-          error.details ||
-          null,
-
-        etsy_modified:
-          error
-            .etsyModified ===
-          true
-      });
+    res.status(
+      error.status || 500
+    ).json({
+      error:
+        error.message ||
+        'internal_error',
+      details:
+        error.details ||
+        null,
+      etsy_modified:
+        error.etsyModified ===
+        true
+    });
   }
 );
 
-
 export default app;
 
-
-if (
-  !process.env
-    .VERCEL
-) {
+if (!process.env.VERCEL) {
   const port =
     Number(
       process.env.PORT ||
@@ -5938,10 +4572,9 @@ if (
 
   app.listen(
     port,
-    () => {
+    () =>
       console.log(
-        `VAELONS AI Thumbnail Worker v3 listening on :${port}`
-      );
-    }
+        `VAELONS AI Thumbnail Worker v${WORKER_VERSION} listening on :${port}`
+      )
   );
 }
