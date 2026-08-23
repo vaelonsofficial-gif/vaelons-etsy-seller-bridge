@@ -4,7 +4,13 @@ import OpenAI, { toFile } from 'openai';
 import { Redis } from '@upstash/redis';
 import { randomBytes, createHash } from 'node:crypto';
 
-import { randomBase64Url, pkceChallenge, sealJson, openJson } from './crypto.js';
+import {
+  randomBase64Url,
+  pkceChallenge,
+  sealJson,
+  openJson
+} from './crypto.js';
+
 import {
   etsyRequest,
   getShopId,
@@ -18,391 +24,1037 @@ import {
 } from './etsy.js';
 
 const app = express();
-app.use(express.json({ limit: '2mb' }));
-app.use(express.urlencoded({ extended: false }));
+
+app.use(
+  express.json({
+    limit: '2mb'
+  })
+);
+
+app.use(
+  express.urlencoded({
+    extended: false
+  })
+);
 
 let openaiClient = null;
 let redisClient = null;
 
-const WORKER_VERSION = '3.1.0';
-const PREFIX = 'vaelons:thumbnail-worker:v2';
-const PREVIEW_TTL_SECONDS = 24 * 60 * 60;
-const QA_RETRY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
-const LOCK_TTL_SECONDS = 10 * 60;
-const WORKER_MODE = 'safe';
-const WORKER_BATCH_SIZE = clampInt(process.env.WORKER_BATCH_SIZE || 2, 1, 5);
-const BAD_SCORE_THRESHOLD = clampInt(process.env.BAD_SCORE_THRESHOLD || 65, 20, 95);
-const DARK_BRIGHTNESS_THRESHOLD = clampInt(process.env.DARK_BRIGHTNESS_THRESHOLD || 78, 30, 150);
-const AUTO_DELETE_OLD_RANK1 = envBool('AUTO_DELETE_OLD_RANK1', true);
-const IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2';
-const QA_MODEL = process.env.OPENAI_QA_MODEL || 'gpt-5.6-luna';
-const COMPLIANCE_MODEL = process.env.OPENAI_COMPLIANCE_MODEL || QA_MODEL;
-const IMAGE_SIZE = process.env.OPENAI_IMAGE_SIZE || '1024x1024';
-const IMAGE_QUALITY = process.env.OPENAI_IMAGE_QUALITY || 'high';
-const STRICT_MAX_ATTEMPTS = clampInt(process.env.THUMBNAIL_MAX_ATTEMPTS || 3, 2, 3);
-const RECENT_SCENE_HISTORY_LIMIT = 12;
-const RECENT_QA_COMPARISON_LIMIT = 3;
 
-const HARD_FORBIDDEN = [
-  'potted plant', 'indoor plant', 'planter', 'flower pot', 'vase', 'decorative vessel',
-  'bouquet', 'decorative branches', 'books', 'magazines', 'console table', 'sideboard',
-  'credenza', 'styled shelf', 'styled tabletop'
-];
+/* =========================================================
+   CONFIG
+========================================================= */
+
+const PREFIX =
+  'vaelons:thumbnail-worker:v2';
+
+const PREVIEW_TTL_SECONDS =
+  24 * 60 * 60;
+
+const QA_RETRY_COOLDOWN_MS =
+  24 * 60 * 60 * 1000;
+
+const LOCK_TTL_SECONDS =
+  10 * 60;
+
+const WORKER_MODE =
+  'safe';
+
+const WORKER_BATCH_SIZE =
+  clampInt(
+    process.env.WORKER_BATCH_SIZE ||
+    2,
+    1,
+    5
+  );
+
+const BAD_SCORE_THRESHOLD =
+  clampInt(
+    process.env.BAD_SCORE_THRESHOLD ||
+    65,
+    20,
+    95
+  );
+
+const DARK_BRIGHTNESS_THRESHOLD =
+  clampInt(
+    process.env.DARK_BRIGHTNESS_THRESHOLD ||
+    78,
+    30,
+    150
+  );
+
+const AUTO_DELETE_OLD_RANK1 =
+  envBool(
+    'AUTO_DELETE_OLD_RANK1',
+    true
+  );
+
+const IMAGE_MODEL =
+  process.env.OPENAI_IMAGE_MODEL ||
+  'gpt-image-2';
+
+const QA_MODEL =
+  process.env.OPENAI_QA_MODEL ||
+  'gpt-5.6-luna';
+
+const COMPLIANCE_MODEL =
+  process.env.OPENAI_COMPLIANCE_MODEL ||
+  QA_MODEL;
+
+const MAX_GENERATION_ATTEMPTS =
+  clampInt(
+    process.env.MAX_GENERATION_ATTEMPTS ||
+    3,
+    1,
+    5
+  );
+
+const IMAGE_SIZE =
+  process.env.OPENAI_IMAGE_SIZE ||
+  '1024x1024';
+
+const IMAGE_QUALITY =
+  process.env.OPENAI_IMAGE_QUALITY ||
+  'high';
+
+const RECENT_SCENE_HISTORY_LIMIT =
+  12;
+
+const RECENT_QA_COMPARISON_LIMIT =
+  3;
 
 const SCENE_FAMILIES = [
   {
-    id: 'bare_gallery', label: 'Bare Gallery Wall', signature: 'bare_gallery+zero_props',
-    description: 'Bright frontal gallery wall, generous negative space, no furniture below the artwork.',
-    allowed: ['wall', 'floor', 'architectural trim', 'neutral daylight'],
-    rule: 'Nothing may sit directly below the artwork.'
+    id: 'museum_wall',
+    label: 'Museum Minimal Wall',
+    description:
+      'A nearly furniture-free museum wall with refined plaster or mineral texture and soft neutral daylight.',
+    architecture:
+      'quiet museum wall, clean ceiling line, premium mineral plaster, no shelving',
+    camera:
+      'straight-on editorial camera, eye-level, restrained perspective, artwork centered and large',
+    foreground_policy:
+      'empty floor or a single slim museum bench kept low and far below the artwork',
+    decor_signature:
+      'museum_wall+zero_decor',
+    forbidden:
+      'ZERO plants, planters, pots, vases, urns, branches, books, magazines, consoles, sideboards, credenzas, styled shelves, tabletop decor, bowls, candles, sculptures or decorative clusters outside the artwork.'
   },
   {
-    id: 'low_sofa_wall', label: 'Low Sofa Wall', signature: 'low_sofa+empty_wall',
-    description: 'Bright living space with only the top edge of one low neutral sofa at the bottom.',
-    allowed: ['one low neutral sofa', 'wall', 'floor', 'neutral daylight'],
-    rule: 'Sofa stays low and bare. No object or furniture centered under artwork.'
+    id: 'bright_gallery',
+    label: 'Bright Contemporary Gallery',
+    description:
+      'A bright contemporary gallery bay with generous negative space and crisp neutral daylight.',
+    architecture:
+      'white or pale-stone gallery bay, subtle reveal joints, no built-in shelving',
+    camera:
+      'slightly off-axis gallery photograph, clean verticals, artwork remains the dominant plane',
+    foreground_policy:
+      'bare floor; optional narrow gallery bench only, with nothing placed on it',
+    decor_signature:
+      'gallery_bay+bare_floor',
+    forbidden:
+      'ZERO plants, planters, pots, vases, urns, branches, books, magazines, consoles, sideboards, credenzas, styled shelves or tabletop decor outside the artwork.'
   },
   {
-    id: 'headboard_wall', label: 'Headboard Wall', signature: 'headboard+empty_wall',
-    description: 'Bright calm bedroom with low headboard and plain bedding only.',
-    allowed: ['low headboard', 'plain bedding', 'wall', 'neutral daylight'],
-    rule: 'No bedside tables, lamps, props, plants, vessels or books.'
+    id: 'stone_niche',
+    label: 'Architectural Stone Niche',
+    description:
+      'A pale limestone or lime-plaster architectural niche designed around one large artwork.',
+    architecture:
+      'monolithic pale stone niche, soft shadow reveal, one clean architectural opening',
+    camera:
+      'front three-quarter architectural camera with mild depth and perfectly controlled verticals',
+    foreground_policy:
+      'nothing below the artwork except an empty integrated stone plinth if composition requires it',
+    decor_signature:
+      'stone_niche+empty_plinth',
+    forbidden:
+      'ZERO plants, planters, pots, vases, urns, branches, books, magazines, consoles, sideboards, credenzas, shelves, tabletop decor or accessory styling outside the artwork.'
   },
   {
-    id: 'stair_landing', label: 'Architectural Stair Landing', signature: 'stairs+empty_wall',
-    description: 'Bright stair landing with clean railing geometry and no decorative furniture.',
-    allowed: ['stairs', 'railing', 'wall', 'neutral daylight'],
-    rule: 'Architecture only; no movable decor.'
+    id: 'architectural_hall',
+    label: 'Daylight Architectural Hall',
+    description:
+      'A bright architectural corridor or softly arched hall with museum-like presentation and no decorative styling.',
+    architecture:
+      'soft arches or long corridor, pale plaster and stone, clean daylight from one side',
+    camera:
+      'long-lens architectural framing with subtle depth; artwork large on the hero wall',
+    foreground_policy:
+      'bare circulation space; no furniture directly under the artwork',
+    decor_signature:
+      'architectural_hall+bare',
+    forbidden:
+      'ZERO plants, planters, pots, vases, urns, branches, books, magazines, consoles, credenzas, styled shelves, tables with objects or decorative clusters outside the artwork.'
   },
   {
-    id: 'dining_wall', label: 'Clean Dining Wall', signature: 'bare_table_edge+chairs',
-    description: 'Bright dining wall with simple chair backs and optionally a bare table edge low in frame.',
-    allowed: ['simple chairs', 'bare dining table edge', 'wall', 'neutral daylight'],
-    rule: 'Table surface must be completely bare.'
+    id: 'daylight_loft',
+    label: 'Daylight Collector Loft',
+    description:
+      'A clean high-ceiling collector loft with one large artwork on an uninterrupted neutral wall.',
+    architecture:
+      'high ceiling, large daylight opening off-frame, pale concrete or soft plaster wall',
+    camera:
+      'wide but controlled editorial camera; enough room context to feel premium without shrinking the artwork',
+    foreground_policy:
+      'one low neutral seat may enter the bottom edge; all surfaces remain bare',
+    decor_signature:
+      'collector_loft+bare_surfaces',
+    forbidden:
+      'ZERO plants, planters, pots, vases, urns, branches, books, magazines, consoles, sideboards, credenzas, styled shelves or tabletop decor outside the artwork.'
   },
   {
-    id: 'arched_hall', label: 'Arched Hall', signature: 'arches+architecture_only',
-    description: 'Bright plaster or limestone hall with arches and no decorative furniture.',
-    allowed: ['arches', 'plaster or limestone wall', 'floor', 'neutral daylight'],
-    rule: 'Architecture provides all visual interest.'
+    id: 'quiet_entry',
+    label: 'Quiet Entry Gallery',
+    description:
+      'A high-end entry gallery with strong daylight and one artwork as the sole visual focal point.',
+    architecture:
+      'clean entry wall, pale stone floor, subtle doorway or passage for depth',
+    camera:
+      'eye-level symmetrical or near-symmetrical camera; artwork fills the main wall',
+    foreground_policy:
+      'optional plain upholstered bench only; no console and nothing placed on furniture',
+    decor_signature:
+      'entry_gallery+plain_bench',
+    forbidden:
+      'ZERO plants, planters, pots, vases, urns, branches, books, magazines, consoles, sideboards, credenzas, styled shelves or tabletop decor outside the artwork.'
   },
   {
-    id: 'loft_wall', label: 'Modern Loft Wall', signature: 'loft+single_chair',
-    description: 'Bright clean loft wall with at most one simple chair far from the artwork.',
-    allowed: ['one simple chair', 'plaster or concrete wall', 'floor', 'neutral daylight'],
-    rule: 'At most one chair; no table, shelf, lamp or decor cluster.'
+    id: 'airy_living',
+    label: 'Airy Living Wall',
+    description:
+      'A refined daylight living space where only a low neutral sofa edge is visible and the artwork dominates.',
+    architecture:
+      'open neutral wall, soft natural daylight, no shelving or display cabinetry',
+    camera:
+      'straight or slight three-quarter residential editorial camera with minimal foreground',
+    foreground_policy:
+      'low sofa edge only; no coffee table, side table, console or accessories',
+    decor_signature:
+      'living_wall+sofa_edge_only',
+    forbidden:
+      'ZERO plants, planters, pots, vases, urns, branches, books, magazines, consoles, sideboards, credenzas, shelves, coffee-table decor, side-table decor or decorative clusters outside the artwork.'
   },
   {
-    id: 'window_side_wall', label: 'Window-Side Wall', signature: 'window+empty_wall',
-    description: 'Bright wall beside a clean architectural window opening.',
-    allowed: ['window opening', 'wall', 'floor', 'neutral daylight'],
-    rule: 'Window is architecture only; no indoor greenery or furniture styling.'
+    id: 'calm_bedroom',
+    label: 'Calm Bedroom Wall',
+    description:
+      'A serene neutral bedroom with only a low headboard or bedding edge visible beneath a large artwork.',
+    architecture:
+      'quiet plaster bedroom wall, neutral textile edge, clean daylight',
+    camera:
+      'restrained straight-on editorial camera, artwork large above a low headboard line',
+    foreground_policy:
+      'headboard or bedding only; no nightstand objects, lamps, books, plants or accessories',
+    decor_signature:
+      'bedroom_wall+bed_edge_only',
+    forbidden:
+      'ZERO plants, planters, pots, vases, urns, branches, books, magazines, consoles, sideboards, credenzas, styled shelves, nightstand decor or tabletop decor outside the artwork.'
   },
   {
-    id: 'museum_wall', label: 'Museum Minimal', signature: 'museum+zero_props',
-    description: 'Premium museum-like wall with subtle texture and no furniture or decor.',
-    allowed: ['museum wall', 'floor', 'architectural texture', 'diffuse neutral light'],
-    rule: 'Zero props and zero furniture.'
+    id: 'stair_landing',
+    label: 'Sculptural Stair Landing',
+    description:
+      'A bright minimal stair landing with a single hero artwork on a tall neutral wall.',
+    architecture:
+      'pale stone stair or floating stair edge, tall plaster wall, daylight from above or side',
+    camera:
+      'architectural three-quarter camera using stair geometry for depth while keeping artwork unobstructed',
+    foreground_policy:
+      'stairs and bare floor only',
+    decor_signature:
+      'stair_landing+zero_decor',
+    forbidden:
+      'ZERO plants, planters, pots, vases, urns, branches, books, magazines, consoles, sideboards, credenzas, styled shelves, tables or decorative objects outside the artwork.'
+  },
+  {
+    id: 'collector_pavilion',
+    label: 'Collector Pavilion',
+    description:
+      'A silent monolithic collector pavilion where architecture exists to display one artwork.',
+    architecture:
+      'travertine or limestone wall, restrained reveal lighting, monumental opening or soft courtyard light',
+    camera:
+      'museum-grade architectural photograph, calm geometry, artwork visually dominant',
+    foreground_policy:
+      'empty stone floor; no residential decoration',
+    decor_signature:
+      'collector_pavilion+empty',
+    forbidden:
+      'ZERO plants, planters, pots, vases, urns, branches, books, magazines, consoles, sideboards, credenzas, shelving, tables or decorative objects outside the artwork.'
   }
 ];
 
+
+/* =========================================================
+   BASIC HELPERS
+========================================================= */
+
 function required(name) {
-  const value = process.env[name];
-  if (!value) throw new Error(`Missing environment variable: ${name}`);
+  const value =
+    process.env[name];
+
+  if (!value) {
+    throw new Error(
+      `Missing environment variable: ${name}`
+    );
+  }
+
   return value;
 }
 
 function publicBase() {
-  return required('PUBLIC_BASE_URL').replace(/\/$/, '');
+  return required(
+    'PUBLIC_BASE_URL'
+  ).replace(
+    /\/$/,
+    ''
+  );
 }
 
-function envBool(name, fallback = false) {
-  const raw = process.env[name];
-  if (raw == null || raw === '') return fallback;
-  return ['1', 'true', 'yes', 'on'].includes(String(raw).toLowerCase());
+function envBool(
+  name,
+  fallback = false
+) {
+  const raw =
+    process.env[name];
+
+  if (
+    raw == null ||
+    raw === ''
+  ) {
+    return fallback;
+  }
+
+  return [
+    '1',
+    'true',
+    'yes',
+    'on'
+  ].includes(
+    String(
+      raw
+    ).toLowerCase()
+  );
 }
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, Number(value)));
+function clamp(
+  value,
+  min,
+  max
+) {
+  return Math.max(
+    min,
+    Math.min(
+      max,
+      Number(
+        value
+      )
+    )
+  );
 }
 
-function clampInt(value, min, max) {
-  return Math.round(clamp(value, min, max));
+function clampInt(
+  value,
+  min,
+  max
+) {
+  return Math.round(
+    clamp(
+      value,
+      min,
+      max
+    )
+  );
 }
 
 function round1(value) {
-  return Math.round(Number(value) * 10) / 10;
+  return (
+    Math.round(
+      Number(
+        value
+      ) *
+      10
+    ) /
+    10
+  );
 }
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
+function asListingId(
+  value
+) {
+  const id =
+    String(
+      value ||
+      ''
+    ).trim();
 
-function asListingId(value) {
-  const id = String(value || '').trim();
-  if (!/^\d+$/.test(id)) {
-    const e = new Error('Invalid listingId');
-    e.status = 400;
-    throw e;
+  if (
+    !/^\d+$/.test(
+      id
+    )
+  ) {
+    const err =
+      new Error(
+        'Invalid listingId'
+      );
+
+    err.status =
+      400;
+
+    throw err;
   }
+
   return id;
 }
 
-function getImageId(image) {
-  return image?.listing_image_id ?? image?.image_id ?? null;
+function getImageId(
+  image
+) {
+  return (
+    image
+      ?.listing_image_id ??
+    image
+      ?.image_id ??
+    null
+  );
 }
 
-function getImageUrl(image) {
-  return image?.url_fullxfull ||
-    image?.url_570xN ||
-    image?.url_300x300 ||
-    image?.url_170x135 ||
-    null;
+function getImageUrl(
+  image
+) {
+  return (
+    image
+      ?.url_fullxfull ||
+    image
+      ?.url_570xN ||
+    image
+      ?.url_300x300 ||
+    image
+      ?.url_170x135 ||
+    null
+  );
 }
 
-function parseCookies(req) {
-  const out = {};
-  for (const part of (req.headers.cookie || '').split(';')) {
-    const i = part.indexOf('=');
-    if (i > -1) {
-      out[part.slice(0, i).trim()] =
-        decodeURIComponent(part.slice(i + 1).trim());
+function parseCookies(
+  req
+) {
+  const result =
+    {};
+
+  for (
+    const part of
+    (
+      req.headers.cookie ||
+      ''
+    ).split(';')
+  ) {
+    const idx =
+      part.indexOf('=');
+
+    if (
+      idx >
+      -1
+    ) {
+      result[
+        part
+          .slice(
+            0,
+            idx
+          )
+          .trim()
+      ] =
+        decodeURIComponent(
+          part
+            .slice(
+              idx + 1
+            )
+            .trim()
+        );
     }
   }
-  return out;
+
+  return result;
 }
 
-function bridgeAuth(req, res, next) {
-  const key = process.env.BRIDGE_API_KEY || '';
+
+/* =========================================================
+   AUTH
+========================================================= */
+
+function bridgeAuth(
+  req,
+  res,
+  next
+) {
+  const auth =
+    req.get(
+      'authorization'
+    ) ||
+    '';
+
+  const key =
+    process.env
+      .BRIDGE_API_KEY ||
+    '';
+
   if (
     !key ||
-    (req.get('authorization') || '') !== `Bearer ${key}`
+    auth !==
+      `Bearer ${key}`
   ) {
-    return res.status(401).json({ error: 'unauthorized' });
+    return res
+      .status(
+        401
+      )
+      .json({
+        error:
+          'unauthorized'
+      });
   }
+
   next();
 }
 
-function workerAuth(req, res, next) {
-  const auth = req.get('authorization') || '';
-  const cron = process.env.CRON_SECRET || '';
-  const bridge = process.env.BRIDGE_API_KEY || '';
+function workerAuth(
+  req,
+  res,
+  next
+) {
+  const auth =
+    req.get(
+      'authorization'
+    ) ||
+    '';
+
+  const cronSecret =
+    process.env
+      .CRON_SECRET ||
+    '';
+
+  const bridgeKey =
+    process.env
+      .BRIDGE_API_KEY ||
+    '';
+
+  const allowed =
+    (
+      cronSecret &&
+      auth ===
+        `Bearer ${cronSecret}`
+    ) ||
+    (
+      bridgeKey &&
+      auth ===
+        `Bearer ${bridgeKey}`
+    );
 
   if (
-    !(
-      (cron && auth === `Bearer ${cron}`) ||
-      (bridge && auth === `Bearer ${bridge}`)
-    )
+    !allowed
   ) {
-    return res.status(401).json({ error: 'unauthorized' });
+    return res
+      .status(
+        401
+      )
+      .json({
+        error:
+          'unauthorized'
+      });
   }
 
   next();
 }
 
+
+/* =========================================================
+   CLIENTS
+========================================================= */
+
 function openai() {
-  if (!openaiClient) {
-    openaiClient = new OpenAI({
-      apiKey: required('VAELONS_OPENAI_API_KEY')
-    });
+  if (
+    !openaiClient
+  ) {
+    openaiClient =
+      new OpenAI({
+        apiKey:
+          required(
+            'VAELONS_OPENAI_API_KEY'
+          )
+      });
   }
+
   return openaiClient;
 }
 
 function redis() {
-  if (!redisClient) {
+  if (
+    !redisClient
+  ) {
     const url =
-      process.env.UPSTASH_REDIS_REST_KV_REST_API_URL ||
-      process.env.UPSTASH_REDIS_REST_URL;
+      process.env
+        .UPSTASH_REDIS_REST_KV_REST_API_URL ||
+      process.env
+        .UPSTASH_REDIS_REST_URL;
 
     const token =
-      process.env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN ||
-      process.env.UPSTASH_REDIS_REST_TOKEN;
+      process.env
+        .UPSTASH_REDIS_REST_KV_REST_API_TOKEN ||
+      process.env
+        .UPSTASH_REDIS_REST_TOKEN;
 
-    if (!url || !token) {
+    if (
+      !url ||
+      !token
+    ) {
       throw new Error(
-        'Missing Upstash Redis REST environment variables'
+        'Missing Upstash Redis environment variables. Expected UPSTASH_REDIS_REST_KV_REST_API_URL and UPSTASH_REDIS_REST_KV_REST_API_TOKEN.'
       );
     }
 
-    redisClient = new Redis({
-      url,
-      token,
-      enableTelemetry: false
-    });
+    redisClient =
+      new Redis({
+        url,
+        token,
+        enableTelemetry:
+          false
+      });
   }
 
   return redisClient;
 }
 
-const stateKey = id => `${PREFIX}:listing:${id}`;
-const previewKey = token => `${PREFIX}:preview:${token}`;
-const previewImageKey = token => `${PREFIX}:preview-image:${token}`;
-const sceneHistoryKey = () => `${PREFIX}:scene-history`;
 
-async function getJson(key) {
-  const raw = await redis().get(key);
+/* =========================================================
+   REDIS KEYS
+========================================================= */
 
-  if (raw == null) return null;
-  if (typeof raw === 'object') return raw;
+function stateKey(
+  listingId
+) {
+  return (
+    `${PREFIX}:listing:${listingId}`
+  );
+}
+
+function previewKey(
+  token
+) {
+  return (
+    `${PREFIX}:preview:${token}`
+  );
+}
+
+function previewImageKey(
+  token
+) {
+  return (
+    `${PREFIX}:preview-image:${token}`
+  );
+}
+
+async function getJson(
+  key
+) {
+  const raw =
+    await redis().get(
+      key
+    );
+
+  if (
+    raw == null
+  ) {
+    return null;
+  }
+
+  if (
+    typeof raw ===
+    'object'
+  ) {
+    return raw;
+  }
 
   try {
-    return JSON.parse(raw);
+    return JSON.parse(
+      raw
+    );
+
   } catch {
     return null;
   }
 }
 
-async function setJson(key, value, options = {}) {
+async function setJson(
+  key,
+  value,
+  options = {}
+) {
   return redis().set(
     key,
-    JSON.stringify(value),
+    JSON.stringify(
+      value
+    ),
     options
   );
 }
 
-async function downloadImage(url) {
-  const parsed = new URL(url);
 
-  if (parsed.protocol !== 'https:') {
-    throw new Error('Image URL must use HTTPS');
+/* =========================================================
+   IMAGE DOWNLOAD
+========================================================= */
+
+async function downloadImage(
+  url
+) {
+  const parsed =
+    new URL(
+      url
+    );
+
+  if (
+    parsed.protocol !==
+    'https:'
+  ) {
+    throw new Error(
+      'Image URL must use HTTPS'
+    );
   }
 
-  const response = await fetch(url);
+  const response =
+    await fetch(
+      url
+    );
 
-  if (!response.ok) {
+  if (
+    !response.ok
+  ) {
     throw new Error(
       `Could not download image (${response.status})`
     );
   }
 
-  const buffer = Buffer.from(
-    await response.arrayBuffer()
-  );
+  const buffer =
+    Buffer.from(
+      await response
+        .arrayBuffer()
+    );
 
-  if (buffer.length > 20 * 1024 * 1024) {
-    const e = new Error('Image is larger than 20 MB');
-    e.status = 413;
-    throw e;
+  if (
+    buffer.length >
+    20 *
+    1024 *
+    1024
+  ) {
+    const err =
+      new Error(
+        'Image is larger than 20 MB'
+      );
+
+    err.status =
+      413;
+
+    throw err;
   }
 
   return buffer;
 }
+
+
+/* =========================================================
+   IMAGE NORMALIZATION
+========================================================= */
 
 async function normalizeJpeg(
   buffer,
   max = 1600,
   quality = 90
 ) {
-  return sharp(buffer)
+  return sharp(
+    buffer
+  )
     .rotate()
     .removeAlpha()
-    .toColourspace('srgb')
+    .toColourspace(
+      'srgb'
+    )
     .resize({
-      width: max,
-      height: max,
-      fit: 'inside',
-      withoutEnlargement: true
+      width:
+        max,
+
+      height:
+        max,
+
+      fit:
+        'inside',
+
+      withoutEnlargement:
+        true
     })
     .jpeg({
       quality,
-      chromaSubsampling: '4:4:4'
+
+      chromaSubsampling:
+        '4:4:4'
     })
     .toBuffer();
 }
 
-async function analyzeImage(buffer) {
-  const meta = await sharp(buffer).metadata();
 
-  const { data, info } =
-    await sharp(buffer)
+/* =========================================================
+   IMAGE ANALYSIS
+========================================================= */
+
+async function analyzeImage(
+  buffer
+) {
+  const meta =
+    await sharp(
+      buffer
+    ).metadata();
+
+  const {
+    data,
+    info
+  } =
+    await sharp(
+      buffer
+    )
       .rotate()
       .removeAlpha()
       .greyscale()
       .resize({
-        width: 360,
-        height: 360,
-        fit: 'inside',
-        withoutEnlargement: true
+        width:
+          360,
+
+        height:
+          360,
+
+        fit:
+          'inside',
+
+        withoutEnlargement:
+          true
       })
       .raw()
       .toBuffer({
-        resolveWithObject: true
+        resolveWithObject:
+          true
       });
 
-  let sum = 0;
-  let sumSq = 0;
-  let shadow = 0;
-  let deepShadow = 0;
-  let highlight = 0;
+  let sum =
+    0;
+
+  let sumSq =
+    0;
+
+  let shadow =
+    0;
+
+  let deepShadow =
+    0;
+
+  let highlight =
+    0;
 
   const count =
     Math.max(
       1,
-      info.width * info.height
+      info.width *
+      info.height
     );
 
   for (
     let i = 0;
-    i < data.length;
-    i += info.channels
+    i <
+    data.length;
+    i +=
+      info.channels
   ) {
-    const y = data[i];
+    const y =
+      data[i];
 
-    sum += y;
-    sumSq += y * y;
+    sum +=
+      y;
 
-    if (y < 55) shadow++;
-    if (y < 28) deepShadow++;
-    if (y > 235) highlight++;
+    sumSq +=
+      y *
+      y;
+
+    if (
+      y <
+      55
+    ) {
+      shadow +=
+        1;
+    }
+
+    if (
+      y <
+      28
+    ) {
+      deepShadow +=
+        1;
+    }
+
+    if (
+      y >
+      235
+    ) {
+      highlight +=
+        1;
+    }
   }
 
-  const mean = sum / count;
+  const mean =
+    sum /
+    count;
+
+  const variance =
+    Math.max(
+      0,
+      sumSq /
+      count -
+      mean *
+      mean
+    );
 
   return {
-    width: meta.width || null,
-    height: meta.height || null,
-    brightness: round1(mean),
-    contrast: round1(
-      Math.sqrt(
-        Math.max(
-          0,
-          sumSq / count - mean * mean
+    width:
+      meta.width ||
+      null,
+
+    height:
+      meta.height ||
+      null,
+
+    brightness:
+      round1(
+        mean
+      ),
+
+    contrast:
+      round1(
+        Math.sqrt(
+          variance
         )
-      )
-    ),
+      ),
+
     shadow_percent:
       round1(
-        shadow / count * 100
+        shadow /
+        count *
+        100
       ),
+
     deep_shadow_percent:
       round1(
-        deepShadow / count * 100
+        deepShadow /
+        count *
+        100
       ),
+
     highlight_percent:
       round1(
-        highlight / count * 100
+        highlight /
+        count *
+        100
       )
   };
 }
 
-function thumbnailScore(a) {
-  let score = 100;
 
-  if (a.brightness < 50) score -= 40;
-  else if (a.brightness < 65) score -= 30;
-  else if (a.brightness < 78) score -= 18;
-  else if (a.brightness < 90) score -= 8;
+/* =========================================================
+   THUMBNAIL SCORE
+========================================================= */
 
-  if (a.shadow_percent > 60) score -= 25;
-  else if (a.shadow_percent > 48) score -= 15;
-  else if (a.shadow_percent > 38) score -= 8;
+function thumbnailScore(
+  a
+) {
+  let score =
+    100;
 
-  if (a.deep_shadow_percent > 35) score -= 12;
-  else if (a.deep_shadow_percent > 25) score -= 6;
+  if (
+    a.brightness <
+    50
+  ) {
+    score -=
+      40;
 
-  if (a.contrast < 25) score -= 10;
-  if (a.highlight_percent > 16) score -= 8;
+  } else if (
+    a.brightness <
+    65
+  ) {
+    score -=
+      30;
+
+  } else if (
+    a.brightness <
+    78
+  ) {
+    score -=
+      18;
+
+  } else if (
+    a.brightness <
+    90
+  ) {
+    score -=
+      8;
+  }
+
+  if (
+    a.shadow_percent >
+    60
+  ) {
+    score -=
+      25;
+
+  } else if (
+    a.shadow_percent >
+    48
+  ) {
+    score -=
+      15;
+
+  } else if (
+    a.shadow_percent >
+    38
+  ) {
+    score -=
+      8;
+  }
+
+  if (
+    a.deep_shadow_percent >
+    35
+  ) {
+    score -=
+      12;
+
+  } else if (
+    a.deep_shadow_percent >
+    25
+  ) {
+    score -=
+      6;
+  }
+
+  if (
+    a.contrast <
+    25
+  ) {
+    score -=
+      10;
+  }
+
+  if (
+    a.highlight_percent >
+    16
+  ) {
+    score -=
+      8;
+  }
 
   return clampInt(
     score,
@@ -411,699 +1063,1048 @@ function thumbnailScore(a) {
   );
 }
 
+
+/* =========================================================
+   REFERENCE SCORE
+========================================================= */
+
 function heuristicReferenceScore(
-  a,
+  analysis,
   rank
 ) {
+  const brightnessPenalty =
+    Math.abs(
+      analysis.brightness -
+      120
+    ) *
+    0.35;
+
+  const contrastBonus =
+    clamp(
+      analysis.contrast -
+      25,
+      0,
+      30
+    ) *
+    0.7;
+
   const resolution =
     Math.max(
       1,
-      (a.width || 1) *
-      (a.height || 1)
+      (
+        analysis.width ||
+        1
+      ) *
+      (
+        analysis.height ||
+        1
+      )
     );
+
+  const resolutionBonus =
+    clamp(
+      Math.log10(
+        resolution
+      ) -
+      5.5,
+      0,
+      1.5
+    ) *
+    8;
+
+  const rankBonus =
+    rank ===
+    2
+      ? 8
+      : rank ===
+        3
+        ? 4
+        : 0;
 
   return round1(
     70 -
-    Math.abs(a.brightness - 120) * 0.35 +
-    clamp(a.contrast - 25, 0, 30) * 0.7 +
-    clamp(
-      Math.log10(resolution) - 5.5,
-      0,
-      1.5
-    ) * 8 +
-    (
-      rank === 2
-        ? 8
-        : rank === 3
-          ? 4
-          : 0
-    )
+    brightnessPenalty +
+    contrastBonus +
+    resolutionBonus +
+    rankBonus
   );
 }
 
-async function getImageSet(listingId) {
+
+/* =========================================================
+   ETSY IMAGE SET
+========================================================= */
+
+async function getImageSet(
+  listingId
+) {
   const data =
     await getListingImages(
       listingId
     );
 
   const images =
-    Array.isArray(data?.results)
+    Array.isArray(
+      data?.results
+    )
       ? data.results
       : [];
 
-  if (!images.length) {
-    const e =
+  if (
+    !images.length
+  ) {
+    const err =
       new Error(
         'No listing images found'
       );
-    e.status = 404;
-    throw e;
+
+    err.status =
+      404;
+
+    throw err;
   }
 
   const ordered =
-    [...images].sort(
-      (a, b) =>
-        Number(a.rank ?? 9999) -
-        Number(b.rank ?? 9999)
+    [
+      ...images
+    ].sort(
+      (
+        a,
+        b
+      ) =>
+        Number(
+          a.rank ??
+          9999
+        ) -
+        Number(
+          b.rank ??
+          9999
+        )
     );
 
   const rank1 =
     images.find(
-      x => Number(x.rank) === 1
+      (
+        img
+      ) =>
+        Number(
+          img.rank
+        ) ===
+        1
     ) ||
     ordered[0];
 
   if (
     !rank1 ||
-    !getImageUrl(rank1)
+    !getImageUrl(
+      rank1
+    )
   ) {
-    const e =
+    const err =
       new Error(
         'No usable rank 1 image'
       );
-    e.status = 404;
-    throw e;
+
+    err.status =
+      404;
+
+    throw err;
   }
 
   return {
-    images: ordered,
+    images:
+      ordered,
+
     rank1
   };
 }
 
-async function selectReferencesWithVision(
-  title,
-  candidates
-) {
-  if (candidates.length === 1) {
-    return [candidates[0]];
+
+/* =========================================================
+   ARTWORK REFERENCE ISOLATION
+========================================================= */
+
+function clamp01(value) {
+  return Math.max(
+    0,
+    Math.min(
+      1,
+      Number(value) || 0
+    )
+  );
+}
+
+function sanitizeNormalizedBox({
+  x,
+  y,
+  width,
+  height
+}) {
+  const sx =
+    clamp01(x);
+
+  const sy =
+    clamp01(y);
+
+  const sw =
+    Math.max(
+      0,
+      Math.min(
+        1 - sx,
+        Number(width) || 0
+      )
+    );
+
+  const sh =
+    Math.max(
+      0,
+      Math.min(
+        1 - sy,
+        Number(height) || 0
+      )
+    );
+
+  if (
+    sw <= 0 ||
+    sh <= 0
+  ) {
+    return null;
   }
+
+  return {
+    x:
+      sx,
+
+    y:
+      sy,
+
+    width:
+      sw,
+
+    height:
+      sh
+  };
+}
+
+async function cropNormalizedBox(
+  buffer,
+  box,
+  {
+    maxSize = 1800,
+    quality = 95
+  } = {}
+) {
+  const safeBox =
+    sanitizeNormalizedBox(
+      box
+    );
+
+  if (!safeBox) {
+    throw new Error(
+      'Invalid normalized crop box'
+    );
+  }
+
+  const metadata =
+    await sharp(
+      buffer
+    ).metadata();
+
+  const sourceWidth =
+    Number(
+      metadata.width ||
+      0
+    );
+
+  const sourceHeight =
+    Number(
+      metadata.height ||
+      0
+    );
+
+  if (
+    sourceWidth < 2 ||
+    sourceHeight < 2
+  ) {
+    throw new Error(
+      'Reference image has invalid dimensions'
+    );
+  }
+
+  const left =
+    Math.max(
+      0,
+      Math.min(
+        sourceWidth - 1,
+        Math.floor(
+          safeBox.x *
+          sourceWidth
+        )
+      )
+    );
+
+  const top =
+    Math.max(
+      0,
+      Math.min(
+        sourceHeight - 1,
+        Math.floor(
+          safeBox.y *
+          sourceHeight
+        )
+      )
+    );
+
+  const width =
+    Math.max(
+      1,
+      Math.min(
+        sourceWidth - left,
+        Math.round(
+          safeBox.width *
+          sourceWidth
+        )
+      )
+    );
+
+  const height =
+    Math.max(
+      1,
+      Math.min(
+        sourceHeight - top,
+        Math.round(
+          safeBox.height *
+          sourceHeight
+        )
+      )
+    );
+
+  return sharp(
+    buffer
+  )
+    .extract({
+      left,
+      top,
+      width,
+      height
+    })
+    .resize({
+      width:
+        maxSize,
+      height:
+        maxSize,
+      fit:
+        'inside',
+      withoutEnlargement:
+        true
+    })
+    .jpeg({
+      quality,
+      mozjpeg:
+        true
+    })
+    .toBuffer();
+}
+
+async function maskNormalizedBox(
+  buffer,
+  box,
+  {
+    maxSize = 1300,
+    quality = 90
+  } = {}
+) {
+  const safeBox =
+    sanitizeNormalizedBox(
+      box
+    );
+
+  if (!safeBox) {
+    throw new Error(
+      'Invalid normalized mask box'
+    );
+  }
+
+  const metadata =
+    await sharp(
+      buffer
+    ).metadata();
+
+  const sourceWidth =
+    Number(
+      metadata.width ||
+      0
+    );
+
+  const sourceHeight =
+    Number(
+      metadata.height ||
+      0
+    );
+
+  if (
+    sourceWidth < 2 ||
+    sourceHeight < 2
+  ) {
+    throw new Error(
+      'Image has invalid dimensions for masking'
+    );
+  }
+
+  const left =
+    Math.max(
+      0,
+      Math.min(
+        sourceWidth - 1,
+        Math.floor(
+          safeBox.x *
+          sourceWidth
+        )
+      )
+    );
+
+  const top =
+    Math.max(
+      0,
+      Math.min(
+        sourceHeight - 1,
+        Math.floor(
+          safeBox.y *
+          sourceHeight
+        )
+      )
+    );
+
+  const width =
+    Math.max(
+      1,
+      Math.min(
+        sourceWidth - left,
+        Math.ceil(
+          safeBox.width *
+          sourceWidth
+        )
+      )
+    );
+
+  const height =
+    Math.max(
+      1,
+      Math.min(
+        sourceHeight - top,
+        Math.ceil(
+          safeBox.height *
+          sourceHeight
+        )
+      )
+    );
+
+  const svg =
+    Buffer.from(
+      `<svg width="${sourceWidth}" height="${sourceHeight}" xmlns="http://www.w3.org/2000/svg"><rect x="${left}" y="${top}" width="${width}" height="${height}" fill="#b8b8b8"/></svg>`
+    );
+
+  return sharp(
+    buffer
+  )
+    .composite([
+      {
+        input:
+          svg,
+
+        blend:
+          'over'
+      }
+    ])
+    .resize({
+      width:
+        maxSize,
+      height:
+        maxSize,
+      fit:
+        'inside',
+      withoutEnlargement:
+        true
+    })
+    .jpeg({
+      quality,
+      mozjpeg:
+        true
+    })
+    .toBuffer();
+}
+
+
+async function collectArtworkCandidates(
+  imageSet
+) {
+  const sourceImages =
+    imageSet.images
+      .filter(
+        (image) =>
+          getImageUrl(
+            image
+          )
+      )
+      .slice(
+        0,
+        8
+      );
+
+  const candidates =
+    [];
+
+  for (
+    const image of
+    sourceImages
+  ) {
+    try {
+      const buffer =
+        await downloadImage(
+          getImageUrl(
+            image
+          )
+        );
+
+      const normalized =
+        await normalizeJpeg(
+          buffer,
+          1400,
+          90
+        );
+
+      candidates.push({
+        image,
+
+        imageId:
+          getImageId(
+            image
+          ),
+
+        rank:
+          Number(
+            image.rank ||
+            99
+          ),
+
+        buffer:
+          normalized
+      });
+
+    } catch (
+      error
+    ) {
+      console.warn(
+        'Artwork isolation candidate failed:',
+        getImageId(
+          image
+        ),
+        error.message
+      );
+    }
+  }
+
+  if (
+    !candidates.length
+  ) {
+    throw new Error(
+      'ARTWORK_REFERENCE_ISOLATION_FAILED: no usable listing images'
+    );
+  }
+
+  return candidates;
+}
+
+async function isolateArtworkReferences(
+  title,
+  imageSet
+) {
+  const candidates =
+    await collectArtworkCandidates(
+      imageSet
+    );
 
   const content = [
     {
-      type: 'input_text',
+      type:
+        'input_text',
+
       text:
-        `Select product-truth references for an Etsy wall-art hero image.
+        `You are isolating the ACTUAL wall-art product from Etsy listing images.
 
-Listing: ${title || ''}
+Listing title:
+${title || ''}
 
-Only the wall art/canvas/frame is the product.
+The listing images may be lifestyle mockups. Room furniture and decor are NEVER product truth.
 
-The surrounding room, furniture, plants, pots, vases, books, shelves, tables and decor are NOT product truth.
+For each candidate, locate the visible rectangular ARTWORK/CANVAS IMAGE SURFACE itself.
+- Exclude wall, frame shadow, console, table, sofa, plant, vase, books, shelves and room decor.
+- If the candidate is a flat/direct artwork image, the box may cover almost the full image.
+- Prefer the clearest, most complete, least-obstructed artwork surface.
+- Select one primary crop and optionally one secondary crop only when it adds genuine product detail.
+- Reject a crop if the artwork is too tiny, severely angled, blocked, or uncertain.
 
-Prefer close, straight, complete, high-resolution artwork views over lifestyle room mockups.
-
-Choose one primary and at most one useful secondary.
-
-Candidate images follow, indexed from 0.`
+Return normalized coordinates from 0 to 1.`
     }
   ];
 
   for (
     let i = 0;
-    i < candidates.length;
-    i++
+    i <
+    candidates.length;
+    i +=
+      1
   ) {
-    const c = candidates[i];
-
-    const jpeg =
-      await normalizeJpeg(
-        c.buffer,
-        1200,
-        88
-      );
+    const candidate =
+      candidates[i];
 
     content.push({
-      type: 'input_text',
+      type:
+        'input_text',
+
       text:
-        `Candidate ${i}: rank ${c.rank}, image ${c.imageId}`
+        `Candidate ${i}: Etsy rank ${candidate.rank}, image ID ${candidate.imageId}`
     });
 
     content.push({
-      type: 'input_image',
+      type:
+        'input_image',
+
       image_url:
-        `data:image/jpeg;base64,${jpeg.toString('base64')}`,
-      detail: 'high'
+        `data:image/jpeg;base64,${candidate.buffer.toString('base64')}`,
+
+      detail:
+        'high'
     });
   }
 
   const schema = {
-    type: 'object',
-    additionalProperties: false,
+    type:
+      'object',
+
+    additionalProperties:
+      false,
+
     required: [
       'primary_index',
+      'primary_x',
+      'primary_y',
+      'primary_width',
+      'primary_height',
+      'primary_direct_artwork',
+      'primary_confidence',
       'use_secondary',
       'secondary_index',
-      'confidence',
+      'secondary_x',
+      'secondary_y',
+      'secondary_width',
+      'secondary_height',
+      'secondary_direct_artwork',
+      'secondary_confidence',
       'reason'
     ],
+
     properties: {
       primary_index: {
-        type: 'integer'
+        type:
+          'integer'
       },
+
+      primary_x: {
+        type:
+          'number',
+        minimum:
+          0,
+        maximum:
+          1
+      },
+
+      primary_y: {
+        type:
+          'number',
+        minimum:
+          0,
+        maximum:
+          1
+      },
+
+      primary_width: {
+        type:
+          'number',
+        minimum:
+          0,
+        maximum:
+          1
+      },
+
+      primary_height: {
+        type:
+          'number',
+        minimum:
+          0,
+        maximum:
+          1
+      },
+
+      primary_direct_artwork: {
+        type:
+          'boolean'
+      },
+
+      primary_confidence: {
+        type:
+          'number',
+        minimum:
+          0,
+        maximum:
+          1
+      },
+
       use_secondary: {
-        type: 'boolean'
+        type:
+          'boolean'
       },
+
       secondary_index: {
-        type: 'integer'
+        type:
+          'integer'
       },
-      confidence: {
-        type: 'number',
-        minimum: 0,
-        maximum: 1
+
+      secondary_x: {
+        type:
+          'number',
+        minimum:
+          0,
+        maximum:
+          1
       },
+
+      secondary_y: {
+        type:
+          'number',
+        minimum:
+          0,
+        maximum:
+          1
+      },
+
+      secondary_width: {
+        type:
+          'number',
+        minimum:
+          0,
+        maximum:
+          1
+      },
+
+      secondary_height: {
+        type:
+          'number',
+        minimum:
+          0,
+        maximum:
+          1
+      },
+
+      secondary_direct_artwork: {
+        type:
+          'boolean'
+      },
+
+      secondary_confidence: {
+        type:
+          'number',
+        minimum:
+          0,
+        maximum:
+          1
+      },
+
       reason: {
-        type: 'string'
+        type:
+          'string'
       }
     }
   };
 
-  try {
-    const r =
-      await openai()
-        .responses
-        .create({
-          model: QA_MODEL,
-          store: false,
-          input: [
-            {
-              role: 'user',
-              content
-            }
-          ],
-          text: {
-            format: {
-              type: 'json_schema',
-              name: 'reference_selector_v31',
-              strict: true,
-              schema
-            }
-          }
-        });
-
-    const p =
-      JSON.parse(
-        r.output_text ||
-        '{}'
-      );
-
-    const a =
-      Number(
-        p.primary_index
-      );
-
-    const b =
-      Number(
-        p.secondary_index
-      );
-
-    if (
-      Number.isInteger(a) &&
-      a >= 0 &&
-      a < candidates.length
-    ) {
-      const out = [
-        candidates[a]
-      ];
-
-      if (
-        p.use_secondary === true &&
-        Number.isInteger(b) &&
-        b >= 0 &&
-        b < candidates.length &&
-        b !== a
-      ) {
-        out.push(
-          candidates[b]
-        );
-      }
-
-      return out.slice(0, 2);
-    }
-  } catch (e) {
-    console.warn(
-      'Reference selector fallback:',
-      e.message
-    );
-  }
-
-  return [...candidates]
-    .sort(
-      (a, b) =>
-        b.heuristicScore -
-        a.heuristicScore
-    )
-    .slice(0, 2);
-}
-
-async function selectReferences(
-  title,
-  imageSet
-) {
-  const raw =
-    imageSet.images
-      .filter(
-        x =>
-          Number(x.rank) !== 1 &&
-          getImageUrl(x)
-      )
-      .slice(0, 6);
-
-  const source =
-    raw.length
-      ? raw
-      : [imageSet.rank1];
-
-  const candidates = [];
-
-  for (const image of source) {
-    try {
-      const buffer =
-        await downloadImage(
-          getImageUrl(image)
-        );
-
-      const analysis =
-        await analyzeImage(
-          buffer
-        );
-
-      const rank =
-        Number(
-          image.rank || 99
-        );
-
-      candidates.push({
-        image,
-        imageId:
-          getImageId(image),
-        rank,
-        buffer,
-        analysis,
-        heuristicScore:
-          heuristicReferenceScore(
-            analysis,
-            rank
-          )
-      });
-    } catch (e) {
-      console.warn(
-        'Reference candidate failed:',
-        getImageId(image),
-        e.message
-      );
-    }
-  }
-
-  if (!candidates.length) {
-    throw new Error(
-      'Could not obtain a usable reference image'
-    );
-  }
-
-  return selectReferencesWithVision(
-    title,
-    candidates
-  );
-}
-
-async function isolateArtworkReference(
-  title,
-  buffer,
-  index
-) {
-  const image =
-    await normalizeJpeg(
-      buffer,
-      1600,
-      94
-    );
-
-  const schema = {
-    type: 'object',
-    additionalProperties: false,
-    required: [
-      'found',
-      'confidence',
-      'x',
-      'y',
-      'width',
-      'height',
-      'reason'
-    ],
-    properties: {
-      found: {
-        type: 'boolean'
-      },
-      confidence: {
-        type: 'number',
-        minimum: 0,
-        maximum: 1
-      },
-      x: {
-        type: 'number',
-        minimum: 0,
-        maximum: 1
-      },
-      y: {
-        type: 'number',
-        minimum: 0,
-        maximum: 1
-      },
-      width: {
-        type: 'number',
-        minimum: 0,
-        maximum: 1
-      },
-      height: {
-        type: 'number',
-        minimum: 0,
-        maximum: 1
-      },
-      reason: {
-        type: 'string'
-      }
-    }
-  };
+  let parsed;
 
   try {
-    const r =
+    const response =
       await openai()
         .responses
         .create({
           model:
             COMPLIANCE_MODEL,
-          store: false,
+
+          store:
+            false,
+
           input: [
             {
-              role: 'user',
-              content: [
-                {
-                  type: 'input_text',
-                  text:
-                    `Locate ONLY the physical wall-art product.
+              role:
+                'user',
 
-Listing: ${title || ''}.
-Reference ${index}.
-
-Return a normalized bounding box around the complete artwork/canvas/frame.
-
-Exclude the entire surrounding room and every furniture/decor object.
-
-Include a visible frame only if it belongs to the product.
-
-If not reliable set found=false.
-
-Do not guess.`
-                },
-                {
-                  type: 'input_image',
-                  image_url:
-                    `data:image/jpeg;base64,${image.toString('base64')}`,
-                  detail: 'high'
-                }
-              ]
+              content
             }
           ],
+
           text: {
             format: {
-              type: 'json_schema',
-              name: 'artwork_bbox_v31',
-              strict: true,
+              type:
+                'json_schema',
+
+              name:
+                'vaelons_artwork_isolation_v1',
+
+              strict:
+                true,
+
               schema
             }
           }
         });
 
-    const p =
+    parsed =
       JSON.parse(
-        r.output_text ||
+        response.output_text ||
         '{}'
       );
 
-    if (
-      p.found !== true ||
-      Number(
-        p.confidence || 0
-      ) < 0.72
-    ) {
-      return {
-        ok: false,
-        reason:
-          p.reason ||
-          'bbox_not_confident',
-        confidence:
-          Number(
-            p.confidence || 0
-          )
-      };
-    }
+  } catch (
+    error
+  ) {
+    console.warn(
+      'Artwork reference isolation failed:',
+      error.message
+    );
 
-    const meta =
-      await sharp(image)
-        .metadata();
+    throw new Error(
+      `ARTWORK_REFERENCE_ISOLATION_FAILED: ${error.message}`
+    );
+  }
 
-    const W =
-      Number(
-        meta.width || 0
-      );
+  const specs = [
+    {
+      index:
+        Number(
+          parsed.primary_index
+        ),
 
-    const H =
-      Number(
-        meta.height || 0
-      );
+      box: {
+        x:
+          parsed.primary_x,
 
-    const x =
-      clamp(p.x, 0, 1);
+        y:
+          parsed.primary_y,
 
-    const y =
-      clamp(p.y, 0, 1);
+        width:
+          parsed.primary_width,
 
-    const w =
-      clamp(
-        p.width,
-        0,
-        1
-      );
+        height:
+          parsed.primary_height
+      },
 
-    const h =
-      clamp(
-        p.height,
-        0,
-        1
-      );
+      directArtwork:
+        parsed.primary_direct_artwork ===
+        true,
 
-    if (
-      !W ||
-      !H ||
-      w < 0.12 ||
-      h < 0.12 ||
-      w * h < 0.025 ||
-      x + w > 1.02 ||
-      y + h > 1.02
-    ) {
-      return {
-        ok: false,
-        reason:
-          'bbox_invalid',
-        confidence:
-          Number(
-            p.confidence || 0
-          )
-      };
-    }
-
-    const mx = w * 0.012;
-    const my = h * 0.012;
-
-    const l =
-      clamp(
-        x - mx,
-        0,
-        1
-      );
-
-    const t =
-      clamp(
-        y - my,
-        0,
-        1
-      );
-
-    const rgt =
-      clamp(
-        x + w + mx,
-        0,
-        1
-      );
-
-    const bot =
-      clamp(
-        y + h + my,
-        0,
-        1
-      );
-
-    const left =
-      Math.floor(
-        l * W
-      );
-
-    const top =
-      Math.floor(
-        t * H
-      );
-
-    const width =
-      Math.max(
-        1,
-        Math.min(
-          W - left,
-          Math.ceil(
-            (rgt - l) * W
-          )
-        )
-      );
-
-    const height =
-      Math.max(
-        1,
-        Math.min(
-          H - top,
-          Math.ceil(
-            (bot - t) * H
-          )
-        )
-      );
-
-    const cropped =
-      await sharp(image)
-        .extract({
-          left,
-          top,
-          width,
-          height
-        })
-        .jpeg({
-          quality: 95,
-          chromaSubsampling:
-            '4:4:4'
-        })
-        .toBuffer();
-
-    return {
-      ok: true,
-      buffer: cropped,
       confidence:
         Number(
-          p.confidence || 0
+          parsed.primary_confidence ||
+          0
+        )
+    }
+  ];
+
+  if (
+    parsed.use_secondary ===
+      true
+  ) {
+    specs.push({
+      index:
+        Number(
+          parsed.secondary_index
         ),
-      bbox: {
-        x,
-        y,
-        width: w,
-        height: h
+
+      box: {
+        x:
+          parsed.secondary_x,
+
+        y:
+          parsed.secondary_y,
+
+        width:
+          parsed.secondary_width,
+
+        height:
+          parsed.secondary_height
       },
-      reason:
-        p.reason ||
-        'isolated'
-    };
-  } catch (e) {
-    return {
-      ok: false,
-      reason:
-        `isolation_failed: ${e.message}`,
-      confidence: 0
-    };
+
+      directArtwork:
+        parsed.secondary_direct_artwork ===
+        true,
+
+      confidence:
+        Number(
+          parsed.secondary_confidence ||
+          0
+        )
+    });
   }
+
+  const selected =
+    [];
+
+  const usedIndices =
+    new Set();
+
+  for (
+    const spec of
+    specs
+  ) {
+    if (
+      !Number.isInteger(
+        spec.index
+      ) ||
+      spec.index <
+        0 ||
+      spec.index >=
+        candidates.length ||
+      usedIndices.has(
+        spec.index
+      )
+    ) {
+      continue;
+    }
+
+    const safeBox =
+      sanitizeNormalizedBox(
+        spec.box
+      );
+
+    const area =
+      safeBox
+        ? safeBox.width *
+          safeBox.height
+        : 0;
+
+    if (
+      !safeBox ||
+      area <
+        0.08 ||
+      spec.confidence <
+        0.72
+    ) {
+      continue;
+    }
+
+    const candidate =
+      candidates[
+        spec.index
+      ];
+
+    const cropped =
+      await cropNormalizedBox(
+        candidate.buffer,
+        safeBox,
+        {
+          maxSize:
+            1800,
+
+          quality:
+            96
+        }
+      );
+
+    selected.push({
+      image:
+        candidate.image,
+
+      imageId:
+        candidate.imageId,
+
+      rank:
+        candidate.rank,
+
+      buffer:
+        cropped,
+
+      isolation: {
+        box:
+          safeBox,
+
+        direct_artwork:
+          spec.directArtwork,
+
+        confidence:
+          spec.confidence,
+
+        selector_reason:
+          parsed.reason ||
+          null
+      }
+    });
+
+    usedIndices.add(
+      spec.index
+    );
+  }
+
+  if (
+    !selected.length
+  ) {
+    throw new Error(
+      'ARTWORK_REFERENCE_ISOLATION_FAILED: no high-confidence artwork crop'
+    );
+  }
+
+  return selected.slice(
+    0,
+    2
+  );
 }
 
-async function isolateArtworkReferences(
-  title,
-  references
-) {
-  const checked =
-    await Promise.all(
-      references.map(
-        async (ref, i) => ({
-          ref,
-          iso:
-            await isolateArtworkReference(
-              title,
-              ref.buffer,
-              i
-            )
-        })
-      )
-    );
 
-  return checked
-    .filter(
-      x => x.iso.ok
-    )
-    .map(
-      x => ({
-        ...x.ref,
-        originalBuffer:
-          x.ref.buffer,
-        buffer:
-          x.iso.buffer,
-        isolation: {
-          isolated: true,
-          confidence:
-            x.iso.confidence,
-          bbox:
-            x.iso.bbox,
-          reason:
-            x.iso.reason
-        }
-      })
-    );
+/* =========================================================
+   ARTWORK-AWARE SCENE PLANNER
+========================================================= */
+
+function sceneHistoryKey() {
+  return `${PREFIX}:scene-history`;
 }
 
 function stableNumber(value) {
-  return Number.parseInt(
+  const hex =
     createHash('sha256')
-      .update(
-        String(
-          value || ''
-        )
-      )
+      .update(String(value || ''))
       .digest('hex')
-      .slice(0, 8),
-    16
-  ) || 0;
+      .slice(0, 8);
+
+  return Number.parseInt(hex, 16) || 0;
 }
 
 async function getRecentSceneHistory(
-  limit =
-    RECENT_SCENE_HISTORY_LIMIT
+  limit = RECENT_SCENE_HISTORY_LIMIT
 ) {
   const rows =
     await redis().lrange(
       sceneHistoryKey(),
       0,
-      Math.max(
-        0,
-        limit - 1
-      )
+      Math.max(0, limit - 1)
     );
 
   return (rows || [])
-    .map(row => {
+    .map((row) => {
       if (
         row &&
-        typeof row ===
-          'object'
+        typeof row === 'object'
       ) {
         return row;
       }
 
       try {
-        return JSON.parse(
-          String(row)
-        );
+        return JSON.parse(String(row));
       } catch {
         return null;
       }
@@ -1128,25 +2129,59 @@ async function addSceneHistory(item) {
   );
 }
 
-async function loadRecentGeneratedComparisons(
-  limit =
-    RECENT_QA_COMPARISON_LIMIT
-) {
+async function loadRecentGeneratedComparisons({
+  listingId,
+  limit = RECENT_QA_COMPARISON_LIMIT
+} = {}) {
   const history =
     await getRecentSceneHistory(
       Math.max(
-        limit * 4,
-        limit
+        limit * 6,
+        18
       )
     );
 
-  const out = [];
-  const seen =
-    new Set();
+  const targetListingId =
+    listingId
+      ? String(
+          listingId
+        )
+      : null;
 
-  for (const item of history) {
+  const orderedHistory = [
+    ...(
+      targetListingId
+        ? history.filter(
+            (item) =>
+              String(
+                item?.listing_id ||
+                ''
+              ) ===
+              targetListingId
+          )
+        : []
+    ),
+
+    ...history.filter(
+      (item) =>
+        !targetListingId ||
+        String(
+          item?.listing_id ||
+          ''
+        ) !==
+        targetListingId
+    )
+  ];
+
+  const result = [];
+  const usedTokens = new Set();
+
+  for (
+    const item of
+    orderedHistory
+  ) {
     if (
-      out.length >= limit
+      result.length >= limit
     ) {
       break;
     }
@@ -1159,96 +2194,131 @@ async function loadRecentGeneratedComparisons(
 
     if (
       !token ||
-      seen.has(token)
+      usedTokens.has(token)
     ) {
       continue;
     }
 
-    const b64 =
+    const base64 =
       await redis().get(
-        previewImageKey(
-          token
-        )
+        previewImageKey(token)
       );
 
-    if (!b64) {
+    if (!base64) {
       continue;
     }
 
-    out.push({
-      scene_family:
-        item.scene_family ||
-        null,
-      signature:
-        item.signature ||
-        item.decor_signature ||
-        null,
-      buffer:
-        Buffer.from(
-          String(b64),
-          'base64'
-        )
-    });
+    try {
+      result.push({
+        listing_id:
+          item?.listing_id ||
+          null,
 
-    seen.add(token);
+        scene_family:
+          item?.scene_family ||
+          null,
+
+        decor_signature:
+          item?.decor_signature ||
+          null,
+
+        observed_architecture:
+          item?.observed_architecture ||
+          null,
+
+        layout_signature:
+          item?.layout_signature ||
+          null,
+
+        buffer:
+          Buffer.from(
+            String(base64),
+            'base64'
+          )
+      });
+
+      usedTokens.add(token);
+    } catch {
+      // Ignore stale/corrupt comparison entries.
+    }
   }
 
-  return out;
+  return result;
 }
 
-async function analyzeArtworkContext(
+async function analyzeArtworkContext({
   title,
   references
-) {
-  const imgs =
+}) {
+  const referenceImages =
     await Promise.all(
       references.map(
-        x =>
+        (ref) =>
           normalizeJpeg(
-            x.buffer,
+            ref.buffer,
             1200,
             90
           )
       )
     );
 
-  const ids =
+  const allowedSceneIds =
     SCENE_FAMILIES.map(
-      x => x.id
+      (item) => item.id
     );
 
   const schema = {
-    type: 'object',
-    additionalProperties: false,
+    type:
+      'object',
+
+    additionalProperties:
+      false,
+
     required: [
-      'subject',
-      'style',
-      'mood',
+      'artwork_subject',
+      'artwork_style',
+      'visual_mood',
       'palette',
       'orientation',
       'recommended_scene_families',
       'must_preserve',
+      'avoid_environment_elements',
       'confidence'
     ],
+
     properties: {
-      subject: {
-        type: 'string'
+      artwork_subject: {
+        type:
+          'string'
       },
-      style: {
-        type: 'string'
+
+      artwork_style: {
+        type:
+          'string'
       },
-      mood: {
-        type: 'string'
+
+      visual_mood: {
+        type:
+          'string'
       },
+
       palette: {
-        type: 'array',
+        type:
+          'array',
+
         items: {
-          type: 'string'
+          type:
+            'string'
         },
-        maxItems: 8
+
+        maxItems:
+          8
       },
+
       orientation: {
-        type: 'string',
+        type:
+          'string',
+
         enum: [
           'portrait',
           'landscape',
@@ -1256,126 +2326,201 @@ async function analyzeArtworkContext(
           'unknown'
         ]
       },
+
       recommended_scene_families: {
-        type: 'array',
+        type:
+          'array',
+
         items: {
-          type: 'string',
-          enum: ids
+          type:
+            'string',
+
+          enum:
+            allowedSceneIds
         },
-        minItems: 3,
-        maxItems: 6
+
+        minItems:
+          3,
+
+        maxItems:
+          6
       },
+
       must_preserve: {
-        type: 'array',
+        type:
+          'array',
+
         items: {
-          type: 'string'
+          type:
+            'string'
         },
-        maxItems: 10
+
+        maxItems:
+          10
       },
+
+      avoid_environment_elements: {
+        type:
+          'array',
+
+        items: {
+          type:
+            'string'
+        },
+
+        maxItems:
+          10
+      },
+
       confidence: {
-        type: 'number',
-        minimum: 0,
-        maximum: 1
+        type:
+          'number',
+
+        minimum:
+          0,
+
+        maximum:
+          1
       }
     }
   };
 
   const content = [
     {
-      type: 'input_text',
+      type:
+        'input_text',
+
       text:
-        `Analyze the isolated wall-art product, not any room.
+        `You are planning a premium Etsy wall-art hero scene.
 
-Listing: ${title || ''}.
+Listing title:
+${title || ''}
 
-Describe subject/style/mood/palette/orientation, list must-preserve details, and recommend 3-6 fitting scene families.
+The supplied images are isolated artwork/product crops. Analyze the ACTUAL ARTWORK/PRODUCT only; surrounding room staging has already been removed.
 
-Different artworks should not default to the same room.
+Your job is to describe the artwork and recommend several scene families that fit it without changing the artwork.
 
-Prefer neutral daylight.
+Important:
+- Different artworks should produce different presentation choices.
+- Scene recommendations must support a ZERO-DECOR environment: no plant, planter, pot, vase, urn, books, console, styled shelving or tabletop accessories outside the artwork.
+- Prefer bright neutral daylight presentation.
+- A warm/sunset artwork may remain warm INSIDE the artwork, but the generated room/environment should stay neutral rather than yellow/amber.
+- Preserve subject identity, composition, orientation, visible signatures/text that belong to the artwork, and color identity.
 
-Available families:
-${SCENE_FAMILIES.map(
-  x =>
-    `${x.id}: ${x.description}`
-).join('\n')}`
+Available scene family IDs:
+${SCENE_FAMILIES.map((item) => `${item.id}: ${item.description}`).join('\n')}`
     },
-    ...imgs.map(
-      img => ({
-        type: 'input_image',
+
+    ...referenceImages.map(
+      (image) => ({
+        type:
+          'input_image',
+
         image_url:
-          `data:image/jpeg;base64,${img.toString('base64')}`,
-        detail: 'high'
+          `data:image/jpeg;base64,${image.toString('base64')}`,
+
+        detail:
+          'high'
       })
     )
   ];
 
   try {
-    const r =
+    const response =
       await openai()
         .responses
         .create({
-          model: QA_MODEL,
-          store: false,
+          model:
+            QA_MODEL,
+
+          store:
+            false,
+
           input: [
             {
-              role: 'user',
+              role:
+                'user',
+
               content
             }
           ],
+
           text: {
             format: {
-              type: 'json_schema',
+              type:
+                'json_schema',
+
               name:
-                'artwork_context_v31',
-              strict: true,
+                'vaelons_artwork_context',
+
+              strict:
+                true,
+
               schema
             }
           }
         });
 
-    const p =
+    const parsed =
       JSON.parse(
-        r.output_text ||
+        response.output_text ||
         '{}'
       );
 
-    p.recommended_scene_families =
-      (
-        p.recommended_scene_families ||
-        []
-      ).filter(
-        id =>
-          ids.includes(id)
-      );
-
-    if (
-      !p.recommended_scene_families
-        .length
-    ) {
-      p.recommended_scene_families =
-        ids;
-    }
-
-    return p;
-  } catch (e) {
     return {
-      subject:
+      ...parsed,
+
+      recommended_scene_families:
+        Array.isArray(
+          parsed?.recommended_scene_families
+        )
+          ? parsed.recommended_scene_families.filter(
+              (id) =>
+                allowedSceneIds.includes(id)
+            )
+          : allowedSceneIds.slice(0, 5)
+    };
+
+  } catch (
+    error
+  ) {
+    console.warn(
+      'Artwork context fallback:',
+      error.message
+    );
+
+    return {
+      artwork_subject:
         title ||
         'wall art',
-      style: 'unknown',
-      mood: 'unknown',
-      palette: [],
+
+      artwork_style:
+        'unknown',
+
+      visual_mood:
+        'unknown',
+
+      palette:
+        [],
+
       orientation:
         'unknown',
+
       recommended_scene_families:
-        ids,
-      must_preserve: [
-        'exact artwork identity',
-        'subject and composition',
-        'orientation and color identity'
-      ],
-      confidence: 0
+        allowedSceneIds,
+
+      must_preserve:
+        [
+          'exact artwork identity',
+          'subject and composition',
+          'orientation and color identity'
+        ],
+
+      avoid_environment_elements:
+        [],
+
+      confidence:
+        0
     };
   }
 }
@@ -1383,288 +2528,366 @@ ${SCENE_FAMILIES.map(
 function chooseScenePlan({
   listingId,
   title,
-  context,
-  recent,
-  excluded = []
+  artworkContext,
+  recentHistory,
+  extraExcluded = []
 }) {
-  const all =
+  const allIds =
     SCENE_FAMILIES.map(
-      x => x.id
+      (item) => item.id
     );
 
   const preferred =
-    [
-      ...new Set([
+    Array.from(
+      new Set([
         ...(
-          context
-            ?.recommended_scene_families ||
-          []
+          Array.isArray(
+            artworkContext
+              ?.recommended_scene_families
+          )
+            ? artworkContext
+                .recommended_scene_families
+            : []
         ),
-        ...all
+        ...allIds
       ])
-    ].filter(
-      x =>
-        all.includes(x)
+    ).filter(
+      (id) =>
+        allIds.includes(id)
     );
 
-  const recentIds =
-    (recent || [])
-      .map(
-        x =>
+  const targetListingId =
+    String(
+      listingId ||
+      ''
+    );
+
+  const sameListingIds =
+    (recentHistory || [])
+      .filter(
+        (item) =>
           String(
-            x.scene_family ||
+            item?.listing_id ||
+            ''
+          ) ===
+          targetListingId
+      )
+      .map(
+        (item) =>
+          String(
+            item?.scene_family ||
             ''
           )
       )
       .filter(Boolean);
 
-  const banned =
+  const recentIds =
+    (recentHistory || [])
+      .map(
+        (item) =>
+          String(
+            item?.scene_family ||
+            ''
+          )
+      )
+      .filter(Boolean);
+
+  const excluded =
     new Set([
-      ...recentIds.slice(
-        0,
-        5
-      ),
-      ...excluded
+      ...sameListingIds.slice(0, 3),
+      ...recentIds.slice(0, 5),
+      ...extraExcluded.map(String)
     ]);
 
   let choices =
     preferred.filter(
-      x =>
-        !banned.has(x)
+      (id) =>
+        !excluded.has(id)
     );
 
   if (!choices.length) {
     const counts =
       new Map(
-        all.map(
-          x => [
-            x,
-            0
-          ]
+        allIds.map(
+          (id) => [id, 0]
         )
       );
 
-    recentIds.forEach(
-      x =>
-        counts.set(
-          x,
-          (
-            counts.get(x) ||
-            0
-          ) + 1
-        )
+    for (
+      const id of
+      recentIds
+    ) {
+      counts.set(
+        id,
+        (counts.get(id) || 0) + 1
+      );
+    }
+
+    choices = [
+      ...preferred
+    ].sort(
+      (a, b) =>
+        (counts.get(a) || 0) -
+        (counts.get(b) || 0)
+    ).filter(
+      (id) =>
+        !extraExcluded.includes(id)
     );
-
-    const min =
-      Math.min(
-        ...preferred.map(
-          x =>
-            counts.get(x) ||
-            0
-        )
-      );
-
-    choices =
-      preferred.filter(
-        x =>
-          (
-            counts.get(x) ||
-            0
-          ) === min &&
-          !excluded.includes(x)
-      );
   }
 
   if (!choices.length) {
-    choices = preferred;
+    choices =
+      preferred;
   }
 
-  const id =
+  const seed =
+    stableNumber(
+      `${listingId}:${title}:${Date.now()}:${extraExcluded.join(',')}`
+    );
+
+  const sceneId =
     choices[
-      stableNumber(
-        `${listingId}:${title}:${Date.now()}`
-      ) %
+      seed %
       choices.length
     ];
 
-  const f =
+  const family =
     SCENE_FAMILIES.find(
-      x => x.id === id
+      (item) =>
+        item.id === sceneId
     ) ||
     SCENE_FAMILIES[0];
 
-  return {
-    scene_family: f.id,
-    scene_label: f.label,
-    scene_description:
-      f.description,
-    signature:
-      f.signature,
-    allowed:
-      f.allowed,
-    rule:
-      f.rule,
-    recent_scene_families:
-      recentIds.slice(
-        0,
-        8
-      ),
-    recent_signatures: [
-      ...new Set(
-        (recent || [])
-          .slice(0, 8)
+  const recentDecor =
+    Array.from(
+      new Set(
+        (recentHistory || [])
+          .slice(0, 12)
           .map(
-            x =>
-              x.signature ||
-              x.decor_signature
+            (item) =>
+              item?.layout_signature ||
+              item?.decor_signature
           )
           .filter(Boolean)
       )
-    ],
+    );
+
+  return {
+    scene_family:
+      family.id,
+
+    scene_label:
+      family.label,
+
+    scene_description:
+      family.description,
+
+    architecture:
+      family.architecture,
+
+    camera:
+      family.camera,
+
+    foreground_policy:
+      family.foreground_policy,
+
+    decor_signature:
+      family.decor_signature,
+
+    family_forbidden:
+      family.forbidden,
+
+    recent_scene_families:
+      recentIds.slice(0, 10),
+
+    same_listing_scene_families:
+      sameListingIds.slice(0, 6),
+
+    recent_decor_signatures:
+      recentDecor,
+
     artwork_subject:
-      context?.subject ||
+      artworkContext
+        ?.artwork_subject ||
       title ||
       'wall art',
+
     artwork_style:
-      context?.style ||
+      artworkContext
+        ?.artwork_style ||
       'unknown',
-    mood:
-      context?.mood ||
+
+    visual_mood:
+      artworkContext
+        ?.visual_mood ||
       'unknown',
+
     palette:
-      context?.palette ||
+      artworkContext
+        ?.palette ||
       [],
+
     must_preserve:
-      context?.must_preserve ||
+      artworkContext
+        ?.must_preserve ||
+      [],
+
+    avoid_environment_elements:
+      artworkContext
+        ?.avoid_environment_elements ||
       []
   };
 }
 
+
+/* =========================================================
+   GENERATION PROMPT
+========================================================= */
+
 function buildGenerationPrompt({
   title,
   reason,
-  plan
+  scenePlan
 }) {
   return `
-Create a premium Etsy FIRST-IMAGE hero thumbnail for the exact WALL-ART PRODUCT in the supplied isolated reference image(s).
+Create a premium Etsy FIRST-IMAGE hero thumbnail around the exact isolated artwork/product shown in the supplied reference crop or crops.
 
-LISTING:
-${title || ''}
+LISTING TITLE:
+${title || 'Unknown'}
 
-REASON:
+WHY A NEW THUMBNAIL IS NEEDED:
 ${reason}
 
-CRITICAL PRODUCT-TRUTH RULE:
-The reference input has been cropped to the artwork/canvas/frame.
+ARTWORK-AWARE SCENE PLAN — FOLLOW IT LITERALLY:
+- Scene family: ${scenePlan?.scene_label || scenePlan?.scene_family || 'museum minimal'}
+- Direction: ${scenePlan?.scene_description || ''}
+- Architecture: ${scenePlan?.architecture || ''}
+- Camera: ${scenePlan?.camera || ''}
+- Foreground policy: ${scenePlan?.foreground_policy || ''}
+- Artwork subject: ${scenePlan?.artwork_subject || ''}
+- Artwork style: ${scenePlan?.artwork_style || ''}
+- Visual mood: ${scenePlan?.visual_mood || ''}
+- Artwork palette: ${JSON.stringify(scenePlan?.palette || [])}
+- Preserve especially: ${JSON.stringify(scenePlan?.must_preserve || [])}
+- Avoid for this artwork/environment: ${JSON.stringify(scenePlan?.avoid_environment_elements || [])}
 
-Preserve that exact product identity, subject, composition, orientation, color identity, visible product text/signature and frame geometry.
+ZERO-TOLERANCE STAGING RULES — OUTSIDE THE ARTWORK:
+- NO potted plant, indoor tree, planter, flower pot or plant cluster.
+- NO vase, urn, ceramic vessel, decorative bottle or branch arrangement.
+- NO books, stacked books, magazines, catalogues or coffee-table books.
+- NO console, credenza, sideboard, cabinet or floating console beneath the artwork.
+- NO styled shelving or shelf decor.
+- NO tabletop styling or decorative object cluster: no bowl, tray, candle, sculpture, vase, books or accessories on any table/bench/surface.
+- Do not recreate the familiar beige-room + console + vase/branches + books formula in any form.
+- Family-specific prohibition: ${scenePlan?.family_forbidden || ''}
 
-Do not redesign, repaint, substitute, simplify, add or remove artwork content.
+ANTI-REPETITION MEMORY:
+- Same-listing scene families already used: ${JSON.stringify(scenePlan?.same_listing_scene_families || [])}
+- Recent scene families already used: ${JSON.stringify(scenePlan?.recent_scene_families || [])}
+- Recent observed layout signatures: ${JSON.stringify(scenePlan?.recent_decor_signatures || [])}
+- The new architecture, camera, wall geometry and foreground silhouette must be visibly different from recent previews.
+- Do not imitate a generic stock wall-art mockup.
 
-NEW SCENE PLAN:
-Family: ${plan.scene_label}
-Direction: ${plan.scene_description}
-Allowed elements ONLY: ${JSON.stringify(plan.allowed)}
-Layout rule: ${plan.rule}
-Artwork subject/style/mood: ${plan.artwork_subject} / ${plan.artwork_style} / ${plan.mood}
-Palette: ${JSON.stringify(plan.palette)}
-Must preserve: ${JSON.stringify(plan.must_preserve)}
-
-ZERO-TOLERANCE FORBIDDEN STAGING:
-${HARD_FORBIDDEN.map(
-  x => `- NO ${x}`
-).join('\n')}
-
-- NO wall-art-over-console composition.
-- NO object directly below the artwork unless explicitly listed in allowed elements.
-- NO substitute prop that recreates the old plant/vase/books/console mockup.
-- If a forbidden prop would appear, leave empty architectural space instead.
-
-ANTI-REPEAT:
-Recent scene families: ${JSON.stringify(plan.recent_scene_families)}
-Recent signatures: ${JSON.stringify(plan.recent_signatures)}
-Current signature: ${plan.signature}
-
-Do not reuse the same furniture layout, camera framing, wall/floor relationship or decorative rhythm.
+PRODUCT TRUTH — NON-NEGOTIABLE:
+- The supplied image references are isolated crops of the actual artwork/product.
+- Reproduce that exact artwork identity inside the new presentation.
+- Preserve subject, important composition, important elements, orientation/aspect ratio, visible artwork text/signature and color identity.
+- Do not redesign, repaint, reinterpret, simplify, add, remove, crop away, stretch, warp or invent artwork/product content.
+- Do not substitute a similar artwork or different product.
+- Do not create new text, badges, labels, logos, signatures or watermarks.
+- If the artwork itself naturally contains plants, vases, books, text or warm colors, preserve them INSIDE the artwork. The zero-tolerance rules apply only to the generated environment OUTSIDE the artwork.
 
 PRESENTATION:
-Artwork must be large and dominant, about 50-75% of useful composition where practical.
-
-It must remain front-readable on mobile.
-
-Use bright neutral daylight and realistic shadows.
-
-Use neutral white, cream, pale stone, soft beige or soft grey room tones.
-
-Warm colors may remain inside the artwork, but the surrounding room must not have an amber/yellow/orange cast.
-
-No HDR, haze, dark cinematic exposure, clutter, fake glow or aggressive grading.
-
-Square Etsy-ready composition.
+- Artwork/product must be LARGE and visually dominant: target roughly 50–72% of the hero area when practical.
+- Keep the complete product understandable on a mobile Etsy thumbnail.
+- Use bright neutral daylight and premium realistic materials with clean tonal separation.
+- Environment color must stay neutral white, cream, pale stone, soft beige or soft grey without yellow/orange/amber room cast.
+- Warmth that belongs to the artwork stays inside the artwork.
+- Avoid dark cinematic rooms, tungsten lighting, heavy HDR, haze, clipped highlights, excessive saturation and clutter.
+- Use a square Etsy-ready composition with safe margins.
+- The result must look intentionally designed for THIS artwork and visibly unlike previous VAELONS room templates.
 
 Return only the finished image.
 `.trim();
 }
 
+
+/* =========================================================
+   OPENAI IMAGE GENERATION
+========================================================= */
+
 async function generateThumbnail({
   title,
   references,
   reason,
-  plan,
+  scenePlan,
   retryNote = ''
 }) {
-  const files =
+  const imageFiles =
     await Promise.all(
       references.map(
-        async (ref, i) =>
-          toFile(
+        async (
+          ref,
+          index
+        ) => {
+          const jpeg =
             await normalizeJpeg(
               ref.buffer,
               1600,
               95
-            ),
-            `artwork-${i + 1}.jpg`,
+            );
+
+          return toFile(
+            jpeg,
+            `reference-${index + 1}.jpg`,
             {
               type:
                 'image/jpeg'
             }
-          )
+          );
+        }
       )
     );
 
   const prompt =
-    buildGenerationPrompt({
+    `${buildGenerationPrompt({
       title,
       reason,
-      plan
-    }) +
-    (
+      scenePlan
+    })}${
       retryNote
         ? `
 
-PREVIOUS ATTEMPT FAILED:
+QUALITY-CHECK FEEDBACK FROM THE PREVIOUS ATTEMPT:
 ${retryNote}
 
-Use the NEW scene family and correct every failure.
-
-Never reintroduce a forbidden prop.`
+This is a regeneration. Correct every cited issue. If the previous result looked generic or repeated a recent room, the new result MUST visibly use the newly supplied scene plan. Preserve the exact product identity.`
         : ''
-    );
+    }`;
 
-  const r =
+  const response =
     await openai()
       .images
       .edit({
-        model: IMAGE_MODEL,
-        image: files,
+        model:
+          IMAGE_MODEL,
+
+        image:
+          imageFiles,
+
         prompt,
-        size: IMAGE_SIZE,
+
+        size:
+          IMAGE_SIZE,
+
         quality:
           IMAGE_QUALITY
       });
 
   const b64 =
-    r?.data?.[0]
+    response
+      ?.data
+      ?.[0]
       ?.b64_json;
 
   if (!b64) {
@@ -1683,460 +2906,1288 @@ Never reintroduce a forbidden prop.`
   );
 }
 
-async function strictStagingCheck(
-  buffer,
-  plan
-) {
-  const image =
-    await normalizeJpeg(
-      buffer,
-      1200,
-      92
-    );
 
-  const bools = [
-    'potted_plant_or_planter',
-    'vase_or_vessel',
-    'flowers_or_branches',
-    'books_or_magazines',
-    'console_sideboard_credenza',
-    'styled_shelf_or_tabletop',
-    'generic_console_mockup',
-    'artwork_too_small',
-    'artwork_obscured_or_distorted',
-    'warm_amber_room_cast',
-    'scene_family_mismatch'
-  ];
+/* =========================================================
+   HARD STAGING + ARTWORK IDENTITY QUALITY GATES
+========================================================= */
 
-  const schema = {
-    type: 'object',
-    additionalProperties: false,
-    required: [
-      ...bools,
-      'confidence',
-      'reason'
-    ],
-    properties:
-      Object.fromEntries([
-        ...bools.map(
-          x => [
-            x,
-            {
-              type:
-                'boolean'
-            }
-          ]
-        ),
-        [
-          'confidence',
-          {
-            type: 'number',
-            minimum: 0,
-            maximum: 1
-          }
-        ],
-        [
-          'reason',
-          {
-            type:
-              'string'
-          }
-        ]
-      ])
-  };
-
-  try {
-    const r =
-      await openai()
-        .responses
-        .create({
-          model:
-            COMPLIANCE_MODEL,
-          store: false,
-          input: [
-            {
-              role: 'user',
-              content: [
-                {
-                  type: 'input_text',
-                  text:
-                    `ZERO-TOLERANCE visual compliance gate.
-
-Chosen family:
-${plan.scene_label}
-
-Allowed elements:
-${JSON.stringify(plan.allowed)}
-
-Rule:
-${plan.rule}
-
-Set a forbidden field TRUE if visibly present.
-
-If uncertain, choose TRUE.
-
-Reject any:
-- potted plant / planter / pot
-- vase / vessel
-- flowers / branches
-- books / magazines
-- console / sideboard / credenza
-- styled shelf / tabletop
-- generic wall-art-over-console scene
-- artwork too small
-- artwork obscured or distorted
-- amber/yellow room cast
-- scene-family mismatch
-
-Warm colors inside the artwork do not count as room cast.
-
-Do not excuse a forbidden object because the image looks attractive.`
-                },
-                {
-                  type: 'input_image',
-                  image_url:
-                    `data:image/jpeg;base64,${image.toString('base64')}`,
-                  detail: 'high'
-                }
-              ]
-            }
-          ],
-          text: {
-            format: {
-              type: 'json_schema',
-              name:
-                'strict_staging_gate_v31',
-              strict: true,
-              schema
-            }
-          }
-        });
-
-    const p =
-      JSON.parse(
-        r.output_text ||
-        '{}'
-      );
-
-    const forbidden =
-      bools.filter(
-        k =>
-          p[k] === true
-      );
-
-    return {
-      ...p,
-      forbidden,
-      passed:
-        forbidden.length === 0 &&
-        Number(
-          p.confidence || 0
-        ) >= 0.82
-    };
-  } catch (e) {
-    return {
-      passed: false,
-      forbidden: [
-        'compliance_check_failed'
-      ],
-      confidence: 0,
-      reason:
-        `Compliance check failed: ${e.message}`
-    };
-  }
-}
-
-async function qualityCheck({
-  title,
-  references,
+async function inspectStagingCompliance({
   generatedBuffer,
-  plan,
-  recentGenerated,
-  hardGate
+  scenePlan,
+  recentGenerated = []
 }) {
-  const refs =
-    await Promise.all(
-      references.map(
-        x =>
-          normalizeJpeg(
-            x.buffer,
-            1200,
-            90
-          )
-      )
-    );
-
-  const gen =
+  const generated =
     await normalizeJpeg(
       generatedBuffer,
-      1200,
-      90
+      1300,
+      92
     );
 
   const comparisons =
     await Promise.all(
-      (recentGenerated || [])
+      recentGenerated
+        .slice(
+          0,
+          5
+        )
         .map(
-          async x => ({
-            ...x,
+          async (
+            item
+          ) => ({
+            ...item,
+
             normalized:
               await normalizeJpeg(
-                x.buffer,
-                900,
-                82
+                item.buffer,
+                850,
+                80
               )
           })
         )
     );
 
-  const analysis =
-    await analyzeImage(gen);
-
-  const technical =
-    analysis.brightness >= 82 &&
-    analysis.shadow_percent <= 50 &&
-    analysis.highlight_percent <= 18 &&
-    analysis.contrast >= 24;
-
-  const keys = [
-    'pass',
-    'same_product',
-    'same_artwork_identity',
-    'important_elements_preserved',
-    'color_identity_preserved',
-    'invented_product_content',
-    'thumbnail_readable',
-    'artwork_dominant',
-    'scene_fit',
-    'generic_mockup',
-    'repeated_scene',
-    'excessive_decor',
-    'warm_room_cast',
-    'invented_text_or_logo'
-  ];
-
   const schema = {
-    type: 'object',
-    additionalProperties: false,
+    type:
+      'object',
+
+    additionalProperties:
+      false,
+
     required: [
-      ...keys,
+      'pass',
+      'artwork_dominant',
+      'planned_scene_match',
+      'potted_plant',
+      'loose_plant_or_indoor_tree',
+      'vase_urn_planter',
+      'decorative_branches',
+      'books_or_magazines',
+      'console_sideboard_credenza',
+      'styled_shelving',
+      'tabletop_decor',
+      'decor_cluster',
+      'extra_wall_art',
+      'generic_mockup',
+      'repeated_layout',
+      'repeated_decor_formula',
+      'warm_room_cast',
+      'artwork_bbox_x',
+      'artwork_bbox_y',
+      'artwork_bbox_width',
+      'artwork_bbox_height',
+      'artwork_bbox_confidence',
+      'observed_architecture',
+      'layout_signature',
       'confidence',
       'reason'
     ],
-    properties:
-      Object.fromEntries([
-        ...keys.map(
-          x => [
-            x,
-            {
-              type:
-                'boolean'
-            }
-          ]
-        ),
-        [
-          'confidence',
-          {
-            type: 'number',
-            minimum: 0,
-            maximum: 1
-          }
-        ],
-        [
-          'reason',
-          {
-            type:
-              'string'
-          }
-        ]
-      ])
+
+    properties: {
+      pass: {
+        type:
+          'boolean'
+      },
+
+      artwork_dominant: {
+        type:
+          'boolean'
+      },
+
+      planned_scene_match: {
+        type:
+          'boolean'
+      },
+
+      potted_plant: {
+        type:
+          'boolean'
+      },
+
+      loose_plant_or_indoor_tree: {
+        type:
+          'boolean'
+      },
+
+      vase_urn_planter: {
+        type:
+          'boolean'
+      },
+
+      decorative_branches: {
+        type:
+          'boolean'
+      },
+
+      books_or_magazines: {
+        type:
+          'boolean'
+      },
+
+      console_sideboard_credenza: {
+        type:
+          'boolean'
+      },
+
+      styled_shelving: {
+        type:
+          'boolean'
+      },
+
+      tabletop_decor: {
+        type:
+          'boolean'
+      },
+
+      decor_cluster: {
+        type:
+          'boolean'
+      },
+
+      extra_wall_art: {
+        type:
+          'boolean'
+      },
+
+      generic_mockup: {
+        type:
+          'boolean'
+      },
+
+      repeated_layout: {
+        type:
+          'boolean'
+      },
+
+      repeated_decor_formula: {
+        type:
+          'boolean'
+      },
+
+      warm_room_cast: {
+        type:
+          'boolean'
+      },
+
+      artwork_bbox_x: {
+        type:
+          'number',
+        minimum:
+          0,
+        maximum:
+          1
+      },
+
+      artwork_bbox_y: {
+        type:
+          'number',
+        minimum:
+          0,
+        maximum:
+          1
+      },
+
+      artwork_bbox_width: {
+        type:
+          'number',
+        minimum:
+          0,
+        maximum:
+          1
+      },
+
+      artwork_bbox_height: {
+        type:
+          'number',
+        minimum:
+          0,
+        maximum:
+          1
+      },
+
+      artwork_bbox_confidence: {
+        type:
+          'number',
+        minimum:
+          0,
+        maximum:
+          1
+      },
+
+      observed_architecture: {
+        type:
+          'string'
+      },
+
+      layout_signature: {
+        type:
+          'string'
+      },
+
+      confidence: {
+        type:
+          'number',
+        minimum:
+          0,
+        maximum:
+          1
+      },
+
+      reason: {
+        type:
+          'string'
+      }
+    }
   };
 
   const content = [
     {
-      type: 'input_text',
+      type:
+        'input_text',
+
       text:
-        `Final independent QA for Etsy wall art.
+        `You are a ZERO-TOLERANCE staging compliance inspector for an Etsy wall-art hero.
 
-Listing:
-${title || ''}
+Inspect ONLY the generated ENVIRONMENT OUTSIDE the artwork when judging forbidden decor.
+If the artwork image itself depicts plants, vases, books, text or warm colors, IGNORE those internal artwork elements.
 
-Chosen scene:
-${plan.scene_label}
+Planned scene:
+${JSON.stringify({
+  scene_family:
+    scenePlan?.scene_family,
+  scene_description:
+    scenePlan?.scene_description,
+  architecture:
+    scenePlan?.architecture,
+  camera:
+    scenePlan?.camera,
+  foreground_policy:
+    scenePlan?.foreground_policy
+})}
 
-Product-truth images first are isolated artwork/canvas/frame.
+Hard fail if ANY of these appear outside the artwork:
+- any potted plant, indoor tree, planter or flower pot
+- any vase, urn or decorative vessel
+- any decorative branch arrangement
+- any book, book stack, magazine or coffee-table book
+- any console, sideboard or credenza beneath/near the artwork
+- any styled shelf or shelf decor
+- any tabletop/bench/surface decor such as bowls, trays, candles, sculptures, books, vases or accessory clusters
+- extra wall art competing with the product
+- the familiar generic wall-art mockup formula or a substantially repeated recent layout
+- yellow/orange/amber room lighting or color cast
 
-Recent generated heroes, if present, are only for staging repetition comparison.
+Also locate the actual displayed artwork surface in the FINAL candidate and return a normalized bounding box from 0 to 1.
+The box should cover the artwork image/canvas face, not the surrounding wall or furniture.
 
-Final candidate is last.
-
-PASS only if:
-- exact artwork identity is preserved
-- content, colors and composition are faithful
-- no invented product content
-- no invented text/logo/watermark
-- artwork is large and mobile-readable
-- scene fits the selected family
-- result is not generic
-- architecture/furniture/camera/layout does not substantially repeat recent generated heroes
-- decor is minimal
-- room light is neutral
-
-Be conservative.
-
-The hard staging gate is separate and cannot be overridden.`
-    },
-    {
-      type: 'input_text',
-      text:
-        'ISOLATED PRODUCT TRUTH:'
-    },
-    ...refs.map(
-      x => ({
-        type: 'input_image',
-        image_url:
-          `data:image/jpeg;base64,${x.toString('base64')}`,
-        detail: 'high'
-      })
-    )
+PASS only if the candidate matches the planned architecture, the artwork is dominant, none of the hard-fail elements exist, the environment is neutral, and confidence is high.`
+    }
   ];
 
-  if (comparisons.length) {
+  if (
+    comparisons.length
+  ) {
     content.push({
-      type: 'input_text',
+      type:
+        'input_text',
+
       text:
-        'RECENT GENERATED HEROES — compare staging/layout only:'
+        'RECENT GENERATED HEROES — use only to detect repeated staging/layout:'
     });
 
     for (
-      const x of comparisons
+      const item of
+      comparisons
     ) {
       content.push({
-        type: 'input_text',
+        type:
+          'input_text',
+
         text:
-          `Recent family ${x.scene_family || 'unknown'}, signature ${x.signature || 'unknown'}`
+          `Recent listing ${item.listing_id || 'unknown'}; scene ${item.scene_family || 'unknown'}; layout ${item.layout_signature || item.decor_signature || 'unknown'}`
       });
 
       content.push({
-        type: 'input_image',
+        type:
+          'input_image',
+
         image_url:
-          `data:image/jpeg;base64,${x.normalized.toString('base64')}`,
-        detail: 'low'
+          `data:image/jpeg;base64,${item.normalized.toString('base64')}`,
+
+        detail:
+          'low'
       });
     }
   }
 
   content.push({
-    type: 'input_text',
+    type:
+      'input_text',
+
     text:
-      'FINAL CANDIDATE:'
+      'FINAL GENERATED CANDIDATE:'
   });
 
   content.push({
-    type: 'input_image',
+    type:
+      'input_image',
+
     image_url:
-      `data:image/jpeg;base64,${gen.toString('base64')}`,
-    detail: 'high'
+      `data:image/jpeg;base64,${generated.toString('base64')}`,
+
+    detail:
+      'high'
   });
 
-  let p;
+  let result;
 
   try {
-    const r =
+    const response =
       await openai()
         .responses
         .create({
-          model: QA_MODEL,
-          store: false,
+          model:
+            COMPLIANCE_MODEL,
+
+          store:
+            false,
+
           input: [
             {
-              role: 'user',
+              role:
+                'user',
+
               content
             }
           ],
+
           text: {
             format: {
-              type: 'json_schema',
+              type:
+                'json_schema',
+
               name:
-                'thumbnail_qc_v31',
-              strict: true,
+                'vaelons_staging_gate_v2',
+
+              strict:
+                true,
+
               schema
             }
           }
         });
 
-    p =
+    result =
       JSON.parse(
-        r.output_text ||
+        response.output_text ||
         '{}'
       );
-  } catch (e) {
-    p = {
-      pass: false,
-      same_product: false,
-      same_artwork_identity: false,
-      important_elements_preserved: false,
-      color_identity_preserved: false,
-      invented_product_content: true,
-      thumbnail_readable: false,
-      artwork_dominant: false,
-      scene_fit: false,
-      generic_mockup: true,
-      repeated_scene: false,
-      excessive_decor: true,
-      warm_room_cast: true,
-      invented_text_or_logo: true,
-      confidence: 0,
-      reason:
-        `QA failed: ${e.message}`
+
+  } catch (
+    error
+  ) {
+    return {
+      passed:
+        false,
+
+      semantic: {
+        pass:
+          false,
+
+        confidence:
+          0,
+
+        reason:
+          `Staging compliance request failed: ${error.message}`
+      },
+
+      artwork_box:
+        null
     };
   }
 
-  const semantic =
-    p.pass === true &&
-    p.same_product === true &&
-    p.same_artwork_identity === true &&
-    p.important_elements_preserved === true &&
-    p.color_identity_preserved === true &&
-    p.invented_product_content === false &&
-    p.thumbnail_readable === true &&
-    p.artwork_dominant === true &&
-    p.scene_fit === true &&
-    p.generic_mockup === false &&
-    p.repeated_scene === false &&
-    p.excessive_decor === false &&
-    p.warm_room_cast === false &&
-    p.invented_text_or_logo === false &&
+  const artworkBox =
+    sanitizeNormalizedBox({
+      x:
+        result.artwork_bbox_x,
+
+      y:
+        result.artwork_bbox_y,
+
+      width:
+        result.artwork_bbox_width,
+
+      height:
+        result.artwork_bbox_height
+    });
+
+  const artworkArea =
+    artworkBox
+      ? artworkBox.width *
+        artworkBox.height
+      : 0;
+
+  const forbiddenDetected =
+    result.potted_plant ===
+      true ||
+    result.loose_plant_or_indoor_tree ===
+      true ||
+    result.vase_urn_planter ===
+      true ||
+    result.decorative_branches ===
+      true ||
+    result.books_or_magazines ===
+      true ||
+    result.console_sideboard_credenza ===
+      true ||
+    result.styled_shelving ===
+      true ||
+    result.tabletop_decor ===
+      true ||
+    result.decor_cluster ===
+      true ||
+    result.extra_wall_art ===
+      true;
+
+  const passed =
+    result.pass ===
+      true &&
+    result.artwork_dominant ===
+      true &&
+    result.planned_scene_match ===
+      true &&
+    forbiddenDetected ===
+      false &&
+    result.generic_mockup ===
+      false &&
+    result.repeated_layout ===
+      false &&
+    result.repeated_decor_formula ===
+      false &&
+    result.warm_room_cast ===
+      false &&
     Number(
-      p.confidence || 0
-    ) >= 0.82;
+      result.confidence ||
+      0
+    ) >=
+      0.88 &&
+    Number(
+      result.artwork_bbox_confidence ||
+      0
+    ) >=
+      0.82 &&
+    artworkArea >=
+      0.18;
+
+  return {
+    passed,
+
+    forbidden_detected:
+      forbiddenDetected,
+
+    artwork_box:
+      artworkBox,
+
+    artwork_area:
+      artworkArea,
+
+    semantic:
+      result
+  };
+}
+
+async function auditForbiddenEnvironment({
+  generatedBuffer,
+  artworkBox
+}) {
+  if (!artworkBox) {
+    return {
+      passed:
+        false,
+
+      forbidden_detected:
+        true,
+
+      semantic: {
+        confidence:
+          0,
+
+        reason:
+          'Artwork box unavailable; environment audit fails closed.'
+      }
+    };
+  }
+
+  let environmentOnly;
+
+  try {
+    environmentOnly =
+      await maskNormalizedBox(
+        generatedBuffer,
+        artworkBox,
+        {
+          maxSize:
+            1300,
+
+          quality:
+            92
+        }
+      );
+  } catch (
+    error
+  ) {
+    return {
+      passed:
+        false,
+
+      forbidden_detected:
+        true,
+
+      semantic: {
+        confidence:
+          0,
+
+        reason:
+          `Environment mask failed: ${error.message}`
+      }
+    };
+  }
+
+  const schema = {
+    type:
+      'object',
+
+    additionalProperties:
+      false,
+
+    required: [
+      'potted_plant_or_planter',
+      'loose_indoor_plant_or_tree',
+      'vase_urn_or_decorative_vessel',
+      'decorative_branches_or_flowers',
+      'books_or_magazines',
+      'console_sideboard_or_credenza',
+      'styled_shelving_or_shelf_decor',
+      'tabletop_or_surface_decor',
+      'decor_cluster',
+      'extra_wall_art',
+      'confidence',
+      'reason'
+    ],
+
+    properties: {
+      potted_plant_or_planter: {
+        type:
+          'boolean'
+      },
+
+      loose_indoor_plant_or_tree: {
+        type:
+          'boolean'
+      },
+
+      vase_urn_or_decorative_vessel: {
+        type:
+          'boolean'
+      },
+
+      decorative_branches_or_flowers: {
+        type:
+          'boolean'
+      },
+
+      books_or_magazines: {
+        type:
+          'boolean'
+      },
+
+      console_sideboard_or_credenza: {
+        type:
+          'boolean'
+      },
+
+      styled_shelving_or_shelf_decor: {
+        type:
+          'boolean'
+      },
+
+      tabletop_or_surface_decor: {
+        type:
+          'boolean'
+      },
+
+      decor_cluster: {
+        type:
+          'boolean'
+      },
+
+      extra_wall_art: {
+        type:
+          'boolean'
+      },
+
+      confidence: {
+        type:
+          'number',
+        minimum:
+          0,
+        maximum:
+          1
+      },
+
+      reason: {
+        type:
+          'string'
+      }
+    }
+  };
+
+  let result;
+
+  try {
+    const response =
+      await openai()
+        .responses
+        .create({
+          model:
+            COMPLIANCE_MODEL,
+
+          store:
+            false,
+
+          input: [
+            {
+              role:
+                'user',
+
+              content: [
+                {
+                  type:
+                    'input_text',
+
+                  text:
+                    `You are the final forbidden-environment audit for an Etsy wall-art thumbnail.
+
+The product artwork area has already been covered by a flat gray rectangle. Inspect ONLY the visible room/environment around that gray rectangle.
+
+Mark the corresponding boolean TRUE if ANY of these appear anywhere in the remaining environment:
+- potted plant, planter, flower pot, indoor tree, loose decorative plant
+- vase, urn, decorative vessel, flower/branch arrangement
+- books, book stack, coffee-table book, magazine
+- console, credenza, sideboard or cabinet used beneath/near the artwork
+- styled shelf or shelf decor
+- tabletop, bench, plinth or surface decor such as bowls, trays, candles, sculptures, books, vases or accessory clusters
+- extra wall art
+
+Normal architectural structure, an empty bench, a sofa, bed, chair, bare pedestal/plinth, window, doorway or stairs are allowed when they contain NO banned decor.
+
+Do not infer what was hidden by the gray rectangle. Judge only visible environment. Be conservative: if an object is reasonably identifiable as a banned category, mark it true.`
+                },
+
+                {
+                  type:
+                    'input_image',
+
+                  image_url:
+                    `data:image/jpeg;base64,${environmentOnly.toString('base64')}`,
+
+                  detail:
+                    'high'
+                }
+              ]
+            }
+          ],
+
+          text: {
+            format: {
+              type:
+                'json_schema',
+
+              name:
+                'vaelons_forbidden_environment_audit_v1',
+
+              strict:
+                true,
+
+              schema
+            }
+          }
+        });
+
+    result =
+      JSON.parse(
+        response.output_text ||
+        '{}'
+      );
+
+  } catch (
+    error
+  ) {
+    return {
+      passed:
+        false,
+
+      forbidden_detected:
+        true,
+
+      semantic: {
+        confidence:
+          0,
+
+        reason:
+          `Forbidden environment audit failed: ${error.message}`
+      }
+    };
+  }
+
+  const forbiddenDetected =
+    result.potted_plant_or_planter ===
+      true ||
+    result.loose_indoor_plant_or_tree ===
+      true ||
+    result.vase_urn_or_decorative_vessel ===
+      true ||
+    result.decorative_branches_or_flowers ===
+      true ||
+    result.books_or_magazines ===
+      true ||
+    result.console_sideboard_or_credenza ===
+      true ||
+    result.styled_shelving_or_shelf_decor ===
+      true ||
+    result.tabletop_or_surface_decor ===
+      true ||
+    result.decor_cluster ===
+      true ||
+    result.extra_wall_art ===
+      true;
 
   return {
     passed:
-      hardGate?.passed === true &&
-      technical &&
-      semantic,
-    hard_gate_passed:
-      hardGate?.passed === true,
-    hard_gate:
-      hardGate,
-    technical_passed:
-      technical,
-    semantic_passed:
-      semantic,
-    generated_analysis:
-      analysis,
-    scene_plan: {
-      scene_family:
-        plan.scene_family,
-      scene_label:
-        plan.scene_label,
-      signature:
-        plan.signature
-    },
-    semantic: p
+      forbiddenDetected ===
+        false &&
+      Number(
+        result.confidence ||
+        0
+      ) >=
+        0.9,
+
+    forbidden_detected:
+      forbiddenDetected,
+
+    semantic:
+      result
   };
 }
+
+
+async function artworkIdentityCheck({
+  title,
+  referenceBuffers,
+  candidateArtworkBuffer,
+  artworkContext
+}) {
+  const references =
+    await Promise.all(
+      referenceBuffers.map(
+        (buffer) =>
+          normalizeJpeg(
+            buffer,
+            1200,
+            94
+          )
+      )
+    );
+
+  const candidate =
+    await normalizeJpeg(
+      candidateArtworkBuffer,
+      1200,
+      94
+    );
+
+  const schema = {
+    type:
+      'object',
+
+    additionalProperties:
+      false,
+
+    required: [
+      'pass',
+      'same_artwork_identity',
+      'subject_preserved',
+      'composition_preserved',
+      'important_elements_preserved',
+      'color_identity_preserved',
+      'text_signature_preserved',
+      'invented_artwork_content',
+      'removed_artwork_content',
+      'crop_or_warp_problem',
+      'candidate_artwork_readable',
+      'confidence',
+      'reason'
+    ],
+
+    properties: {
+      pass: {
+        type:
+          'boolean'
+      },
+
+      same_artwork_identity: {
+        type:
+          'boolean'
+      },
+
+      subject_preserved: {
+        type:
+          'boolean'
+      },
+
+      composition_preserved: {
+        type:
+          'boolean'
+      },
+
+      important_elements_preserved: {
+        type:
+          'boolean'
+      },
+
+      color_identity_preserved: {
+        type:
+          'boolean'
+      },
+
+      text_signature_preserved: {
+        type:
+          'boolean'
+      },
+
+      invented_artwork_content: {
+        type:
+          'boolean'
+      },
+
+      removed_artwork_content: {
+        type:
+          'boolean'
+      },
+
+      crop_or_warp_problem: {
+        type:
+          'boolean'
+      },
+
+      candidate_artwork_readable: {
+        type:
+          'boolean'
+      },
+
+      confidence: {
+        type:
+          'number',
+        minimum:
+          0,
+        maximum:
+          1
+      },
+
+      reason: {
+        type:
+          'string'
+      }
+    }
+  };
+
+  const content = [
+    {
+      type:
+        'input_text',
+
+      text:
+        `You are the artwork-identity gate for a premium Etsy thumbnail.
+
+Listing title:
+${title || ''}
+
+Known artwork context:
+${JSON.stringify({
+  subject:
+    artworkContext?.artwork_subject,
+  style:
+    artworkContext?.artwork_style,
+  palette:
+    artworkContext?.palette,
+  must_preserve:
+    artworkContext?.must_preserve
+})}
+
+The first images are isolated PRODUCT-TRUTH artwork crops.
+The final image is an isolated crop of the artwork as it appears in the generated hero.
+
+Compare ARTWORK TO ARTWORK only.
+PASS only when it is unmistakably the same artwork/product:
+- same subject and visual identity
+- same important composition and elements
+- same orientation/proportions without harmful crop, stretch or warp
+- faithful color identity; do not reward recoloring
+- no invented or removed artwork content
+- artwork text/signature that belongs to the product is preserved rather than invented or replaced
+- if the PRODUCT-TRUTH artwork contains no text/signature at all, set text_signature_preserved=true; do not invent a missing-text problem
+- candidate artwork is readable enough for a mobile Etsy thumbnail
+
+Be strict. Similar subject matter is NOT enough.`
+    },
+
+    {
+      type:
+        'input_text',
+
+      text:
+        'PRODUCT-TRUTH ARTWORK CROPS:'
+    },
+
+    ...references.map(
+      (reference) => ({
+        type:
+          'input_image',
+
+        image_url:
+          `data:image/jpeg;base64,${reference.toString('base64')}`,
+
+        detail:
+          'high'
+      })
+    ),
+
+    {
+      type:
+        'input_text',
+
+      text:
+        'CANDIDATE ARTWORK CROP:'
+    },
+
+    {
+      type:
+        'input_image',
+
+      image_url:
+        `data:image/jpeg;base64,${candidate.toString('base64')}`,
+
+      detail:
+        'high'
+    }
+  ];
+
+  let result;
+
+  try {
+    const response =
+      await openai()
+        .responses
+        .create({
+          model:
+            QA_MODEL,
+
+          store:
+            false,
+
+          input: [
+            {
+              role:
+                'user',
+
+              content
+            }
+          ],
+
+          text: {
+            format: {
+              type:
+                'json_schema',
+
+              name:
+                'vaelons_artwork_identity_v2',
+
+              strict:
+                true,
+
+              schema
+            }
+          }
+        });
+
+    result =
+      JSON.parse(
+        response.output_text ||
+        '{}'
+      );
+
+  } catch (
+    error
+  ) {
+    result = {
+      pass:
+        false,
+
+      same_artwork_identity:
+        false,
+
+      subject_preserved:
+        false,
+
+      composition_preserved:
+        false,
+
+      important_elements_preserved:
+        false,
+
+      color_identity_preserved:
+        false,
+
+      text_signature_preserved:
+        false,
+
+      invented_artwork_content:
+        true,
+
+      removed_artwork_content:
+        true,
+
+      crop_or_warp_problem:
+        true,
+
+      candidate_artwork_readable:
+        false,
+
+      confidence:
+        0,
+
+      reason:
+        `Artwork identity request failed: ${error.message}`
+    };
+  }
+
+  const passed =
+    result.pass ===
+      true &&
+    result.same_artwork_identity ===
+      true &&
+    result.subject_preserved ===
+      true &&
+    result.composition_preserved ===
+      true &&
+    result.important_elements_preserved ===
+      true &&
+    result.color_identity_preserved ===
+      true &&
+    result.text_signature_preserved ===
+      true &&
+    result.invented_artwork_content ===
+      false &&
+    result.removed_artwork_content ===
+      false &&
+    result.crop_or_warp_problem ===
+      false &&
+    result.candidate_artwork_readable ===
+      true &&
+    Number(
+      result.confidence ||
+      0
+    ) >=
+      0.9;
+
+  return {
+    passed,
+
+    semantic:
+      result
+  };
+}
+
+async function qualityCheck({
+  title,
+  referenceBuffers,
+  generatedBuffer,
+  scenePlan,
+  artworkContext,
+  recentGenerated = []
+}) {
+  const generatedAnalysis =
+    await analyzeImage(
+      generatedBuffer
+    );
+
+  const technicalPass =
+    generatedAnalysis
+      .brightness >=
+      82 &&
+    generatedAnalysis
+      .shadow_percent <=
+      50 &&
+    generatedAnalysis
+      .highlight_percent <=
+      18 &&
+    generatedAnalysis
+      .contrast >=
+      24;
+
+  const staging =
+    await inspectStagingCompliance({
+      generatedBuffer,
+      scenePlan,
+      recentGenerated
+    });
+
+  const environmentAudit =
+    await auditForbiddenEnvironment({
+      generatedBuffer,
+      artworkBox:
+        staging.artwork_box
+    });
+
+  let candidateArtworkBuffer =
+    generatedBuffer;
+
+  if (
+    staging.artwork_box
+  ) {
+    try {
+      candidateArtworkBuffer =
+        await cropNormalizedBox(
+          generatedBuffer,
+          staging.artwork_box,
+          {
+            maxSize:
+              1600,
+
+            quality:
+              96
+          }
+        );
+    } catch (
+      error
+    ) {
+      console.warn(
+        'Candidate artwork crop failed:',
+        error.message
+      );
+    }
+  }
+
+  const identity =
+    await artworkIdentityCheck({
+      title,
+      referenceBuffers,
+      candidateArtworkBuffer,
+      artworkContext
+    });
+
+  return {
+    passed:
+      technicalPass &&
+      staging.passed &&
+      environmentAudit.passed &&
+      identity.passed,
+
+    technical_passed:
+      technicalPass,
+
+    staging_passed:
+      staging.passed,
+
+    environment_audit_passed:
+      environmentAudit.passed,
+
+    identity_passed:
+      identity.passed,
+
+    generated_analysis:
+      generatedAnalysis,
+
+    scene_plan: {
+      scene_family:
+        scenePlan?.scene_family ||
+        null,
+
+      scene_label:
+        scenePlan?.scene_label ||
+        null,
+
+      decor_signature:
+        scenePlan?.decor_signature ||
+        null,
+
+      architecture:
+        scenePlan?.architecture ||
+        null,
+
+      camera:
+        scenePlan?.camera ||
+        null
+    },
+
+    staging,
+
+    environment_audit:
+      environmentAudit,
+
+    identity,
+
+    semantic: {
+      pass:
+        staging.passed &&
+        environmentAudit.passed &&
+        identity.passed,
+
+      confidence:
+        Math.min(
+          Number(
+            staging
+              ?.semantic
+              ?.confidence ||
+            0
+          ),
+          Number(
+            environmentAudit
+              ?.semantic
+              ?.confidence ||
+            0
+          ),
+          Number(
+            identity
+              ?.semantic
+              ?.confidence ||
+            0
+          )
+        ),
+
+      reason:
+        [
+          staging
+            ?.semantic
+            ?.reason,
+          environmentAudit
+            ?.semantic
+            ?.reason,
+          identity
+            ?.semantic
+            ?.reason
+        ]
+          .filter(Boolean)
+          .join(
+            ' | '
+          )
+    }
+  };
+}
+
+
+/* =========================================================
+   PREVIEW STORAGE
+========================================================= */
 
 async function savePreview({
   listingId,
@@ -2147,14 +4198,14 @@ async function savePreview({
   qc,
   reason,
   artworkContext,
-  scenePlan,
-  referenceIsolation
+  scenePlan
 }) {
   const token =
-    randomBytes(24)
-      .toString(
-        'base64url'
-      );
+    randomBytes(
+      24
+    ).toString(
+      'base64url'
+    );
 
   const compact =
     await normalizeJpeg(
@@ -2165,38 +4216,58 @@ async function savePreview({
 
   const meta = {
     token,
-    generatorVersion:
-      WORKER_VERSION,
+
     listingId:
-      String(listingId),
+      String(
+        listingId
+      ),
+
     title:
-      title || null,
+      title ||
+      null,
+
     sourceImageId:
-      String(sourceImageId),
+      String(
+        sourceImageId
+      ),
+
     referenceImageIds:
       referenceImageIds.map(
         String
       ),
-    artworkContext,
-    scenePlan,
-    referenceIsolation,
+
+    artworkContext:
+      artworkContext ||
+      null,
+
+    scenePlan:
+      scenePlan ||
+      null,
+
     qc,
+
     reason,
+
     createdAt:
       Date.now()
   };
 
   await Promise.all([
     setJson(
-      previewKey(token),
+      previewKey(
+        token
+      ),
       meta,
       {
         ex:
           PREVIEW_TTL_SECONDS
       }
     ),
+
     redis().set(
-      previewImageKey(token),
+      previewImageKey(
+        token
+      ),
       compact.toString(
         'base64'
       ),
@@ -2210,97 +4281,165 @@ async function savePreview({
   await addSceneHistory({
     preview_token:
       token,
+
     listing_id:
-      String(listingId),
+      String(
+        listingId
+      ),
+
     scene_family:
-      scenePlan.scene_family,
-    signature:
-      scenePlan.signature,
+      scenePlan
+        ?.scene_family ||
+      null,
+
+    decor_signature:
+      scenePlan
+        ?.decor_signature ||
+      null,
+
+    observed_architecture:
+      qc
+        ?.staging
+        ?.semantic
+        ?.observed_architecture ||
+      null,
+
+    layout_signature:
+      qc
+        ?.staging
+        ?.semantic
+        ?.layout_signature ||
+      scenePlan
+        ?.decor_signature ||
+      null,
+
     artwork_subject:
-      scenePlan.artwork_subject
+      scenePlan
+        ?.artwork_subject ||
+      null
   });
 
   return {
     ...meta,
+
     previewUrl:
       `${publicBase()}/preview/worker/${token}`
   };
 }
 
-async function loadPreview(token) {
+async function loadPreview(
+  token
+) {
   const meta =
     await getJson(
-      previewKey(token)
+      previewKey(
+        token
+      )
     );
 
-  const b64 =
+  const base64 =
     await redis().get(
-      previewImageKey(token)
+      previewImageKey(
+        token
+      )
     );
 
   if (
     !meta ||
-    !b64
+    !base64
   ) {
-    const e =
+    const err =
       new Error(
         'Preview not found or expired'
       );
-    e.status = 404;
-    throw e;
+
+    err.status =
+      404;
+
+    throw err;
   }
 
   return {
     ...meta,
+
     generatedBuffer:
       Buffer.from(
-        String(b64),
+        String(
+          base64
+        ),
         'base64'
       )
   };
 }
+
+
+/* =========================================================
+   SAFE OLD IMAGE DELETE
+========================================================= */
 
 async function deleteOldRank1IfSafe({
   listingId,
   oldImageId,
   replacementImageId
 }) {
-  const set =
+  const imageSet =
     await getImageSet(
       listingId
     );
 
-  const rank1 =
-    set.images.find(
-      x =>
-        Number(x.rank) === 1
+  const currentRank1 =
+    imageSet.images.find(
+      (
+        img
+      ) =>
+        Number(
+          img.rank
+        ) ===
+        1
     ) ||
-    set.images[0];
+    imageSet.images[0];
 
   if (
     String(
-      getImageId(rank1)
+      getImageId(
+        currentRank1
+      )
     ) !==
-    String(replacementImageId)
+    String(
+      replacementImageId
+    )
   ) {
     return {
-      deleted: false,
+      deleted:
+        false,
+
       reason:
         'replacement_is_not_rank1'
     };
   }
 
-  if (
-    !set.images.some(
-      x =>
+  const oldImage =
+    imageSet.images.find(
+      (
+        img
+      ) =>
         String(
-          getImageId(x)
+          getImageId(
+            img
+          )
         ) ===
-        String(oldImageId)
-    )
+        String(
+          oldImageId
+        )
+    );
+
+  if (
+    !oldImage
   ) {
     return {
-      deleted: false,
+      deleted:
+        false,
+
       reason:
         'old_image_already_absent'
     };
@@ -2313,41 +4452,96 @@ async function deleteOldRank1IfSafe({
       await etsyRequest(
         `/shops/${await getShopId()}/listings/${listingId}/variation-images`
       );
-  } catch (e) {
+
+  } catch (
+    error
+  ) {
     return {
-      deleted: false,
+      deleted:
+        false,
+
       reason:
         'variation_safety_check_failed',
+
       detail:
-        e.message
+        error.message
     };
   }
 
-  if (
+  const usedByVariation =
     (
-      variationData?.results ||
+      variationData
+        ?.results ||
       []
     ).some(
-      x =>
+      (
+        item
+      ) =>
         String(
-          x?.image_id
+          item
+            ?.image_id
         ) ===
-        String(oldImageId)
-    )
+        String(
+          oldImageId
+        )
+    );
+
+  if (
+    usedByVariation
   ) {
     return {
-      deleted: false,
+      deleted:
+        false,
+
       reason:
         'old_image_used_by_variation'
     };
   }
 
-  await etsyRequest(
-    `/shops/${await getShopId()}/listings/${listingId}/images/${oldImageId}`,
-    {
-      method: 'DELETE'
+  try {
+    await etsyRequest(
+      `/shops/${await getShopId()}/listings/${listingId}/images/${oldImageId}`,
+      {
+        method:
+          'DELETE'
+      }
+    );
+
+  } catch (
+    error
+  ) {
+    const probe =
+      await getImageSet(
+        listingId
+      ).catch(
+        () =>
+          null
+      );
+
+    const stillThere =
+      probe
+        ?.images
+        ?.some(
+          (
+            img
+          ) =>
+            String(
+              getImageId(
+                img
+              )
+            ) ===
+            String(
+              oldImageId
+            )
+        );
+
+    if (
+      !probe ||
+      stillThere
+    ) {
+      throw error;
     }
-  );
+  }
 
   const after =
     await getImageSet(
@@ -2356,27 +4550,36 @@ async function deleteOldRank1IfSafe({
 
   const afterRank1 =
     after.images.find(
-      x =>
-        Number(x.rank) === 1
+      (
+        img
+      ) =>
+        Number(
+          img.rank
+        ) ===
+        1
     ) ||
     after.images[0];
 
   return {
     deleted:
-      !after.images.some(
-        x =>
-          String(
-            getImageId(x)
-          ) ===
-          String(oldImageId)
-      ),
+      true,
+
     replacement_still_rank1:
       String(
-        getImageId(afterRank1)
+        getImageId(
+          afterRank1
+        )
       ) ===
-      String(replacementImageId)
+      String(
+        replacementImageId
+      )
   };
 }
+
+
+/* =========================================================
+   SAFE PUBLISH
+========================================================= */
 
 async function publishPreview(
   preview,
@@ -2390,236 +4593,355 @@ async function publishPreview(
   try {
     const listingId =
       asListingId(
-        preview.listingId
+        preview
+          .listingId
       );
 
-    const before =
+    const imageSet =
       await getImageSet(
         listingId
       );
 
+    const currentRank1 =
+      imageSet.rank1;
+
     if (
       String(
         getImageId(
-          before.rank1
+          currentRank1
         )
       ) !==
       String(
-        preview.sourceImageId
+        preview
+          .sourceImageId
       )
     ) {
-      const e =
+      const err =
         new Error(
           'Rank 1 changed after preview was created. Generate a fresh preview.'
         );
-      e.status = 409;
-      throw e;
+
+      err.status =
+        409;
+
+      throw err;
     }
 
     if (
-      before.images.length >= 20
+      imageSet
+        .images
+        .length >=
+      20
     ) {
-      const e =
+      const err =
         new Error(
           'Listing already has 20 images. Safe upload-before-delete is blocked.'
         );
-      e.status = 409;
-      throw e;
+
+      err.status =
+        409;
+
+      throw err;
     }
 
     if (
-      preview?.qc?.passed !== true ||
-      preview?.qc
-        ?.hard_gate_passed !== true
+      preview
+        ?.qc
+        ?.passed !==
+      true
     ) {
-      const e =
+      const err =
         new Error(
-          'Preview did not pass all quality gates'
+          'Preview did not pass the quality gate'
         );
-      e.status = 409;
-      throw e;
+
+      err.status =
+        409;
+
+      throw err;
     }
 
     const beforeIds =
       new Set(
-        before.images
+        imageSet
+          .images
           .map(
-            x =>
+            (
+              img
+            ) =>
               String(
-                getImageId(x)
+                getImageId(
+                  img
+                )
               )
           )
-          .filter(Boolean)
+          .filter(
+            Boolean
+          )
       );
 
-    const up =
+    const uploadResult =
       await uploadListingImage({
         shopId:
           await getShopId(),
+
         listingId,
+
         imageBuffer:
-          preview.generatedBuffer,
+          preview
+            .generatedBuffer,
+
         filename:
           `vaelons-thumbnail-${listingId}.jpg`,
+
         contentType:
-          'image/jpeg',
-        rank: 1
+          'image/jpeg'
       });
 
-    uploadOccurred = true;
+    uploadOccurred =
+      true;
 
-    const rec =
+    const uploadRecord =
       Array.isArray(
-        up?.results
+        uploadResult
+          ?.results
       )
-        ? up.results[0]
-        : up;
+        ? uploadResult
+            .results[0]
+        : uploadResult;
 
-    let uploadedId =
-      getImageId(rec);
+    let uploadedImageId =
+      getImageId(
+        uploadRecord
+      );
 
-    let verified = null;
+    let verifiedSet =
+      null;
 
     for (
-      let i = 0;
-      i < 5;
-      i++
+      let attempt = 0;
+      attempt <
+      5;
+      attempt +=
+      1
     ) {
-      if (i) {
-        await sleep(900);
+      if (
+        attempt >
+        0
+      ) {
+        await new Promise(
+          (
+            resolve
+          ) =>
+            setTimeout(
+              resolve,
+              900
+            )
+        );
       }
 
-      verified =
+      verifiedSet =
         await getImageSet(
           listingId
         );
 
-      if (!uploadedId) {
+      if (
+        !uploadedImageId
+      ) {
         const added =
-          verified.images.filter(
-            x =>
-              !beforeIds.has(
-                String(
-                  getImageId(x)
+          verifiedSet
+            .images
+            .filter(
+              (
+                img
+              ) =>
+                !beforeIds.has(
+                  String(
+                    getImageId(
+                      img
+                    )
+                  )
                 )
-              )
-          );
+            );
 
         if (
-          added.length === 1
+          added.length ===
+          1
         ) {
-          uploadedId =
+          uploadedImageId =
             getImageId(
               added[0]
             );
         }
       }
 
-      const r1 =
-        verified.images.find(
-          x =>
-            Number(x.rank) === 1
-        ) ||
-        verified.images[0];
+      const rank1 =
+        verifiedSet
+          .images
+          .find(
+            (
+              img
+            ) =>
+              Number(
+                img.rank
+              ) ===
+              1
+          ) ||
+        verifiedSet
+          .images[0];
 
       if (
-        uploadedId &&
+        uploadedImageId &&
         String(
-          getImageId(r1)
+          getImageId(
+            rank1
+          )
         ) ===
-        String(uploadedId)
+        String(
+          uploadedImageId
+        )
       ) {
         break;
       }
     }
 
-    const finalR1 =
-      verified?.images?.find(
-        x =>
-          Number(x.rank) === 1
-      ) ||
-      verified?.images?.[0] ||
+    const finalRank1 =
+      verifiedSet
+        ?.images
+        ?.find(
+          (
+            img
+          ) =>
+            Number(
+              img.rank
+            ) ===
+            1
+        ) ||
+      verifiedSet
+        ?.images
+        ?.[0] ||
       null;
 
-    const ok =
+    const replacementIsRank1 =
       Boolean(
-        uploadedId &&
+        uploadedImageId &&
         String(
-          getImageId(finalR1)
+          getImageId(
+            finalRank1
+          )
         ) ===
-        String(uploadedId)
+        String(
+          uploadedImageId
+        )
       );
 
     let cleanup = {
-      deleted: false,
+      deleted:
+        false,
+
       reason:
         'not_requested'
     };
 
     if (
-      ok &&
+      replacementIsRank1 &&
       deleteOld
     ) {
       cleanup =
         await deleteOldRank1IfSafe({
           listingId,
+
           oldImageId:
-            preview.sourceImageId,
+            preview
+              .sourceImageId,
+
           replacementImageId:
-            uploadedId
+            uploadedImageId
         });
     }
 
     const result = {
-      success: ok,
+      success:
+        replacementIsRank1,
+
       listing_id:
-        Number(listingId),
+        Number(
+          listingId
+        ),
+
       old_rank1_image_id:
-        preview.sourceImageId,
+        preview
+          .sourceImageId,
+
       uploaded_image_id:
-        uploadedId || null,
+        uploadedImageId ||
+        null,
+
       replacement_verified_as_rank1:
-        ok,
+        replacementIsRank1,
+
       cleanup,
-      etsy_modified: true
+
+      etsy_modified:
+        true
     };
 
     await setJson(
-      stateKey(listingId),
+      stateKey(
+        listingId
+      ),
       {
         status:
-          ok
+          replacementIsRank1
             ? 'published'
             : 'manual_attention',
-        generatorVersion:
-          WORKER_VERSION,
+
         sourceImageId:
           String(
-            preview.sourceImageId
+            preview
+              .sourceImageId
           ),
+
         uploadedImageId:
-          uploadedId
-            ? String(uploadedId)
+          uploadedImageId
+            ? String(
+                uploadedImageId
+              )
             : null,
+
         previewToken:
           preview.token,
+
         publishedAt:
           Date.now(),
+
         qc:
           preview.qc,
+
         result
       }
     );
 
     return result;
-  } catch (e) {
-    if (uploadOccurred) {
-      e.etsyModified = true;
+
+  } catch (
+    error
+  ) {
+    if (
+      uploadOccurred
+    ) {
+      error.etsyModified =
+        true;
     }
 
-    throw e;
+    throw error;
   }
 }
+
+
+/* =========================================================
+   PREPARE ONE LISTING
+========================================================= */
 
 async function prepareListing(
   listing,
@@ -2636,7 +4958,8 @@ async function prepareListing(
     );
 
   const exact =
-    listing?.title
+    listing
+      ?.title
       ? listing
       : await etsyRequest(
           `/listings/${listingId}`
@@ -2656,14 +4979,17 @@ async function prepareListing(
 
   const existing =
     await getJson(
-      stateKey(listingId)
+      stateKey(
+        listingId
+      )
     );
 
   if (
     !force &&
     existing &&
     String(
-      existing.sourceImageId ||
+      existing
+        .sourceImageId ||
       ''
     ) ===
     sourceImageId
@@ -2674,15 +5000,26 @@ async function prepareListing(
     ) {
       return {
         listing_id:
-          Number(listingId),
+          Number(
+            listingId
+          ),
+
         exact_title:
-          exact?.title ||
+          exact
+            ?.title ||
           null,
-        action: 'skipped',
+
+        action:
+          'skipped',
+
         reason:
           'preview_already_ready_for_current_rank1',
-        state: existing,
-        etsy_modified: false
+
+        state:
+          existing,
+
+        etsy_modified:
+          false
       };
     }
 
@@ -2692,15 +5029,26 @@ async function prepareListing(
     ) {
       return {
         listing_id:
-          Number(listingId),
+          Number(
+            listingId
+          ),
+
         exact_title:
-          exact?.title ||
+          exact
+            ?.title ||
           null,
-        action: 'blocked',
+
+        action:
+          'blocked',
+
         reason:
           'manual_attention_required_before_retry',
-        state: existing,
-        etsy_modified: false
+
+        state:
+          existing,
+
+        etsy_modified:
+          false
       };
     }
 
@@ -2709,22 +5057,34 @@ async function prepareListing(
         'blocked_qa' &&
       Date.now() -
         Number(
-          existing.checkedAt ||
+          existing
+            .checkedAt ||
           0
         ) <
         QA_RETRY_COOLDOWN_MS
     ) {
       return {
         listing_id:
-          Number(listingId),
+          Number(
+            listingId
+          ),
+
         exact_title:
-          exact?.title ||
+          exact
+            ?.title ||
           null,
-        action: 'skipped',
+
+        action:
+          'skipped',
+
         reason:
           'qa_retry_cooldown',
-        state: existing,
-        etsy_modified: false
+
+        state:
+          existing,
+
+        etsy_modified:
+          false
       };
     }
 
@@ -2732,22 +5092,34 @@ async function prepareListing(
       existing.status ===
         'published' &&
       String(
-        existing.uploadedImageId ||
+        existing
+          .uploadedImageId ||
         ''
       ) ===
       sourceImageId
     ) {
       return {
         listing_id:
-          Number(listingId),
+          Number(
+            listingId
+          ),
+
         exact_title:
-          exact?.title ||
+          exact
+            ?.title ||
           null,
-        action: 'keep',
+
+        action:
+          'keep',
+
         reason:
           'current_rank1_was_published_by_worker',
-        state: existing,
-        etsy_modified: false
+
+        state:
+          existing,
+
+        etsy_modified:
+          false
       };
     }
   }
@@ -2786,395 +5158,495 @@ async function prepareListing(
     !isBad
   ) {
     const state = {
-      status: 'healthy',
+      status:
+        'healthy',
+
       sourceImageId,
+
       checkedAt:
         Date.now(),
+
       rank1Score,
+
       rank1Analysis
     };
 
     await setJson(
-      stateKey(listingId),
+      stateKey(
+        listingId
+      ),
       state
     );
 
     return {
       listing_id:
-        Number(listingId),
+        Number(
+          listingId
+        ),
+
       exact_title:
-        exact?.title ||
+        exact
+          ?.title ||
         null,
-      action: 'keep',
+
+      action:
+        'keep',
+
       reason:
         'thumbnail_is_healthy',
+
       rank1_score:
         rank1Score,
+
       analysis:
         rank1Analysis,
-      etsy_modified: false
+
+      etsy_modified:
+        false
     };
   }
-
-  const selected =
-    await selectReferences(
-      exact?.title || '',
-      imageSet
-    );
 
   const references =
     await isolateArtworkReferences(
-      exact?.title || '',
-      selected
+      exact
+        ?.title ||
+      '',
+      imageSet
     );
 
   const referenceImageIds =
-    selected.map(
-      x =>
-        getImageId(x.image)
+    references.map(
+      (
+        ref
+      ) =>
+        getImageId(
+          ref.image
+        )
     );
 
-  if (!references.length) {
-    const state = {
-      status:
-        'blocked_qa',
-      generatorVersion:
-        WORKER_VERSION,
-      sourceImageId,
-      checkedAt:
-        Date.now(),
-      rank1Score,
-      rank1Analysis,
-      referenceImageIds:
-        referenceImageIds.map(
-          String
-        ),
-      qc: {
-        passed: false,
-        reason:
-          'artwork_isolation_failed'
-      }
-    };
-
-    await setJson(
-      stateKey(listingId),
-      state
-    );
-
-    return {
-      listing_id:
-        Number(listingId),
-      exact_title:
-        exact?.title ||
-        null,
-      action: 'blocked',
-      generator_version:
-        WORKER_VERSION,
-      reason:
-        'artwork_isolation_failed',
-      rank1_score:
-        rank1Score,
-      etsy_modified: false
-    };
-  }
-
-  const recent =
+  const recentHistory =
     await getRecentSceneHistory();
 
-  const context =
-    await analyzeArtworkContext(
-      exact?.title || '',
-      references
-    );
-
-  const recentGenerated =
-    await loadRecentGeneratedComparisons();
-
-  const attempted = [];
-
-  let plan =
-    chooseScenePlan({
-      listingId,
+  const artworkContext =
+    await analyzeArtworkContext({
       title:
-        exact?.title || '',
-      context,
-      recent,
-      excluded:
-        attempted
+        exact
+          ?.title ||
+        '',
+
+      references
     });
 
-  let generated = null;
-  let qc = null;
+  let scenePlan =
+    chooseScenePlan({
+      listingId,
+
+      title:
+        exact
+          ?.title ||
+        '',
+
+      artworkContext,
+      recentHistory
+    });
+
+  const recentGenerated =
+    await loadRecentGeneratedComparisons({
+      listingId
+    });
+
+  let generated =
+    null;
+
+  let qc =
+    null;
+
+  const attemptedScenes =
+    [];
+
+  const failedGenerated =
+    [];
 
   for (
     let attempt = 1;
     attempt <=
-      STRICT_MAX_ATTEMPTS;
-    attempt++
+    MAX_GENERATION_ATTEMPTS;
+    attempt +=
+      1
   ) {
-    attempted.push(
-      plan.scene_family
+    attemptedScenes.push(
+      scenePlan.scene_family
     );
-
-    const retry =
-      attempt > 1
-        ? (
-            qc?.hard_gate
-              ?.reason ||
-            qc?.semantic
-              ?.reason ||
-            'Previous candidate failed. Remove every forbidden prop and use the new scene.'
-          )
-        : '';
 
     generated =
       await generateThumbnail({
         title:
-          exact?.title || '',
+          exact
+            ?.title ||
+          '',
+
         references,
+
         reason:
           isNew
-            ? 'New listing needs a fresh hero thumbnail.'
-            : `Current thumbnail score ${rank1Score}/100 needs improvement.`,
-        plan,
+            ? 'A new Etsy listing was detected and needs a fresh hero thumbnail.'
+            : `The current Etsy thumbnail quality score is ${rank1Score}/100 and needs improvement.`,
+
+        scenePlan,
+
         retryNote:
-          retry
+          attempt >
+          1
+            ? qc
+                ?.semantic
+                ?.reason ||
+              'Previous attempt failed. Change architecture and camera visibly, preserve exact artwork identity, and remove every forbidden staging object.'
+            : ''
       });
 
-    const hardGate =
-      await strictStagingCheck(
-        generated,
-        plan
-      );
+    qc =
+      await qualityCheck({
+        title:
+          exact
+            ?.title ||
+          '',
 
-    if (!hardGate.passed) {
-      qc = {
-        passed: false,
-        hard_gate_passed:
-          false,
-        hard_gate:
-          hardGate,
-        technical_passed:
-          null,
-        semantic_passed:
-          null,
-        generated_analysis:
-          await analyzeImage(
-            generated
+        referenceBuffers:
+          references.map(
+            (ref) =>
+              ref.buffer
           ),
-        scene_plan: {
-          scene_family:
-            plan.scene_family,
-          scene_label:
-            plan.scene_label,
-          signature:
-            plan.signature
-        },
-        semantic: null
-      };
-    } else {
-      qc =
-        await qualityCheck({
-          title:
-            exact?.title || '',
-          references,
-          generatedBuffer:
-            generated,
-          plan,
-          recentGenerated,
-          hardGate
-        });
+
+        generatedBuffer:
+          generated,
+
+        scenePlan,
+
+        artworkContext,
+
+        recentGenerated: [
+          ...failedGenerated,
+          ...recentGenerated
+        ]
+      });
+
+    if (
+      qc.passed
+    ) {
+      break;
     }
 
-    if (qc.passed) {
-      break;
+    failedGenerated.unshift({
+      listing_id:
+        String(
+          listingId
+        ),
+
+      scene_family:
+        scenePlan
+          ?.scene_family ||
+        null,
+
+      decor_signature:
+        scenePlan
+          ?.decor_signature ||
+        null,
+
+      observed_architecture:
+        qc
+          ?.staging
+          ?.semantic
+          ?.observed_architecture ||
+        null,
+
+      layout_signature:
+        qc
+          ?.staging
+          ?.semantic
+          ?.layout_signature ||
+        null,
+
+      buffer:
+        generated
+    });
+
+    if (
+      failedGenerated.length >
+      2
+    ) {
+      failedGenerated.length =
+        2;
     }
 
     if (
       attempt <
-      STRICT_MAX_ATTEMPTS
+      MAX_GENERATION_ATTEMPTS
     ) {
-      plan =
+      scenePlan =
         chooseScenePlan({
           listingId,
+
           title:
-            exact?.title || '',
-          context,
-          recent,
-          excluded:
-            attempted
+            exact
+              ?.title ||
+            '',
+
+          artworkContext,
+
+          recentHistory,
+
+          extraExcluded:
+            attemptedScenes
         });
     }
   }
 
-  const isolation =
-    references.map(
-      x =>
-        x.isolation
-    );
-
-  if (!qc?.passed) {
+  if (
+    !qc
+      ?.passed
+  ) {
     const state = {
       status:
         'blocked_qa',
-      generatorVersion:
-        WORKER_VERSION,
+
       sourceImageId,
+
       checkedAt:
         Date.now(),
+
       rank1Score,
+
       rank1Analysis,
+
       referenceImageIds:
         referenceImageIds.map(
           String
         ),
-      artworkContext:
-        context,
+
       referenceIsolation:
-        isolation,
-      scenePlan:
-        plan,
+        references.map(
+          (ref) =>
+            ref.isolation ||
+            null
+        ),
+
+      artworkContext,
+
+      scenePlan,
+
       qc
     };
 
     await setJson(
-      stateKey(listingId),
+      stateKey(
+        listingId
+      ),
       state
     );
 
     return {
       listing_id:
-        Number(listingId),
+        Number(
+          listingId
+        ),
+
       exact_title:
-        exact?.title ||
+        exact
+          ?.title ||
         null,
-      action: 'blocked',
-      generator_version:
-        WORKER_VERSION,
+
+      action:
+        'blocked',
+
       reason:
         'generated_thumbnail_failed_quality_gate',
+
       rank1_score:
         rank1Score,
+
       reference_image_ids:
         referenceImageIds,
-      artwork_context:
-        context,
+
       reference_isolation:
-        isolation,
+        references.map(
+          (ref) =>
+            ref.isolation ||
+            null
+        ),
+
+      artwork_context:
+        artworkContext,
+
       scene_plan:
-        plan,
+        scenePlan,
+
       qc,
-      etsy_modified: false
+
+      etsy_modified:
+        false
     };
   }
 
   const preview =
     await savePreview({
       listingId,
+
       title:
-        exact?.title ||
+        exact
+          ?.title ||
         null,
+
       sourceImageId,
+
       referenceImageIds,
+
       generatedBuffer:
         generated,
+
       qc,
+
       reason,
-      artworkContext:
-        context,
-      scenePlan:
-        plan,
-      referenceIsolation:
-        isolation
+
+      artworkContext,
+
+      scenePlan
     });
 
   await setJson(
-    stateKey(listingId),
+    stateKey(
+      listingId
+    ),
     {
       status:
         'preview_ready',
-      generatorVersion:
-        WORKER_VERSION,
+
       sourceImageId,
+
       previewToken:
         preview.token,
+
       previewUrl:
         preview.previewUrl,
+
       checkedAt:
         Date.now(),
+
       rank1Score,
+
       rank1Analysis,
+
       referenceImageIds:
         referenceImageIds.map(
           String
         ),
-      artworkContext:
-        context,
+
       referenceIsolation:
-        isolation,
-      scenePlan:
-        plan,
+        references.map(
+          (ref) =>
+            ref.isolation ||
+            null
+        ),
+
+      artworkContext,
+
+      scenePlan,
+
       qc
     }
   );
 
   return {
     listing_id:
-      Number(listingId),
+      Number(
+        listingId
+      ),
+
     exact_title:
-      exact?.title ||
+      exact
+        ?.title ||
       null,
+
     action:
       'preview_ready',
-    generator_version:
-      WORKER_VERSION,
+
     reason,
+
     previous_rank1_score:
       rank1Score,
+
     source_image_id:
       sourceImageId,
+
     reference_image_ids:
       referenceImageIds,
+
+    reference_isolation:
+      references.map(
+        (ref) =>
+          ref.isolation ||
+          null
+      ),
+
     preview_token:
       preview.token,
+
     preview_url:
       preview.previewUrl,
+
     qc,
+
     artwork_context:
-      context,
-    reference_isolation:
-      isolation,
+      artworkContext,
+
     scene_plan:
-      plan,
+      scenePlan,
+
     approval_required:
       'ONAYLIYORUM',
-    etsy_modified: false
+
+    etsy_modified:
+      false
   };
 }
+
+
+/* =========================================================
+   FETCH ALL ACTIVE LISTINGS
+========================================================= */
 
 async function fetchAllActiveListings() {
   const shopId =
     await getShopId();
 
-  const results = [];
+  const results =
+    [];
 
-  let offset = 0;
+  let offset =
+    0;
+
   let total =
     Infinity;
 
   while (
-    offset < total
+    offset <
+    total
   ) {
     const data =
       await etsyRequest(
         `/shops/${shopId}/listings`,
         {
           params: {
-            state: 'active',
-            limit: 100,
+            state:
+              'active',
+
+            limit:
+              100,
+
             offset,
+
             sort_on:
               'created',
+
             sort_order:
               'desc'
           }
@@ -3183,22 +5655,27 @@ async function fetchAllActiveListings() {
 
     const page =
       Array.isArray(
-        data?.results
+        data
+          ?.results
       )
         ? data.results
         : [];
 
     total =
       Number(
-        data?.count ??
+        data
+          ?.count ??
         page.length
       );
 
-    results.push(...page);
+    results.push(
+      ...page
+    );
 
     if (
       !page.length ||
-      page.length < 100
+      page.length <
+        100
     ) {
       break;
     }
@@ -3210,35 +5687,53 @@ async function fetchAllActiveListings() {
   return results;
 }
 
+
+/* =========================================================
+   WORKER LOCK
+========================================================= */
+
 async function acquireWorkerLock() {
   const token =
-    randomBytes(12)
-      .toString('hex');
+    randomBytes(
+      12
+    ).toString(
+      'hex'
+    );
 
-  return (
+  const ok =
     await redis().set(
       `${PREFIX}:lock`,
       token,
       {
-        nx: true,
+        nx:
+          true,
+
         ex:
           LOCK_TTL_SECONDS
       }
-    )
-  )
+    );
+
+  return ok
     ? token
     : null;
 }
 
-async function releaseWorkerLock(token) {
+async function releaseWorkerLock(
+  token
+) {
+  const current =
+    await redis().get(
+      `${PREFIX}:lock`
+    );
+
   if (
     String(
-      await redis().get(
-        `${PREFIX}:lock`
-      ) ||
+      current ||
       ''
     ) ===
-    String(token)
+    String(
+      token
+    )
   ) {
     await redis().del(
       `${PREFIX}:lock`
@@ -3246,14 +5741,25 @@ async function releaseWorkerLock(token) {
   }
 }
 
+
+/* =========================================================
+   MAIN WORKER
+========================================================= */
+
 async function runWorker() {
-  const lock =
+  const lockToken =
     await acquireWorkerLock();
 
-  if (!lock) {
+  if (
+    !lockToken
+  ) {
     return {
-      ok: false,
-      skipped: true,
+      ok:
+        false,
+
+      skipped:
+        true,
+
       reason:
         'worker_already_running'
     };
@@ -3270,14 +5776,21 @@ async function runWorker() {
         )
       );
 
-    if (!initialized) {
-      if (listings.length) {
+    if (
+      !initialized
+    ) {
+      if (
+        listings.length
+      ) {
         await redis().sadd(
           `${PREFIX}:seen`,
           ...listings.map(
-            x =>
+            (
+              listing
+            ) =>
               String(
-                x.listing_id
+                listing
+                  .listing_id
               )
           )
         );
@@ -3287,20 +5800,28 @@ async function runWorker() {
         `${PREFIX}:initialized`,
         '1'
       );
+
     } else {
       for (
-        const x of listings
+        const listing of
+        listings
       ) {
         const id =
           String(
-            x.listing_id
+            listing
+              .listing_id
+          );
+
+        const seen =
+          Boolean(
+            await redis().sismember(
+              `${PREFIX}:seen`,
+              id
+            )
           );
 
         if (
-          !await redis().sismember(
-            `${PREFIX}:seen`,
-            id
-          )
+          !seen
         ) {
           await redis().sadd(
             `${PREFIX}:seen`,
@@ -3318,26 +5839,36 @@ async function runWorker() {
     const byId =
       new Map(
         listings.map(
-          x => [
+          (
+            listing
+          ) => [
             String(
-              x.listing_id
+              listing
+                .listing_id
             ),
-            x
+            listing
           ]
         )
       );
 
-    const selected = [];
+    const pending =
+      (
+        await redis().smembers(
+          `${PREFIX}:pending-new`
+        )
+      ).map(
+        String
+      );
+
+    const selected =
+      [];
+
     const selectedIds =
       new Set();
 
     for (
       const id of
-      (
-        await redis().smembers(
-          `${PREFIX}:pending-new`
-        )
-      ).map(String)
+      pending
     ) {
       if (
         selected.length >=
@@ -3347,16 +5878,24 @@ async function runWorker() {
       }
 
       const listing =
-        byId.get(id);
+        byId.get(
+          id
+        );
 
-      if (listing) {
+      if (
+        listing
+      ) {
         selected.push({
           listing,
+
           reason:
             'new_listing'
         });
 
-        selectedIds.add(id);
+        selectedIds.add(
+          id
+        );
+
       } else {
         await redis().srem(
           `${PREFIX}:pending-new`,
@@ -3370,14 +5909,18 @@ async function runWorker() {
         await redis().get(
           `${PREFIX}:scan-cursor`
         )
-      ) || 0;
+      ) ||
+      0;
 
-    if (listings.length) {
+    if (
+      listings.length
+    ) {
       cursor %=
         listings.length;
     }
 
-    let examined = 0;
+    let examined =
+      0;
 
     while (
       selected.length <
@@ -3385,36 +5928,48 @@ async function runWorker() {
       examined <
         listings.length
     ) {
+      const index =
+        (
+          cursor +
+          examined
+        ) %
+        listings.length;
+
       const listing =
         listings[
-          (
-            cursor +
-            examined
-          ) %
-          listings.length
+          index
         ];
 
       const id =
         String(
-          listing.listing_id
+          listing
+            .listing_id
         );
 
       if (
-        !selectedIds.has(id)
+        !selectedIds.has(
+          id
+        )
       ) {
         selected.push({
           listing,
+
           reason:
             'rolling_scan'
         });
 
-        selectedIds.add(id);
+        selectedIds.add(
+          id
+        );
       }
 
-      examined++;
+      examined +=
+        1;
     }
 
-    if (listings.length) {
+    if (
+      listings.length
+    ) {
       await redis().set(
         `${PREFIX}:scan-cursor`,
         String(
@@ -3430,10 +5985,12 @@ async function runWorker() {
       );
     }
 
-    const results = [];
+    const results =
+      [];
 
     for (
-      const item of selected
+      const item of
+      selected
     ) {
       try {
         const result =
@@ -3445,7 +6002,9 @@ async function runWorker() {
             }
           );
 
-        results.push(result);
+        results.push(
+          result
+        );
 
         if (
           item.reason ===
@@ -3456,115 +6015,183 @@ async function runWorker() {
           await redis().srem(
             `${PREFIX}:pending-new`,
             String(
-              item.listing
+              item
+                .listing
                 .listing_id
             )
           );
         }
-      } catch (e) {
+
+      } catch (
+        error
+      ) {
         results.push({
           listing_id:
             Number(
-              item.listing
+              item
+                .listing
                 .listing_id
             ),
+
           exact_title:
-            item.listing
+            item
+              .listing
               .title ||
             null,
-          action: 'error',
+
+          action:
+            'error',
+
           reason:
             item.reason,
+
           error:
-            e.message,
+            error.message,
+
           etsy_modified:
-            e.etsyModified ===
+            error
+              .etsyModified ===
             true
         });
       }
     }
 
     return {
-      ok: true,
+      ok:
+        true,
+
       mode:
         WORKER_MODE,
+
       bootstrap_run:
         !initialized,
+
       active_listing_count:
         listings.length,
+
       processed_count:
         results.length,
+
       pending_new_count:
         Number(
           await redis().scard(
             `${PREFIX}:pending-new`
           )
         ),
+
       results
     };
+
   } finally {
     await releaseWorkerLock(
-      lock
+      lockToken
     );
   }
 }
 
+
+/* =========================================================
+   HEALTH
+========================================================= */
+
 app.get(
   '/health',
-  (_req, res) =>
+  (
+    _req,
+    res
+  ) => {
     res.json({
-      ok: true,
+      ok:
+        true,
+
       service:
         'vaelons-ai-thumbnail-worker',
+
       version:
-        WORKER_VERSION,
+        '3.2.0',
+
       worker_mode:
         WORKER_MODE,
+
       image_model:
         IMAGE_MODEL,
+
       qa_model:
         QA_MODEL,
+
       compliance_model:
         COMPLIANCE_MODEL,
-      openai_key_source:
-        'VAELONS_OPENAI_API_KEY',
-      approval_required:
-        'ONAYLIYORUM',
-      safe_replace_order:
-        'isolate artwork -> choose non-repeating scene -> generate -> hard staging gate -> identity QA -> preview -> ONAYLIYORUM -> upload -> verify rank1 -> delete old -> verify',
+
       artwork_reference_isolation:
         true,
+
       hard_staging_gate:
         true,
-      anti_repeat_memory:
+
+      cropped_artwork_identity_qa:
         true,
+
+      masked_environment_audit:
+        true,
+
       max_generation_attempts:
-        STRICT_MAX_ATTEMPTS
-    })
+        MAX_GENERATION_ATTEMPTS,
+
+      openai_key_source:
+        'VAELONS_OPENAI_API_KEY',
+
+      safe_replace_order:
+        'isolate artwork -> artwork-aware scene plan -> generate -> hard staging gate -> masked environment audit -> cropped artwork identity QA -> preview -> ONAYLIYORUM -> upload -> verify rank1 -> delete old -> verify',
+
+      approval_required:
+        'ONAYLIYORUM',
+
+      artwork_aware_scene_planner:
+        true,
+
+      anti_repeat_memory:
+        true
+    });
+  }
 );
+
+
+/* =========================================================
+   ETSY OAUTH
+========================================================= */
 
 app.get(
   '/oauth/etsy/start',
-  (req, res) => {
+  (
+    req,
+    res
+  ) => {
     try {
       if (
-        req.query.setup_secret !==
+        req.query
+          .setup_secret !==
         required(
           'SETUP_SECRET'
         )
       ) {
         return res
-          .status(401)
+          .status(
+            401
+          )
           .send(
             'Invalid setup secret.'
           );
       }
 
       const state =
-        randomBase64Url(24);
+        randomBase64Url(
+          24
+        );
 
       const verifier =
-        randomBase64Url(48);
+        randomBase64Url(
+          48
+        );
 
       const challenge =
         pkceChallenge(
@@ -3574,18 +6201,27 @@ app.get(
       const redirectUri =
         `${publicBase()}/oauth/etsy/callback`;
 
-      res.cookie(
-        'etsy_oauth',
+      const capsule =
         sealJson({
           state,
           verifier,
           ts:
             Date.now()
-        }),
+        });
+
+      res.cookie(
+        'etsy_oauth',
+        capsule,
         {
-          httpOnly: true,
-          secure: true,
-          sameSite: 'lax',
+          httpOnly:
+            true,
+
+          secure:
+            true,
+
+          sameSite:
+            'lax',
+
           maxAge:
             10 *
             60 *
@@ -3636,47 +6272,75 @@ app.get(
       res.redirect(
         url.toString()
       );
-    } catch (e) {
-      res.status(
-        e.status || 500
-      ).json({
-        error:
-          e.message
-      });
+
+    } catch (
+      error
+    ) {
+      res
+        .status(
+          error.status ||
+          500
+        )
+        .json({
+          error:
+            error.message
+        });
     }
   }
 );
 
 app.get(
   '/oauth/etsy/callback',
-  async (req, res) => {
+  async (
+    req,
+    res
+  ) => {
     try {
-      if (req.query.error) {
+      if (
+        req.query
+          .error
+      ) {
         return res
-          .status(400)
+          .status(
+            400
+          )
           .send(
-            `Etsy authorization failed: ${req.query.error_description || req.query.error}`
+            `Etsy authorization failed: ${
+              req.query
+                .error_description ||
+              req.query
+                .error
+            }`
           );
       }
 
       const cookie =
-        parseCookies(req)
-          .etsy_oauth;
+        parseCookies(
+          req
+        ).etsy_oauth;
 
-      if (!cookie) {
+      if (
+        !cookie
+      ) {
         return res
-          .status(400)
+          .status(
+            400
+          )
           .send(
             'OAuth session expired. Start again.'
           );
       }
 
       const flow =
-        openJson(cookie);
+        openJson(
+          cookie
+        );
 
       if (
-        !req.query.state ||
-        req.query.state !==
+        !req.query
+          .state ||
+        req.query
+          .state !==
           flow.state ||
         Date.now() -
           flow.ts >
@@ -3685,7 +6349,9 @@ app.get(
           1000
       ) {
         return res
-          .status(400)
+          .status(
+            400
+          )
           .send(
             'Invalid OAuth state.'
           );
@@ -3698,15 +6364,20 @@ app.get(
         new URLSearchParams({
           grant_type:
             'authorization_code',
+
           client_id:
             etsyApiKeyForOAuth(),
+
           redirect_uri:
             redirectUri,
+
           code:
             String(
-              req.query.code ||
+              req.query
+                .code ||
               ''
             ),
+
           code_verifier:
             flow.verifier
         });
@@ -3715,11 +6386,14 @@ app.get(
         await fetch(
           'https://api.etsy.com/v3/public/oauth/token',
           {
-            method: 'POST',
+            method:
+              'POST',
+
             headers: {
               'content-type':
                 'application/x-www-form-urlencoded; charset=utf-8'
             },
+
             body
           }
         );
@@ -3727,9 +6401,13 @@ app.get(
       const token =
         await tokenRes.json();
 
-      if (!tokenRes.ok) {
+      if (
+        !tokenRes.ok
+      ) {
         return res
-          .status(400)
+          .status(
+            400
+          )
           .send(
             `Token exchange failed: ${JSON.stringify(token)}`
           );
@@ -3742,10 +6420,12 @@ app.get(
       const shopId =
         await getShopId();
 
-      const capsule =
+      const encryptedCapsule =
         sealJson({
           refresh_token:
-            token.refresh_token,
+            token
+              .refresh_token,
+
           shop_id:
             shopId
         });
@@ -3754,55 +6434,93 @@ app.get(
         'etsy_oauth'
       );
 
-      res.type('html')
-        .send(
-          `<!doctype html>
+      res
+        .type(
+          'html'
+        )
+        .send(`
+<!doctype html>
 <meta charset="utf-8">
 <title>VAELONS Etsy Connected</title>
-<h2>VAELONS Etsy bağlantısı doğrulandı.</h2>
-<p>Aşağıdaki şifreli değeri <b>ETSY_TOKEN_CAPSULE</b> olarak Vercel Environment Variables bölümüne ekleyin.</p>
-<textarea style="width:100%;height:150px" readonly onclick="this.select()">${capsule}</textarea>`
-        );
-    } catch (e) {
-      res.status(
-        e.status || 500
-      ).json({
-        error:
-          e.message,
-        details:
-          e.details ||
-          null
-      });
+
+<h2>
+VAELONS Etsy bağlantısı doğrulandı.
+</h2>
+
+<p>
+Aşağıdaki şifreli değeri
+<b>ETSY_TOKEN_CAPSULE</b>
+olarak Vercel Environment Variables bölümüne ekleyin.
+</p>
+
+<textarea
+  style="width:100%;height:150px"
+  readonly
+  onclick="this.select()"
+>${encryptedCapsule}</textarea>
+        `);
+
+    } catch (
+      error
+    ) {
+      res
+        .status(
+          error.status ||
+          500
+        )
+        .json({
+          error:
+            error.message,
+
+          details:
+            error.details ||
+            null
+        });
     }
   }
 );
 
+
+/* =========================================================
+   PUBLIC PREVIEW
+========================================================= */
+
 app.get(
   '/preview/worker/:token',
-  async (req, res) => {
+  async (
+    req,
+    res
+  ) => {
     try {
       const token =
         String(
-          req.params.token ||
+          req.params
+            .token ||
           ''
         );
 
       const meta =
         await getJson(
-          previewKey(token)
+          previewKey(
+            token
+          )
         );
 
-      const b64 =
+      const base64 =
         await redis().get(
-          previewImageKey(token)
+          previewImageKey(
+            token
+          )
         );
 
       if (
         !meta ||
-        !b64
+        !base64
       ) {
         return res
-          .status(404)
+          .status(
+            404
+          )
           .send(
             'Preview expired or not found.'
           );
@@ -3820,18 +6538,31 @@ app.get(
 
       res.send(
         Buffer.from(
-          String(b64),
+          String(
+            base64
+          ),
           'base64'
         )
       );
-    } catch (e) {
-      res.status(500)
+
+    } catch (
+      error
+    ) {
+      res
+        .status(
+          500
+        )
         .send(
-          e.message
+          error.message
         );
     }
   }
 );
+
+
+/* =========================================================
+   WORKER API
+========================================================= */
 
 app.use(
   '/api/worker',
@@ -3840,57 +6571,84 @@ app.use(
 
 app.get(
   '/api/worker/status',
-  async (_req, res, next) => {
+  async (
+    _req,
+    res,
+    next
+  ) => {
     try {
       res.json({
         service:
           'vaelons-ai-thumbnail-worker',
+
         version:
-          WORKER_VERSION,
+          '3.2.0',
+
         mode:
           WORKER_MODE,
+
         etsy:
           await getTokenStatus(),
+
         initialized:
           Boolean(
             await redis().get(
               `${PREFIX}:initialized`
             )
           ),
+
         pending_new_count:
           Number(
             await redis().scard(
               `${PREFIX}:pending-new`
             )
           ),
+
         scan_cursor:
           Number(
             await redis().get(
               `${PREFIX}:scan-cursor`
             )
-          ) || 0,
+          ) ||
+          0,
+
         auto_delete_old_rank1:
           AUTO_DELETE_OLD_RANK1,
+
         openai_key_source:
           'VAELONS_OPENAI_API_KEY',
+
         approval_required:
           'ONAYLIYORUM',
-        artwork_reference_isolation:
-          true,
-        hard_staging_gate:
-          true,
+
         anti_repeat_memory:
           true,
+
+        artwork_reference_isolation:
+          true,
+
+        hard_staging_gate:
+          true,
+
+        cropped_artwork_identity_qa:
+          true,
+
         max_generation_attempts:
-          STRICT_MAX_ATTEMPTS,
+          MAX_GENERATION_ATTEMPTS,
+
         recent_scene_count:
-          (
-            await getRecentSceneHistory()
-          ).length,
-        etsy_modified: false
+          (await getRecentSceneHistory()).length,
+
+        etsy_modified:
+          false
       });
-    } catch (e) {
-      next(e);
+
+    } catch (
+      error
+    ) {
+      next(
+        error
+      );
     }
   }
 );
@@ -3905,8 +6663,13 @@ const runHandler =
       res.json(
         await runWorker()
       );
-    } catch (e) {
-      next(e);
+
+    } catch (
+      error
+    ) {
+      next(
+        error
+      );
     }
   };
 
@@ -3928,29 +6691,38 @@ app.post(
     next
   ) => {
     try {
-      const id =
+      const listingId =
         asListingId(
-          req.params.listingId
+          req.params
+            .listingId
         );
 
       const listing =
         await etsyRequest(
-          `/listings/${id}`
+          `/listings/${listingId}`
         );
 
       res.json(
         await prepareListing(
           listing,
           {
-            reason: 'manual',
+            reason:
+              'manual',
+
             force:
-              req.body?.force ===
+              req.body
+                ?.force ===
               true
           }
         )
       );
-    } catch (e) {
-      next(e);
+
+    } catch (
+      error
+    ) {
+      next(
+        error
+      );
     }
   }
 );
@@ -3963,23 +6735,35 @@ app.get(
     next
   ) => {
     try {
-      const id =
+      const listingId =
         asListingId(
-          req.params.listingId
+          req.params
+            .listingId
         );
 
       res.json({
         listing_id:
-          Number(id),
+          Number(
+            listingId
+          ),
+
         state:
           await getJson(
-            stateKey(id)
+            stateKey(
+              listingId
+            )
           ),
+
         etsy_modified:
           false
       });
-    } catch (e) {
-      next(e);
+
+    } catch (
+      error
+    ) {
+      next(
+        error
+      );
     }
   }
 );
@@ -3992,23 +6776,38 @@ app.post(
     next
   ) => {
     try {
-      const id =
+      const listingId =
         asListingId(
-          req.params.listingId
+          req.params
+            .listingId
         );
 
-      if (
+      const approval =
         String(
-          req.body?.approval ||
+          req.body
+            ?.approval ||
           ''
-        ).trim() !==
+        ).trim();
+
+      const token =
+        String(
+          req.body
+            ?.preview_token ||
+          ''
+        ).trim();
+
+      if (
+        approval !==
         'ONAYLIYORUM'
       ) {
         return res
-          .status(400)
+          .status(
+            400
+          )
           .json({
             error:
               'Exact approval text ONAYLIYORUM is required',
+
             etsy_modified:
               false
           });
@@ -4016,23 +6815,24 @@ app.post(
 
       const preview =
         await loadPreview(
-          String(
-            req.body
-              ?.preview_token ||
-            ''
-          ).trim()
+          token
         );
 
       if (
         String(
-          preview.listingId
-        ) !== id
+          preview
+            .listingId
+        ) !==
+        listingId
       ) {
         return res
-          .status(409)
+          .status(
+            409
+          )
           .json({
             error:
               'Preview token belongs to another listing',
+
             etsy_modified:
               false
           });
@@ -4049,11 +6849,21 @@ app.post(
           }
         )
       );
-    } catch (e) {
-      next(e);
+
+    } catch (
+      error
+    ) {
+      next(
+        error
+      );
     }
   }
 );
+
+
+/* =========================================================
+   BASIC ETSY READ API
+========================================================= */
 
 app.use(
   '/api',
@@ -4071,8 +6881,13 @@ app.get(
       res.json(
         await getTokenStatus()
       );
-    } catch (e) {
-      next(e);
+
+    } catch (
+      error
+    ) {
+      next(
+        error
+      );
     }
   }
 );
@@ -4090,8 +6905,13 @@ app.get(
           `/shops/${await getShopId()}`
         )
       );
-    } catch (e) {
-      next(e);
+
+    } catch (
+      error
+    ) {
+      next(
+        error
+      );
     }
   }
 );
@@ -4106,7 +6926,8 @@ app.get(
     try {
       const limit =
         clampInt(
-          req.query.limit ||
+          req.query
+            .limit ||
           25,
           1,
           100
@@ -4116,14 +6937,16 @@ app.get(
         Math.max(
           0,
           Number(
-            req.query.offset ||
+            req.query
+              .offset ||
             0
           )
         );
 
       const state =
         String(
-          req.query.state ||
+          req.query
+            .state ||
           'active'
         );
 
@@ -4139,8 +6962,13 @@ app.get(
           }
         )
       );
-    } catch (e) {
-      next(e);
+
+    } catch (
+      error
+    ) {
+      next(
+        error
+      );
     }
   }
 );
@@ -4153,18 +6981,24 @@ app.get(
     next
   ) => {
     try {
-      const id =
+      const listingId =
         asListingId(
-          req.params.listingId
+          req.params
+            .listingId
         );
 
       res.json(
         await etsyRequest(
-          `/listings/${id}`
+          `/listings/${listingId}`
         )
       );
-    } catch (e) {
-      next(e);
+
+    } catch (
+      error
+    ) {
+      next(
+        error
+      );
     }
   }
 );
@@ -4177,13 +7011,16 @@ app.get(
     next
   ) => {
     try {
-      const id =
+      const listingId =
         asListingId(
-          req.params.listingId
+          req.params
+            .listingId
         );
 
       const data =
-        await getListingImages(id);
+        await getListingImages(
+          listingId
+        );
 
       const ordered =
         [
@@ -4202,46 +7039,65 @@ app.get(
 
       const rank1 =
         ordered.find(
-          x =>
-            Number(x.rank) === 1
+          (image) =>
+            Number(
+              image?.rank
+            ) ===
+            1
         ) ||
         ordered[0] ||
         null;
 
       res.json({
         listing_id:
-          Number(id),
+          Number(
+            listingId
+          ),
+
         count:
           ordered.length,
+
         rank1_image_id:
           rank1
             ? getImageId(rank1)
             : null,
+
         rank1_image_url:
           rank1
             ? getImageUrl(rank1)
             : null,
+
         images:
           ordered.map(
-            x => ({
+            (image) => ({
               image_id:
-                getImageId(x),
+                getImageId(image),
+
               rank:
                 Number(
-                  x?.rank ??
+                  image?.rank ??
                   0
                 ),
+
               image_url:
-                getImageUrl(x)
+                getImageUrl(image)
             })
           ),
+
+        // Preserve raw Etsy-compatible results for existing callers.
         results:
           ordered,
+
         etsy_modified:
           false
       });
-    } catch (e) {
-      next(e);
+
+    } catch (
+      error
+    ) {
+      next(
+        error
+      );
     }
   }
 );
@@ -4253,19 +7109,25 @@ app.post(
     res,
     next
   ) => {
-    let modified = false;
+    let etsyModified =
+      false;
 
     try {
-      const id =
+      const listingId =
         asListingId(
-          req.params.listingId
+          req.params
+            .listingId
         );
 
-      if (
+      const approval =
         String(
-          req.body?.approval ||
+          req.body
+            ?.approval ||
           ''
-        ).trim() !==
+        ).trim();
+
+      if (
+        approval !==
         'ONAYLIYORUM'
       ) {
         return res
@@ -4273,6 +7135,7 @@ app.post(
           .json({
             error:
               'Exact approval text ONAYLIYORUM is required',
+
             etsy_modified:
               false
           });
@@ -4284,74 +7147,105 @@ app.post(
 
       if (
         !Array.isArray(refs) ||
-        refs.length !== 1 ||
-        !refs[0]
-          ?.download_link
+        refs.length !==
+        1
       ) {
         return res
           .status(400)
           .json({
             error:
-              'Exactly one valid image file reference is required',
+              'Exactly one image file is required',
+
+            etsy_modified:
+              false
+          });
+      }
+
+      const fileRef =
+        refs[0];
+
+      if (
+        !fileRef ||
+        typeof fileRef !==
+          'object' ||
+        !fileRef.download_link
+      ) {
+        return res
+          .status(400)
+          .json({
+            error:
+              'Valid file reference with download_link is required',
+
             etsy_modified:
               false
           });
       }
 
       const before =
-        await getListingImages(id);
+        await getListingImages(
+          listingId
+        );
 
       if (
-        (
-          before?.results ||
-          []
-        ).length >= 20
+        (before?.results || [])
+          .length >=
+        20
       ) {
         return res
           .status(409)
           .json({
             error:
               'Listing already has 20 images',
+
             etsy_modified:
               false
           });
       }
 
+      const imageBuffer =
+        await downloadImage(
+          fileRef.download_link
+        );
+
       const requestedRank =
         Number(
-          req.body?.rank
+          req.body
+            ?.rank
         );
 
       const rank =
         Number.isInteger(
           requestedRank
         ) &&
-        requestedRank > 0
+        requestedRank >
+          0
           ? requestedRank
-          : (
-              before?.results ||
-              []
-            ).length + 1;
+          : (before?.results || [])
+              .length +
+            1;
 
       const result =
         await uploadListingImage({
           shopId:
             await getShopId(),
-          listingId: id,
-          imageBuffer:
-            await downloadImage(
-              refs[0]
-                .download_link
-            ),
+
+          listingId,
+
+          imageBuffer,
+
           filename:
-            refs[0].name ||
-            `vaelons-${id}-image.jpg`,
+            fileRef.name ||
+            `vaelons-${listingId}-image.jpg`,
+
           contentType:
-            refs[0]
-              .mime_type ||
+            fileRef.mime_type ||
             'image/jpeg',
+
           rank,
-          overwrite: false,
+
+          overwrite:
+            false,
+
           altText:
             String(
               req.body
@@ -4363,31 +7257,47 @@ app.post(
             )
         });
 
-      modified = true;
+      etsyModified =
+        true;
 
       const verified =
-        await getListingImages(id);
+        await getListingImages(
+          listingId
+        );
 
       res.json({
-        success: true,
+        success:
+          true,
+
         listing_id:
-          Number(id),
+          Number(
+            listingId
+          ),
+
         upload_result:
           result,
+
         image_count:
-          (
-            verified?.results ||
-            []
-          ).length,
+          (verified?.results || [])
+            .length,
+
         images:
           verified?.results ||
           [],
-        etsy_modified: true
+
+        etsy_modified:
+          true
       });
-    } catch (e) {
-      e.etsyModified =
-        modified;
-      next(e);
+
+    } catch (
+      error
+    ) {
+      error.etsyModified =
+        etsyModified;
+
+      next(
+        error
+      );
     }
   }
 );
@@ -4399,24 +7309,31 @@ app.post(
     res,
     next
   ) => {
-    let modified = false;
+    let etsyModified =
+      false;
 
     try {
-      const id =
+      const listingId =
         asListingId(
-          req.params.listingId
+          req.params
+            .listingId
         );
 
       const imageId =
         asListingId(
-          req.params.imageId
+          req.params
+            .imageId
         );
 
-      if (
+      const approval =
         String(
-          req.body?.approval ||
+          req.body
+            ?.approval ||
           ''
-        ).trim() !==
+        ).trim();
+
+      if (
+        approval !==
         'ONAYLIYORUM'
       ) {
         return res
@@ -4424,6 +7341,7 @@ app.post(
           .json({
             error:
               'Exact approval text ONAYLIYORUM is required',
+
             etsy_modified:
               false
           });
@@ -4431,18 +7349,21 @@ app.post(
 
       const rank =
         Number(
-          req.body?.rank
+          req.body
+            ?.rank
         );
 
       if (
         !Number.isInteger(rank) ||
-        rank < 1
+        rank <
+          1
       ) {
         return res
           .status(400)
           .json({
             error:
               'rank must be a positive integer',
+
             etsy_modified:
               false
           });
@@ -4452,23 +7373,34 @@ app.post(
         await setListingImageRank({
           shopId:
             await getShopId(),
-          listingId: id,
+
+          listingId,
+
           listingImageId:
             imageId,
+
           rank
         });
 
-      modified = true;
+      etsyModified =
+        true;
 
       res.json({
         ...result,
+
         etsy_modified:
           true
       });
-    } catch (e) {
-      e.etsyModified =
-        modified;
-      next(e);
+
+    } catch (
+      error
+    ) {
+      error.etsyModified =
+        etsyModified;
+
+      next(
+        error
+      );
     }
   }
 );
@@ -4480,24 +7412,31 @@ app.delete(
     res,
     next
   ) => {
-    let modified = false;
+    let etsyModified =
+      false;
 
     try {
-      const id =
+      const listingId =
         asListingId(
-          req.params.listingId
+          req.params
+            .listingId
         );
 
       const imageId =
         asListingId(
-          req.params.imageId
+          req.params
+            .imageId
         );
 
-      if (
+      const approval =
         String(
-          req.body?.approval ||
+          req.body
+            ?.approval ||
           ''
-        ).trim() !==
+        ).trim();
+
+      if (
+        approval !==
         'ONAYLIYORUM'
       ) {
         return res
@@ -4505,6 +7444,7 @@ app.delete(
           .json({
             error:
               'Exact approval text ONAYLIYORUM is required',
+
             etsy_modified:
               false
           });
@@ -4514,27 +7454,44 @@ app.delete(
         await deleteListingImage({
           shopId:
             await getShopId(),
-          listingId: id,
+
+          listingId,
+
           listingImageId:
             imageId,
-          verify: true
+
+          verify:
+            true
         });
 
-      modified =
-        result?.deleted === true;
+      etsyModified =
+        result?.deleted ===
+        true;
 
       res.json({
         ...result,
+
         etsy_modified:
-          modified
+          etsyModified
       });
-    } catch (e) {
-      e.etsyModified =
-        modified;
-      next(e);
+
+    } catch (
+      error
+    ) {
+      error.etsyModified =
+        etsyModified;
+
+      next(
+        error
+      );
     }
   }
 );
+
+
+/* =========================================================
+   ERROR HANDLER
+========================================================= */
 
 app.use(
   (
@@ -4543,27 +7500,40 @@ app.use(
     res,
     _next
   ) => {
-    console.error(error);
+    console.error(
+      error
+    );
 
-    res.status(
-      error.status || 500
-    ).json({
-      error:
-        error.message ||
-        'internal_error',
-      details:
-        error.details ||
-        null,
-      etsy_modified:
-        error.etsyModified ===
-        true
-    });
+    res
+      .status(
+        error.status ||
+        500
+      )
+      .json({
+        error:
+          error.message ||
+          'internal_error',
+
+        details:
+          error.details ||
+          null,
+
+        etsy_modified:
+          error
+            .etsyModified ===
+          true
+      });
   }
 );
 
+
 export default app;
 
-if (!process.env.VERCEL) {
+
+if (
+  !process.env
+    .VERCEL
+) {
   const port =
     Number(
       process.env.PORT ||
@@ -4572,9 +7542,10 @@ if (!process.env.VERCEL) {
 
   app.listen(
     port,
-    () =>
+    () => {
       console.log(
-        `VAELONS AI Thumbnail Worker v${WORKER_VERSION} listening on :${port}`
-      )
+        `VAELONS AI Thumbnail Worker v3.2.0 listening on :${port}`
+      );
+    }
   );
 }
