@@ -20,6 +20,7 @@ const SECTION_CONFIDENCE_THRESHOLD = 0.8;
 const SECTION_CLASSIFY_BATCH = 4;
 const SECTION_IMAGE_COUNT = 2;
 const SECTION_HYDRATE_CONCURRENCY = 3;
+const SEO_BATCH_CONCURRENCY = 3;
 
 const SEO_MODEL =
   process.env.OPENAI_SEO_MODEL ||
@@ -934,6 +935,288 @@ async function generateProposal(
     response.output_text ||
     '{}'
   );
+}
+
+
+/* =========================================================
+   FAST BATCH SEO — PROPOSAL + QA IN ONE MODEL CALL
+========================================================= */
+
+async function generateProposalWithQa(
+  listing,
+  original
+) {
+  const qaSchema = {
+    type:
+      'object',
+
+    additionalProperties:
+      false,
+
+    required: [
+      'pass',
+      'title_clear',
+      'tags_valid',
+      'description_preserves_facts',
+      'no_invented_facts',
+      'keyword_stuffing',
+      'confidence',
+      'reason'
+    ],
+
+    properties: {
+      pass: {
+        type:
+          'boolean'
+      },
+
+      title_clear: {
+        type:
+          'boolean'
+      },
+
+      tags_valid: {
+        type:
+          'boolean'
+      },
+
+      description_preserves_facts: {
+        type:
+          'boolean'
+      },
+
+      no_invented_facts: {
+        type:
+          'boolean'
+      },
+
+      keyword_stuffing: {
+        type:
+          'boolean'
+      },
+
+      confidence: {
+        type:
+          'number',
+
+        minimum:
+          0,
+
+        maximum:
+          1
+      },
+
+      reason: {
+        type:
+          'string'
+      }
+    }
+  };
+
+  const schema = {
+    type:
+      'object',
+
+    additionalProperties:
+      false,
+
+    required: [
+      'proposed_title',
+      'proposed_tags',
+      'proposed_description',
+      'change_title',
+      'change_tags',
+      'change_description',
+      'confidence',
+      'risk_level',
+      'reason',
+      'keyword_strategy',
+      'qa'
+    ],
+
+    properties: {
+      proposed_title: {
+        type:
+          'string'
+      },
+
+      proposed_tags: {
+        type:
+          'array',
+
+        items: {
+          type:
+            'string'
+        }
+      },
+
+      proposed_description: {
+        type:
+          'string'
+      },
+
+      change_title: {
+        type:
+          'boolean'
+      },
+
+      change_tags: {
+        type:
+          'boolean'
+      },
+
+      change_description: {
+        type:
+          'boolean'
+      },
+
+      confidence: {
+        type:
+          'number',
+
+        minimum:
+          0,
+
+        maximum:
+          1
+      },
+
+      risk_level: {
+        type:
+          'string',
+
+        enum: [
+          'low',
+          'medium',
+          'high'
+        ]
+      },
+
+      reason: {
+        type:
+          'string'
+      },
+
+      keyword_strategy: {
+        type:
+          'array',
+
+        items: {
+          type:
+            'string'
+        }
+      },
+
+      qa:
+        qaSchema
+    }
+  };
+
+  const response =
+    await openai()
+      .responses
+      .create({
+        model:
+          SEO_MODEL,
+
+        store:
+          false,
+
+        input: [
+          {
+            role:
+              'user',
+
+            content: [
+              {
+                type:
+                  'input_text',
+
+                text:
+`${buildProposalPrompt(
+  listing,
+  original
+)}
+
+STRICT INTERNAL QA
+
+After creating the proposal, review YOUR OWN proposal against the original listing before returning it.
+
+The QA object must fail unless ALL are true:
+- proposed title is clear and natural
+- proposed tags are exactly 13, valid, relevant and not stuffed
+- proposed description preserves important existing facts
+- no material, size, color, location, production method, shipping promise, personalization option, discount, guarantee or product feature was invented
+- no important operational or product fact was removed
+- the proposal still describes the same product
+
+Be conservative. If uncertain about factual preservation, set qa.pass to false.
+Return proposal and QA together in the required JSON schema.`
+              }
+            ]
+          }
+        ],
+
+        text: {
+          format: {
+            type:
+              'json_schema',
+
+            name:
+              'etsy_seo_proposal_with_qa',
+
+            strict:
+              true,
+
+            schema
+          }
+        }
+      });
+
+  const result =
+    JSON.parse(
+      response.output_text ||
+      '{}'
+    );
+
+  const qaRaw =
+    result
+      ?.qa ||
+    {};
+
+  const qa = {
+    ...qaRaw,
+
+    passed:
+      qaRaw.pass ===
+        true &&
+      qaRaw.title_clear ===
+        true &&
+      qaRaw.tags_valid ===
+        true &&
+      qaRaw.description_preserves_facts ===
+        true &&
+      qaRaw.no_invented_facts ===
+        true &&
+      qaRaw.keyword_stuffing ===
+        false &&
+      Number(
+        qaRaw.confidence ||
+        0
+      ) >=
+        0.75
+  };
+
+  const {
+    qa:
+      _discardQa,
+    ...proposal
+  } = result;
+
+  return {
+    proposal,
+    qa
+  };
 }
 
 
@@ -3158,138 +3441,354 @@ router.post(
    BATCH SEO SCAN — CONTINUE ON LISTING FAILURE
 ========================================================= */
 
-async function prepareSeoListingForBatch(listingIdInput) {
-  const listingId = asListingId(listingIdInput);
-  const listing = await etsyRequest(`/listings/${listingId}`);
-  const original = snapshotFromListing(listing);
+async function prepareSeoListingForBatch(listingInput) {
+  const listingId =
+    asListingId(
+      listingInput
+        ?.listing_id ||
+      listingInput
+    );
 
-  const proposal = await generateProposal(listing, original);
-  const validation = validateProposal(proposal);
+  let listing =
+    listingInput &&
+    typeof listingInput ===
+      'object'
+      ? listingInput
+      : null;
 
-  if (!validation.valid) {
+  const listingPageIsComplete =
+    listing &&
+    typeof listing.title ===
+      'string' &&
+    Array.isArray(
+      listing.tags
+    ) &&
+    typeof listing.description ===
+      'string';
+
+  if (
+    !listingPageIsComplete
+  ) {
+    listing =
+      await etsyRequest(
+        `/listings/${listingId}`
+      );
+  }
+
+  const original =
+    snapshotFromListing(
+      listing
+    );
+
+  const combined =
+    await generateProposalWithQa(
+      listing,
+      original
+    );
+
+  const proposal =
+    combined.proposal;
+
+  const validation =
+    validateProposal(
+      proposal
+    );
+
+  if (
+    !validation.valid
+  ) {
     await setJson(
-      stateKey(listingId),
+      stateKey(
+        listingId
+      ),
       {
-        status: 'blocked_validation',
-        checked_at: Date.now(),
-        validation_errors: validation.errors
+        status:
+          'blocked_validation',
+
+        checked_at:
+          Date.now(),
+
+        validation_errors:
+          validation.errors
       }
     );
 
     return {
-      listing_id: Number(listingId),
-      exact_title: original.title,
-      action: 'blocked',
-      status: 'blocked_validation',
-      reason: 'seo_proposal_failed_validation',
-      validation_errors: validation.errors,
-      qa_passed: false,
-      preview_token: null,
-      etsy_modified: false
+      listing_id:
+        Number(
+          listingId
+        ),
+
+      exact_title:
+        original.title,
+
+      action:
+        'blocked',
+
+      status:
+        'blocked_validation',
+
+      reason:
+        'seo_proposal_failed_validation',
+
+      validation_errors:
+        validation.errors,
+
+      qa_passed:
+        false,
+
+      preview_token:
+        null,
+
+      etsy_modified:
+        false
     };
   }
 
-  const normalized = validation.normalized;
+  const normalized =
+    validation.normalized;
 
-  if (proposal.change_title !== true) {
-    normalized.title = original.title;
+  if (
+    proposal.change_title !==
+    true
+  ) {
+    normalized.title =
+      original.title;
   }
 
-  if (proposal.change_tags !== true) {
-    normalized.tags = original.tags;
+  if (
+    proposal.change_tags !==
+    true
+  ) {
+    normalized.tags =
+      original.tags;
   }
 
-  if (proposal.change_description !== true) {
-    normalized.description = original.description;
+  if (
+    proposal.change_description !==
+    true
+  ) {
+    normalized.description =
+      original.description;
   }
 
   const noChanges =
-    normalized.title === original.title &&
-    sameArray(normalized.tags, original.tags) &&
-    normalized.description === original.description;
+    normalized.title ===
+      original.title &&
+    sameArray(
+      normalized.tags,
+      original.tags
+    ) &&
+    normalized.description ===
+      original.description;
 
-  if (noChanges) {
+  if (
+    noChanges
+  ) {
     await setJson(
-      stateKey(listingId),
+      stateKey(
+        listingId
+      ),
       {
-        status: 'healthy',
-        checked_at: Date.now(),
-        original_hash: snapshotHash(original)
+        status:
+          'healthy',
+
+        checked_at:
+          Date.now(),
+
+        original_hash:
+          snapshotHash(
+            original
+          )
       }
     );
 
     return {
-      listing_id: Number(listingId),
-      exact_title: original.title,
-      action: 'keep',
-      status: 'healthy',
-      reason: 'seo_already_healthy',
-      qa_passed: true,
-      preview_token: null,
-      etsy_modified: false
+      listing_id:
+        Number(
+          listingId
+        ),
+
+      exact_title:
+        original.title,
+
+      action:
+        'keep',
+
+      status:
+        'healthy',
+
+      reason:
+        'seo_already_healthy',
+
+      qa_passed:
+        true,
+
+      preview_token:
+        null,
+
+      etsy_modified:
+        false
     };
   }
 
-  const qa = await qualityCheck(original, proposal, normalized);
+  const qa =
+    combined.qa;
 
-  if (!qa.passed) {
+  if (
+    !qa.passed
+  ) {
     await setJson(
-      stateKey(listingId),
+      stateKey(
+        listingId
+      ),
       {
-        status: 'blocked_qa',
-        checked_at: Date.now(),
+        status:
+          'blocked_qa',
+
+        checked_at:
+          Date.now(),
+
         qa
       }
     );
 
     return {
-      listing_id: Number(listingId),
-      exact_title: original.title,
-      action: 'blocked',
-      status: 'blocked_qa',
-      reason: 'seo_quality_gate_failed',
-      qa_passed: false,
+      listing_id:
+        Number(
+          listingId
+        ),
+
+      exact_title:
+        original.title,
+
+      action:
+        'blocked',
+
+      status:
+        'blocked_qa',
+
+      reason:
+        'seo_quality_gate_failed',
+
+      qa_passed:
+        false,
+
       qa,
-      preview_token: null,
-      etsy_modified: false
+
+      preview_token:
+        null,
+
+      etsy_modified:
+        false
     };
   }
 
-  const preview = await savePreview({
-    listing_id: String(listingId),
-    original,
-    original_hash: snapshotHash(original),
-    proposed: normalized,
-    proposal: {
-      change_title: proposal.change_title === true,
-      change_tags: proposal.change_tags === true,
-      change_description: proposal.change_description === true,
-      confidence: Number(proposal.confidence || 0),
-      risk_level: String(proposal.risk_level || 'medium'),
-      reason: String(proposal.reason || ''),
-      keyword_strategy: Array.isArray(proposal.keyword_strategy)
-        ? proposal.keyword_strategy
-        : []
-    },
-    qa
-  });
+  const preview =
+    await savePreview({
+      listing_id:
+        String(
+          listingId
+        ),
+
+      original,
+
+      original_hash:
+        snapshotHash(
+          original
+        ),
+
+      proposed:
+        normalized,
+
+      proposal: {
+        change_title:
+          proposal.change_title ===
+          true,
+
+        change_tags:
+          proposal.change_tags ===
+          true,
+
+        change_description:
+          proposal.change_description ===
+          true,
+
+        confidence:
+          Number(
+            proposal.confidence ||
+            0
+          ),
+
+        risk_level:
+          String(
+            proposal.risk_level ||
+            'medium'
+          ),
+
+        reason:
+          String(
+            proposal.reason ||
+            ''
+          ),
+
+        keyword_strategy:
+          Array.isArray(
+            proposal.keyword_strategy
+          )
+            ? proposal.keyword_strategy
+            : []
+      },
+
+      qa
+    });
 
   return {
-    listing_id: Number(listingId),
-    exact_title: original.title,
-    action: 'preview_ready',
-    status: 'preview_ready',
-    reason: preview.proposal.reason || 'seo_preview_ready',
+    listing_id:
+      Number(
+        listingId
+      ),
+
+    exact_title:
+      original.title,
+
+    action:
+      'preview_ready',
+
+    status:
+      'preview_ready',
+
+    reason:
+      preview.proposal.reason ||
+      'seo_preview_ready',
+
     change_flags: {
-      change_title: preview.proposal.change_title === true,
-      change_tags: preview.proposal.change_tags === true,
-      change_description: preview.proposal.change_description === true
+      change_title:
+        preview.proposal.change_title ===
+        true,
+
+      change_tags:
+        preview.proposal.change_tags ===
+        true,
+
+      change_description:
+        preview.proposal.change_description ===
+        true
     },
-    qa_passed: true,
+
+    qa_passed:
+      true,
+
     qa,
-    preview_token: preview.token,
-    approval_required: 'ONAYLIYORUM',
-    etsy_modified: false
+
+    preview_token:
+      preview.token,
+
+    approval_required:
+      'ONAYLIYORUM',
+
+    etsy_modified:
+      false
   };
 }
 
@@ -3321,36 +3820,37 @@ router.post(
 
       const listings = Array.isArray(page?.results) ? page.results : [];
       const totalCount = Number(page?.count ?? listings.length);
-      const results = [];
-
-      for (const listing of listings) {
-        const listingId = listing?.listing_id;
-
-        try {
-          const result = await prepareSeoListingForBatch(listingId);
-          results.push(result);
-        } catch (error) {
-          let safeListingId = null;
+      const results = await mapWithConcurrency(
+        listings,
+        SEO_BATCH_CONCURRENCY,
+        async (listing) => {
+          const listingId = listing?.listing_id;
 
           try {
-            safeListingId = Number(asListingId(listingId));
-          } catch {
-            safeListingId = null;
-          }
+            return await prepareSeoListingForBatch(listing);
+          } catch (error) {
+            let safeListingId = null;
 
-          results.push({
-            listing_id: safeListingId,
-            exact_title: normalizeTitle(listing?.title || ''),
-            action: 'error',
-            status: 'error',
-            reason: 'seo_prepare_exception',
-            error: String(error?.message || error || 'Unknown error'),
-            qa_passed: false,
-            preview_token: null,
-            etsy_modified: false
-          });
+            try {
+              safeListingId = Number(asListingId(listingId));
+            } catch {
+              safeListingId = null;
+            }
+
+            return {
+              listing_id: safeListingId,
+              exact_title: normalizeTitle(listing?.title || ''),
+              action: 'error',
+              status: 'error',
+              reason: 'seo_prepare_exception',
+              error: String(error?.message || error || 'Unknown error'),
+              qa_passed: false,
+              preview_token: null,
+              etsy_modified: false
+            };
+          }
         }
-      }
+      );
 
       const countStatus = (status) =>
         results.filter((item) => item.status === status).length;
@@ -3368,7 +3868,7 @@ router.post(
         limit,
         processed_count: results.length,
         preview_ready_count: countStatus('preview_ready'),
-        keep_count: countStatus('healthy'),
+        healthy_count: countStatus('healthy'),
         blocked_qa_count: countStatus('blocked_qa'),
         blocked_validation_count: countStatus('blocked_validation'),
         error_count: countStatus('error'),
