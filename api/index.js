@@ -1,4 +1,4 @@
-import app from '../src/server.js';
+import app from '../src/server-core.js';
 import seoRouter from '../src/seo.js';
 
 app.use('/api/seo', seoRouter);
