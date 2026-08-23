@@ -2,19 +2,13 @@
   "version": 2,
   "functions": {
     "api/index.js": {
-      "maxDuration": 300
+      "maxDuration": 60
     }
   },
   "routes": [
     {
       "src": "/(.*)",
       "dest": "api/index.js"
-    }
-  ],
-  "crons": [
-    {
-      "path": "/api/worker/run",
-      "schedule": "0 1 * * *"
     }
   ]
 }

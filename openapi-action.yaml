@@ -1,161 +1,352 @@
 openapi: 3.1.0
+
 info:
-  title: VAELONS Etsy Seller Bridge
-  version: 1.0.0
-  description: Read and safely update the VAELONS Etsy shop. Deletion is intentionally not exposed.
+  title: VAELONS SEO Manager
+  version: 4.0.0
+  description: SEO-only VAELONS Etsy manager. No thumbnail generation. Manager GPT creates SEO proposals; backend validates, previews, publishes only with approval, and supports rollback.
+
 servers:
-  - url: url: https://vaelons-etsy-seller-bridge-3dql.vercel.app
+  - url: https://vaelons-etsy-seller-bridge-3dql.vercel.app
+
 components:
+  schemas: {}
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
-  schemas:
-    ListingPatch:
-      type: object
-      additionalProperties: false
-      properties:
-        title: { type: string }
-        description: { type: string }
-        tags:
-          type: array
-          items: { type: string }
-        materials:
-          type: array
-          items: { type: string }
-        section_id: { type: integer }
-        shop_section_id: { type: integer }
-        state: { type: string }
-    ShopPatch:
-      type: object
-      additionalProperties: false
-      properties:
-        title: { type: string }
-        announcement: { type: string }
-        sale_message: { type: string }
-        digital_sale_message: { type: string }
+
 security:
   - bearerAuth: []
+
 paths:
   /api/token-status:
     get:
       operationId: getEtsyConnectionStatus
-      summary: Check whether the Etsy Seller OAuth connection is ready.
+      summary: Check Etsy connection
       responses:
-        '200': { description: OK }
+        "200":
+          description: OK
+
+  /api/manager/status:
+    get:
+      operationId: getManagerStatus
+      summary: Get SEO-only Manager status
+      responses:
+        "200":
+          description: OK
+
+  /api/manager/bootstrap:
+    get:
+      operationId: getManagerBootstrap
+      summary: Read Manager status and one Etsy listing page
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 100
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+            default: active
+      responses:
+        "200":
+          description: OK
+
   /api/shop:
     get:
       operationId: getVaelonsShop
-      summary: Read the VAELONS Etsy shop settings.
+      summary: Read VAELONS Etsy shop
       responses:
-        '200': { description: Shop data }
-    patch:
-      operationId: updateVaelonsShop
-      summary: Update safe shop text fields such as title and announcement.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/ShopPatch' }
-      responses:
-        '200': { description: Updated shop }
+        "200":
+          description: OK
+
   /api/listings:
     get:
       operationId: listVaelonsListings
-      summary: Read VAELONS listings in batches.
+      summary: Read Etsy listings
       parameters:
-        - in: query
-          name: limit
-          schema: { type: integer, minimum: 1, maximum: 100, default: 100 }
-        - in: query
-          name: offset
-          schema: { type: integer, minimum: 0, default: 0 }
-        - in: query
-          name: state
-          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 100
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+            default: active
       responses:
-        '200': { description: Listings }
+        "200":
+          description: OK
+
   /api/listings/{listingId}:
     get:
       operationId: getVaelonsListing
-      summary: Read a single VAELONS listing.
+      summary: Read one Etsy listing
       parameters:
-        - in: path
-          name: listingId
-          required: true
-          schema: { type: integer }
-      responses:
-        '200': { description: Listing }
-    patch:
-      operationId: updateVaelonsListing
-      summary: Update a listing's title, description, tags, materials, section, or state. Do not change state unless the user explicitly asks.
-      parameters:
-        - in: path
-          name: listingId
-          required: true
-          schema: { type: integer }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/ListingPatch' }
-      responses:
-        '200': { description: Updated listing }
-   /api/listings/{listingId}/images:
-    get:
-      operationId: listVaelonsListingImages
-      summary: Read the images attached to a VAELONS Etsy listing.
-      parameters:
-        - in: path
-          name: listingId
+        - name: listingId
+          in: path
           required: true
           schema:
             type: integer
       responses:
-        '200':
-          description: Listing images
+        "200":
+          description: OK
 
-    post:
-      operationId: uploadVaelonsListingImage
-      summary: Upload a new image to a VAELONS Etsy listing. Do not delete existing images.
+  /api/seo/health:
+    get:
+      operationId: getSeoEngineStatus
+      summary: Get SEO engine status
+      description: Confirms that SEO uses Manager-generated proposals and no backend OpenAI API call.
+      responses:
+        "200":
+          description: OK
+
+  /api/seo/listings:
+    get:
+      operationId: listSeoListings
+      summary: Read listing SEO fields
+      description: Returns title, tags and description for Manager-side SEO analysis. Read only.
       parameters:
-        - in: path
-          name: listingId
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 100
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+            default: active
+      responses:
+        "200":
+          description: OK
+
+  /api/seo/scan:
+    post:
+      operationId: scanSeoStructure
+      summary: Run structural SEO scan without OpenAI API
+      description: Checks title length, tag count and description presence. Semantic SEO judgment remains with Manager GPT. Never modifies Etsy.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                limit:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+                  default: 100
+                offset:
+                  type: integer
+                  minimum: 0
+                  default: 0
+                state:
+                  type: string
+                  default: active
+      responses:
+        "200":
+          description: OK
+        default:
+          description: Error
+
+  /api/seo/listings/{listingId}/prepare:
+    post:
+      operationId: prepareSeoOptimization
+      summary: Validate and save Manager-generated SEO proposal
+      description: Manager GPT supplies proposed title, tags and/or description. Backend makes no OpenAI call and never publishes in this step.
+      parameters:
+        - name: listingId
+          in: path
           required: true
           schema:
             type: integer
       requestBody:
         required: true
         content:
-          multipart/form-data:
+          application/json:
             schema:
               type: object
-              required:
-                - image
+              additionalProperties: false
               properties:
-                image:
+                proposed_title:
                   type: string
-                  format: binary
+                proposed_tags:
+                  type: array
+                  items:
+                    type: string
+                  minItems: 13
+                  maxItems: 13
+                proposed_description:
+                  type: string
+                reason:
+                  type: string
       responses:
-        '200':
-          description: Uploaded listing image
-  /api/sections:
-    get:
-      operationId: listVaelonsShopSections
-      summary: List VAELONS shop sections.
-      responses:
-        '200': { description: Sections }
+        "200":
+          description: Preview ready or no changes
+        "422":
+          description: Deterministic validation blocked proposal
+        default:
+          description: Error
+
+  /api/seo/batch-prepare:
     post:
-      operationId: createVaelonsShopSection
-      summary: Create a shop section.
+      operationId: batchPrepareSeoOptimizations
+      summary: Validate up to 20 Manager-generated SEO proposals
+      description: Creates preview tokens without any backend OpenAI call. Never publishes.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [title]
+              additionalProperties: false
+              required:
+                - items
               properties:
-                title: { type: string }
+                items:
+                  type: array
+                  minItems: 1
+                  maxItems: 20
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - listing_id
+                    properties:
+                      listing_id:
+                        type: integer
+                      proposed_title:
+                        type: string
+                      proposed_tags:
+                        type: array
+                        items:
+                          type: string
+                        minItems: 13
+                        maxItems: 13
+                      proposed_description:
+                        type: string
+                      reason:
+                        type: string
       responses:
-        '200': { description: Created section }
+        "200":
+          description: Batch preview result
+        default:
+          description: Error
+
+  /api/seo/listings/{listingId}/status:
+    get:
+      operationId: getSeoOptimizationStatus
+      summary: Read SEO preview or publish state
+      parameters:
+        - name: listingId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+
+  /api/seo/listings/{listingId}/publish:
+    post:
+      operationId: publishSeoOptimization
+      summary: Publish an approved SEO preview
+      description: Etsy write action. Requires preview token and exact ONAYLIYORUM approval.
+      parameters:
+        - name: listingId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - preview_token
+                - approval
+              properties:
+                preview_token:
+                  type: string
+                approval:
+                  type: string
+                  enum:
+                    - ONAYLIYORUM
+      responses:
+        "200":
+          description: Published and verified
+        default:
+          description: Error
+
+  /api/seo/listings/{listingId}/rollback:
+    post:
+      operationId: rollbackSeoOptimization
+      summary: Roll back the most recent successful SEO publish
+      description: Etsy write action. Requires exact GERI_AL ONAYLIYORUM approval.
+      parameters:
+        - name: listingId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - approval
+              properties:
+                approval:
+                  type: string
+                  enum:
+                    - GERI_AL ONAYLIYORUM
+      responses:
+        "200":
+          description: Rolled back and verified
+        default:
+          description: Error
