@@ -3153,6 +3153,244 @@ router.post(
 );
 
 
+
+/* =========================================================
+   BATCH SEO SCAN — CONTINUE ON LISTING FAILURE
+========================================================= */
+
+async function prepareSeoListingForBatch(listingIdInput) {
+  const listingId = asListingId(listingIdInput);
+  const listing = await etsyRequest(`/listings/${listingId}`);
+  const original = snapshotFromListing(listing);
+
+  const proposal = await generateProposal(listing, original);
+  const validation = validateProposal(proposal);
+
+  if (!validation.valid) {
+    await setJson(
+      stateKey(listingId),
+      {
+        status: 'blocked_validation',
+        checked_at: Date.now(),
+        validation_errors: validation.errors
+      }
+    );
+
+    return {
+      listing_id: Number(listingId),
+      exact_title: original.title,
+      action: 'blocked',
+      status: 'blocked_validation',
+      reason: 'seo_proposal_failed_validation',
+      validation_errors: validation.errors,
+      qa_passed: false,
+      preview_token: null,
+      etsy_modified: false
+    };
+  }
+
+  const normalized = validation.normalized;
+
+  if (proposal.change_title !== true) {
+    normalized.title = original.title;
+  }
+
+  if (proposal.change_tags !== true) {
+    normalized.tags = original.tags;
+  }
+
+  if (proposal.change_description !== true) {
+    normalized.description = original.description;
+  }
+
+  const noChanges =
+    normalized.title === original.title &&
+    sameArray(normalized.tags, original.tags) &&
+    normalized.description === original.description;
+
+  if (noChanges) {
+    await setJson(
+      stateKey(listingId),
+      {
+        status: 'healthy',
+        checked_at: Date.now(),
+        original_hash: snapshotHash(original)
+      }
+    );
+
+    return {
+      listing_id: Number(listingId),
+      exact_title: original.title,
+      action: 'keep',
+      status: 'healthy',
+      reason: 'seo_already_healthy',
+      qa_passed: true,
+      preview_token: null,
+      etsy_modified: false
+    };
+  }
+
+  const qa = await qualityCheck(original, proposal, normalized);
+
+  if (!qa.passed) {
+    await setJson(
+      stateKey(listingId),
+      {
+        status: 'blocked_qa',
+        checked_at: Date.now(),
+        qa
+      }
+    );
+
+    return {
+      listing_id: Number(listingId),
+      exact_title: original.title,
+      action: 'blocked',
+      status: 'blocked_qa',
+      reason: 'seo_quality_gate_failed',
+      qa_passed: false,
+      qa,
+      preview_token: null,
+      etsy_modified: false
+    };
+  }
+
+  const preview = await savePreview({
+    listing_id: String(listingId),
+    original,
+    original_hash: snapshotHash(original),
+    proposed: normalized,
+    proposal: {
+      change_title: proposal.change_title === true,
+      change_tags: proposal.change_tags === true,
+      change_description: proposal.change_description === true,
+      confidence: Number(proposal.confidence || 0),
+      risk_level: String(proposal.risk_level || 'medium'),
+      reason: String(proposal.reason || ''),
+      keyword_strategy: Array.isArray(proposal.keyword_strategy)
+        ? proposal.keyword_strategy
+        : []
+    },
+    qa
+  });
+
+  return {
+    listing_id: Number(listingId),
+    exact_title: original.title,
+    action: 'preview_ready',
+    status: 'preview_ready',
+    reason: preview.proposal.reason || 'seo_preview_ready',
+    change_flags: {
+      change_title: preview.proposal.change_title === true,
+      change_tags: preview.proposal.change_tags === true,
+      change_description: preview.proposal.change_description === true
+    },
+    qa_passed: true,
+    qa,
+    preview_token: preview.token,
+    approval_required: 'ONAYLIYORUM',
+    etsy_modified: false
+  };
+}
+
+router.post(
+  '/scan',
+  async (
+    req,
+    res,
+    next
+  ) => {
+    const startedAt = Date.now();
+
+    try {
+      const limit = clampInt(req.body?.limit ?? req.query?.limit ?? 5, 1, 20);
+      const offset = Math.max(0, Number(req.body?.offset ?? req.query?.offset ?? 0) || 0);
+      const state = String(req.body?.state ?? req.query?.state ?? 'active');
+      const shopId = await getShopId();
+
+      const page = await etsyRequest(
+        `/shops/${shopId}/listings`,
+        {
+          params: {
+            state,
+            limit,
+            offset
+          }
+        }
+      );
+
+      const listings = Array.isArray(page?.results) ? page.results : [];
+      const totalCount = Number(page?.count ?? listings.length);
+      const results = [];
+
+      for (const listing of listings) {
+        const listingId = listing?.listing_id;
+
+        try {
+          const result = await prepareSeoListingForBatch(listingId);
+          results.push(result);
+        } catch (error) {
+          let safeListingId = null;
+
+          try {
+            safeListingId = Number(asListingId(listingId));
+          } catch {
+            safeListingId = null;
+          }
+
+          results.push({
+            listing_id: safeListingId,
+            exact_title: normalizeTitle(listing?.title || ''),
+            action: 'error',
+            status: 'error',
+            reason: 'seo_prepare_exception',
+            error: String(error?.message || error || 'Unknown error'),
+            qa_passed: false,
+            preview_token: null,
+            etsy_modified: false
+          });
+        }
+      }
+
+      const countStatus = (status) =>
+        results.filter((item) => item.status === status).length;
+
+      const nextOffset = offset + listings.length;
+      const hasMore = listings.length > 0 && nextOffset < totalCount;
+
+      res.json({
+        ok: true,
+        action: 'seo_batch_scan_complete',
+        continue_on_error: true,
+        state,
+        total_count: totalCount,
+        offset,
+        limit,
+        processed_count: results.length,
+        preview_ready_count: countStatus('preview_ready'),
+        keep_count: countStatus('healthy'),
+        blocked_qa_count: countStatus('blocked_qa'),
+        blocked_validation_count: countStatus('blocked_validation'),
+        error_count: countStatus('error'),
+        qa_failed_count:
+          countStatus('blocked_qa') +
+          countStatus('blocked_validation') +
+          countStatus('error'),
+        next_offset: hasMore ? nextOffset : null,
+        has_more: hasMore,
+        duration_ms: Date.now() - startedAt,
+        results,
+        approval_required: 'ONAYLIYORUM',
+        publish_performed: false,
+        etsy_modified: false
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+
 /* =========================================================
    PREPARE SEO
 ========================================================= */
