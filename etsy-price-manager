@@ -1,1 +1,561 @@
 
+============================================================
+1) YENİ DOSYA:
+lib/etsy-price-manager.js
+============================================================
+
+const ETSY_API = "https://api.etsy.com/v3/application";
+
+export const TARGET_VARIATION = "Rolled 13x18";
+export const TARGET_PRICE = 89.0;
+
+function headers() {
+  if (!process.env.ETSY_API_KEY) {
+    throw new Error("ETSY_API_KEY eksik");
+  }
+
+  if (!process.env.ETSY_ACCESS_TOKEN) {
+    throw new Error("ETSY_ACCESS_TOKEN eksik");
+  }
+
+  return {
+    "x-api-key": process.env.ETSY_API_KEY,
+    Authorization: `Bearer ${process.env.ETSY_ACCESS_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+}
+
+async function etsyFetch(path, options = {}) {
+  const response = await fetch(`${ETSY_API}${path}`, {
+    ...options,
+    headers: {
+      ...headers(),
+      ...(options.headers || {}),
+    },
+    cache: "no-store",
+  });
+
+  const text = await response.text();
+
+  let data = {};
+
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = { raw: text };
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      data?.error ||
+        data?.message ||
+        `Etsy API hatası: ${response.status}`
+    );
+  }
+
+  return data;
+}
+
+export async function getActiveListings() {
+  const shopId = process.env.ETSY_SHOP_ID;
+
+  if (!shopId) {
+    throw new Error("ETSY_SHOP_ID eksik");
+  }
+
+  const listings = [];
+
+  let offset = 0;
+  const limit = 100;
+
+  while (true) {
+    const data = await etsyFetch(
+      `/shops/${shopId}/listings/active?limit=${limit}&offset=${offset}`
+    );
+
+    const rows = data.results || [];
+
+    listings.push(...rows);
+
+    if (rows.length < limit) {
+      break;
+    }
+
+    offset += limit;
+  }
+
+  return listings;
+}
+
+export async function getInventories(listingIds) {
+  const inventories = [];
+
+  for (let i = 0; i < listingIds.length; i += 100) {
+    const chunk = listingIds.slice(i, i + 100);
+
+    const data = await etsyFetch(
+      `/listings/batch/inventory?listing_ids=${chunk.join(",")}`
+    );
+
+    inventories.push(...(data.results || []));
+  }
+
+  return inventories;
+}
+
+function moneyToNumber(price) {
+  if (price == null) return null;
+
+  if (typeof price === "number") {
+    return price;
+  }
+
+  if (
+    typeof price === "object" &&
+    typeof price.amount === "number" &&
+    typeof price.divisor === "number"
+  ) {
+    return price.amount / price.divisor;
+  }
+
+  return Number(price);
+}
+
+function isRolled13x18(product) {
+  return (product.property_values || []).some((property) =>
+    (property.values || []).some(
+      (value) =>
+        String(value).trim().toLowerCase() ===
+        TARGET_VARIATION.toLowerCase()
+    )
+  );
+}
+
+function targetProducts(inventory) {
+  return (inventory?.products || []).filter(isRolled13x18);
+}
+
+function cleanPropertyValue(property) {
+  const result = {
+    property_id: property.property_id,
+    value_ids: property.value_ids || [],
+    values: property.values || [],
+  };
+
+  if (property.property_name != null) {
+    result.property_name = property.property_name;
+  }
+
+  if (property.scale_id != null) {
+    result.scale_id = property.scale_id;
+  }
+
+  return result;
+}
+
+function buildInventoryPayload(inventory) {
+  return {
+    products: (inventory.products || []).map((product) => ({
+      sku: product.sku || "",
+
+      property_values: (product.property_values || []).map(
+        cleanPropertyValue
+      ),
+
+      offerings: (product.offerings || []).map((offering) => {
+        const result = {
+          quantity: offering.quantity,
+          is_enabled: offering.is_enabled,
+
+          price: isRolled13x18(product)
+            ? TARGET_PRICE
+            : moneyToNumber(offering.price),
+        };
+
+        if (offering.readiness_state_id != null) {
+          result.readiness_state_id =
+            offering.readiness_state_id;
+        }
+
+        return result;
+      }),
+    })),
+
+    price_on_property:
+      inventory.price_on_property || [],
+
+    quantity_on_property:
+      inventory.quantity_on_property || [],
+
+    sku_on_property:
+      inventory.sku_on_property || [],
+  };
+}
+
+export async function scanRolled13x18(
+  onlyListingId = null
+) {
+  let listings = await getActiveListings();
+
+  if (onlyListingId) {
+    listings = listings.filter(
+      (listing) =>
+        Number(listing.listing_id) ===
+        Number(onlyListingId)
+    );
+  }
+
+  if (!listings.length) {
+    return [];
+  }
+
+  const inventories = await getInventories(
+    listings.map((listing) => listing.listing_id)
+  );
+
+  const inventoryMap = new Map(
+    inventories.map((row) => [
+      String(row.listing_id),
+      row.inventory,
+    ])
+  );
+
+  const results = [];
+
+  for (const listing of listings) {
+    const inventory = inventoryMap.get(
+      String(listing.listing_id)
+    );
+
+    if (!inventory) continue;
+
+    const matches = targetProducts(inventory);
+
+    if (!matches.length) continue;
+
+    const prices = matches.flatMap((product) =>
+      (product.offerings || []).map((offering) =>
+        moneyToNumber(offering.price)
+      )
+    );
+
+    results.push({
+      listingId: listing.listing_id,
+      title: listing.title,
+      url: listing.url,
+      variation: TARGET_VARIATION,
+      currentPrices: prices,
+      targetPrice: TARGET_PRICE,
+
+      already89:
+        prices.length > 0 &&
+        prices.every(
+          (price) =>
+            Math.abs(
+              Number(price) - TARGET_PRICE
+            ) < 0.001
+        ),
+    });
+  }
+
+  return results;
+}
+
+export async function updateRolled13x18(
+  listingIds
+) {
+  if (
+    !Array.isArray(listingIds) ||
+    !listingIds.length
+  ) {
+    throw new Error(
+      "Güncellenecek listing bulunamadı."
+    );
+  }
+
+  const listings = await getActiveListings();
+
+  const selected = listings.filter((listing) =>
+    listingIds
+      .map(Number)
+      .includes(Number(listing.listing_id))
+  );
+
+  const inventories = await getInventories(
+    selected.map(
+      (listing) => listing.listing_id
+    )
+  );
+
+  const inventoryMap = new Map(
+    inventories.map((row) => [
+      String(row.listing_id),
+      row.inventory,
+    ])
+  );
+
+  const results = [];
+
+  for (const listing of selected) {
+    const inventory = inventoryMap.get(
+      String(listing.listing_id)
+    );
+
+    if (!inventory) {
+      results.push({
+        listingId: listing.listing_id,
+        title: listing.title,
+        status: "SKIPPED",
+        message: "Inventory bulunamadı.",
+      });
+
+      continue;
+    }
+
+    const matches =
+      targetProducts(inventory);
+
+    if (!matches.length) {
+      results.push({
+        listingId: listing.listing_id,
+        title: listing.title,
+        status: "SKIPPED",
+        message:
+          "Rolled 13x18 bulunamadı.",
+      });
+
+      continue;
+    }
+
+    const oldPrices = matches.flatMap(
+      (product) =>
+        (product.offerings || []).map(
+          (offering) =>
+            moneyToNumber(offering.price)
+        )
+    );
+
+    const already89 =
+      oldPrices.length > 0 &&
+      oldPrices.every(
+        (price) =>
+          Math.abs(
+            Number(price) - TARGET_PRICE
+          ) < 0.001
+      );
+
+    if (already89) {
+      results.push({
+        listingId: listing.listing_id,
+        title: listing.title,
+        status: "ALREADY_89",
+        oldPrices,
+        newPrice: TARGET_PRICE,
+      });
+
+      continue;
+    }
+
+    await etsyFetch(
+      `/listings/${listing.listing_id}/inventory`,
+      {
+        method: "PUT",
+        body: JSON.stringify(
+          buildInventoryPayload(inventory)
+        ),
+      }
+    );
+
+    results.push({
+      listingId: listing.listing_id,
+      title: listing.title,
+      status: "UPDATED",
+      oldPrices,
+      newPrice: TARGET_PRICE,
+    });
+  }
+
+  return results;
+}
+
+
+============================================================
+2) YENİ DOSYA:
+app/api/etsy-price-manager/scan/route.js
+============================================================
+
+import { NextResponse } from "next/server";
+
+import {
+  scanRolled13x18,
+} from "../../../../lib/etsy-price-manager";
+
+export async function POST(request) {
+  try {
+    const body =
+      await request.json().catch(() => ({}));
+
+    const listingId =
+      body?.listingId || null;
+
+    const results =
+      await scanRolled13x18(listingId);
+
+    return NextResponse.json({
+      ok: true,
+      changed: false,
+      targetVariation: "Rolled 13x18",
+      targetPrice: 89,
+      count: results.length,
+      results,
+    });
+  } catch (error) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: error.message,
+      },
+      {
+        status: 500,
+      }
+    );
+  }
+}
+
+
+============================================================
+3) YENİ DOSYA:
+app/api/etsy-price-manager/update/route.js
+============================================================
+
+import { NextResponse } from "next/server";
+
+import {
+  updateRolled13x18,
+} from "../../../../lib/etsy-price-manager";
+
+export async function POST(request) {
+  try {
+    const body = await request.json();
+
+    if (body.approval !== "ONAYLIYORUM") {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "Gerçek Etsy değişikliği için approval alanı ONAYLIYORUM olmalıdır.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    const listingIds =
+      body.listingIds || [];
+
+    const results =
+      await updateRolled13x18(
+        listingIds
+      );
+
+    return NextResponse.json({
+      ok: true,
+      targetVariation: "Rolled 13x18",
+      targetPrice: 89,
+      results,
+    });
+  } catch (error) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: error.message,
+      },
+      {
+        status: 500,
+      }
+    );
+  }
+}
+
+
+============================================================
+VERCEL ENVIRONMENT VARIABLES
+============================================================
+
+ETSY_API_KEY=BURAYA_KEYSTRING:SHARED_SECRET
+ETSY_ACCESS_TOKEN=BURAYA_ETSY_ACCESS_TOKEN
+ETSY_SHOP_ID=67345968
+
+
+============================================================
+ÖNCE TIGER ÜRÜNÜNÜ SADECE TARA
+============================================================
+
+POST:
+/api/etsy-price-manager/scan
+
+BODY:
+
+{
+  "listingId": 4569250756
+}
+
+
+Bu işlem Etsy'yi DEĞİŞTİRMEZ.
+
+
+============================================================
+TIGER ÜRÜNÜNÜ 89 USD YAP
+============================================================
+
+POST:
+/api/etsy-price-manager/update
+
+BODY:
+
+{
+  "approval": "ONAYLIYORUM",
+  "listingIds": [
+    4569250756
+  ]
+}
+
+
+============================================================
+TÜM ÜRÜNLERİ TARA
+============================================================
+
+POST:
+/api/etsy-price-manager/scan
+
+BODY:
+
+{}
+
+
+Tarama sonucunda sana şöyle listing ID'leri döner:
+
+[
+  4569250756,
+  4569244426,
+  4568418998
+]
+
+
+Sonra SADECE taramada çıkan listing ID'lerini
+update endpointine gönder:
+
+POST:
+/api/etsy-price-manager/update
+
+BODY:
+
+{
+  "approval": "ONAYLIYORUM",
+  "listingIds": [
+    4569250756,
+    4569244426,
+    4568418998
+  ]
+}
