@@ -1,10 +1,11 @@
 # VAELONS Control Center — Delivery Roadmap
 
-## Current build status — v0.3
+## Current build status — v0.3.1
 - isolated `control-center-v1` preview branch
 - verified Etsy catalog read and strict VAELONS shop identity check
 - desktop-first app shell, catalog, listing detail, image ranks, action queue and health screens
 - deterministic metadata validation and unsupported-claim guard
+- existing unverified-claim detection and dedicated compliance review signal
 - preview snapshot, idempotency record, per-listing lock, exact confirmation and post-write verification path
 - rollback path for title, tags and description
 - global mode, authentication gate, kill switch and single-listing allowlist all default to locked

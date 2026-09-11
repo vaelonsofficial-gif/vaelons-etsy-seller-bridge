@@ -49,8 +49,8 @@ export default async function HomePage() {
           <section className="statsGrid">
             <StatCard label="Etsy bağlantısı" value={snapshot.etsy_connected ? 'HEALTHY' : 'OFFLINE'} sub="VAELONS shop identity checked" />
             <StatCard label="Aktif listing" value={snapshot.catalog.loaded_count} sub={`Etsy total: ${snapshot.catalog.total_count}`} />
-            <StatCard label="Görsel inceleme" value={snapshot.decisions.REVIEW_REQUIRED || 0} sub="Hero + performance doğrulaması bekliyor" />
-            <StatCard label="Repair / Blocked" value={(snapshot.decisions.REPAIR || 0) + (snapshot.decisions.BLOCKED || 0)} sub="Reklamdan önce iyileştirme" />
+            <StatCard label="Görsel inceleme" value={snapshot.summary.visual_review_count} sub="Hero kalitesi doğrulaması bekliyor" />
+            <StatCard label="Claim kontrolü" value={snapshot.summary.claim_review_count} sub={`${snapshot.summary.repair_or_blocked_count} listing repair / blocked`} />
           </section>
 
           <section className="notice">

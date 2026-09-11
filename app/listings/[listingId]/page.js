@@ -94,6 +94,12 @@ export default async function ListingDetailPage({ params }) {
               <div><span>SEO</span><strong>{listing.audit.seo_score}</strong></div>
               <div><span>Trust</span><strong>{listing.audit.trust_score}</strong></div>
             </div>
+            {listing.audit.claim_review_required && (
+              <div className="claimRisk">
+                <strong>Claim review gerekli</strong>
+                <p>{listing.audit.unverified_claims.map((claim) => claim.label).join(' · ')}</p>
+              </div>
+            )}
             <ul className="auditFindings">
               {listing.audit.findings.map((finding) => <li key={finding}>{finding}</li>)}
             </ul>
