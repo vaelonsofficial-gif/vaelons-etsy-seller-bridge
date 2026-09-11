@@ -1305,6 +1305,10 @@ input:disabled {
   min-width: 0;
 }
 
+.queueListing > div:last-child {
+  min-width: 0;
+}
+
 .queueThumb {
   position: relative;
   overflow: hidden;
