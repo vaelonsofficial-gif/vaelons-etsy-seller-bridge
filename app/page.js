@@ -24,18 +24,17 @@ export default async function HomePage() {
   }
 
   return (
-    <main className="shell">
-      <header className="topbar">
+    <main className="pageShell">
+      <header className="pageTopbar">
         <div>
-          <div className="brand">VAELONS</div>
-          <div className="productName">CONTROL CENTER</div>
+          <p className="eyebrow">OPERATIONS / v0.3</p>
+          <h1>Genel Bakış</h1>
         </div>
-        <div className="modePill"><span className="dot" /> READ ONLY · WRITE LOCKED</div>
+        <div className="modePill"><span className="statusDot" /> {snapshot?.mode || 'READ_ONLY'} · {snapshot?.write_lock !== false ? 'WRITE LOCKED' : 'WRITE READY'}</div>
       </header>
 
-      <section className="hero">
-        <p className="eyebrow">OPERATIONS / v0.2</p>
-        <h1>Mağazayı tek ekrandan gör, ölç, düzelt.</h1>
+      <section className="hero introHero">
+        <h2>Mağazayı tek ekrandan gör, ölç, düzelt.</h2>
         <p>Etsy kataloğunu canlı okur, metadata denetimi yapar ve görsel/performance incelemesine hazırlanacak iş kuyruğunu çıkarır.</p>
       </section>
 
@@ -62,7 +61,9 @@ export default async function HomePage() {
             <div className="syncInfo">Son canlı okuma<br /><strong>{new Date(snapshot.generated_at).toLocaleString('tr-TR')}</strong></div>
           </section>
 
-          <CatalogClient listings={snapshot.catalog.listings} />
+          <div id="catalog">
+            <CatalogClient listings={snapshot.catalog.listings} />
+          </div>
         </>
       )}
     </main>

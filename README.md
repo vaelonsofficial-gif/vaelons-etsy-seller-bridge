@@ -1,5 +1,13 @@
 # VAELONS Etsy Seller Bridge
 
+## Control Center preview
+
+The `control-center-v1` branch extends the proven Etsy connector with a private, desktop-first VAELONS operations interface. Version 0.3 includes verified catalog reads, listing detail pages, image-rank visibility, deterministic metadata validation, a durable action queue adapter, per-listing locks, post-write verification and metadata rollback.
+
+Etsy mutations are fail-closed by default. Enabling a bounded SAFE_WRITE test requires all four independent conditions: `CONTROL_CENTER_WRITE_MODE=SAFE_WRITE`, `CONTROL_CENTER_KILL_SWITCH=OFF`, `CONTROL_CENTER_AUTH_READY=true`, and an exact `CONTROL_CENTER_SAFE_LISTING_ID`. AUTOPILOT cannot be enabled from environment variables alone.
+
+The scheduling workflow in the separate `etsy-price-manager` project is out of scope and remains untouched.
+
 A small, private bridge between ChatGPT Custom Actions and the official Etsy Open API v3.
 
 ## Safety choices
@@ -57,4 +65,3 @@ This Vercel-safe build does not write OAuth tokens to local disk. After OAuth, c
 ## v3 fix
 Adds the OAuth Bearer header when resolving the authorized seller's shop from the Etsy user ID.
 Production environment refresh
-

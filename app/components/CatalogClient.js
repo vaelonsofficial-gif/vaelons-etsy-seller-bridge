@@ -1,5 +1,7 @@
 'use client';
 
+import Image from 'next/image';
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
 const PAGE_SIZE = 24;
@@ -70,7 +72,14 @@ export default function CatalogClient({ listings }) {
         {visible.map((listing) => (
           <article className="listingCard" key={listing.listing_id}>
             <div className="imageWrap">
-              {listing.hero_url ? <img src={listing.hero_url} alt="" loading="lazy" width="570" height="422" /> : <div className="imagePlaceholder">Görsel yok</div>}
+              {listing.hero_url ? (
+                <Image
+                  src={listing.hero_url}
+                  alt={`${listing.title} ana görseli`}
+                  fill
+                  sizes="(max-width: 760px) 100vw, (max-width: 1180px) 50vw, 33vw"
+                />
+              ) : <div className="imagePlaceholder">Görsel yok</div>}
               <span className={`decisionBadge decision-${listing.audit.decision}`}>{decisionLabels[listing.audit.decision]}</span>
             </div>
             <div className="listingBody">
@@ -95,6 +104,7 @@ export default function CatalogClient({ listings }) {
                   {listing.audit.findings.slice(0, 2).map((finding) => <li key={finding}>{finding}</li>)}
                 </ul>
               )}
+              <Link className="cardAction" href={`/listings/${listing.listing_id}`}>Listingi incele <span>→</span></Link>
             </div>
           </article>
         ))}

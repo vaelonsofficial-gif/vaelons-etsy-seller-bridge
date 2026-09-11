@@ -468,6 +468,39 @@ export async function getShopId() {
   );
 }
 
+export async function getVerifiedShopIdentity() {
+  const shopId = await getShopId();
+  const shop = await etsyRequest(`/shops/${encodeURIComponent(shopId)}`);
+  const expectedName = String(
+    process.env.ETSY_EXPECTED_SHOP_NAME || 'VAELONS'
+  ).trim().toLocaleLowerCase('en-US');
+  const actualName = String(shop?.shop_name || '')
+    .trim()
+    .toLocaleLowerCase('en-US');
+
+  if (!actualName || actualName !== expectedName) {
+    const error = new Error(
+      `Authorized Etsy shop '${shop?.shop_name || 'unknown'}', expected '${process.env.ETSY_EXPECTED_SHOP_NAME || 'VAELONS'}'.`
+    );
+    error.status = 409;
+    error.code = 'SHOP_IDENTITY_MISMATCH';
+    throw error;
+  }
+
+  if (String(shop?.shop_id || '') !== String(shopId)) {
+    const error = new Error('Resolved Etsy shop ID does not match verified shop identity');
+    error.status = 409;
+    error.code = 'SHOP_ID_MISMATCH';
+    throw error;
+  }
+
+  return {
+    shop_id: Number(shopId),
+    shop_name: String(shop.shop_name),
+    verified: true
+  };
+}
+
 export function etsyApiKeyForOAuth() {
   return required(
     'ETSY_KEYSTRING'

@@ -1,28 +1,22 @@
 import { NextResponse } from 'next/server';
-import { getShopId, getTokenStatus } from '../../../../src/etsy.js';
+import { getSystemHealth } from '../../../../lib/control-center/health.js';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const [shopId, token] = await Promise.all([getShopId(), getTokenStatus()]);
+    const health = await getSystemHealth();
     return NextResponse.json({
-      ok: true,
       service: 'vaelons-control-center',
-      version: '0.2.0',
-      mode: 'READ_ONLY',
-      write_lock: true,
-      etsy_connected: Boolean(token?.connected),
-      shop_identity_verified: true,
-      shop_id: Number(shopId),
+      ...health,
       etsy_modified: false
     }, { headers: { 'cache-control': 'no-store' } });
   } catch (error) {
     return NextResponse.json({
       ok: false,
       service: 'vaelons-control-center',
-      version: '0.2.0',
+      version: '0.3.0',
       mode: 'READ_ONLY',
       write_lock: true,
       shop_identity_verified: false,
