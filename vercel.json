@@ -1,14 +1,9 @@
 {
-  "version": 2,
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
   "functions": {
-    "api/index.js": {
+    "app/api/control-center/**/route.js": {
       "maxDuration": 60
     }
-  },
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "api/index.js"
-    }
-  ]
+  }
 }
