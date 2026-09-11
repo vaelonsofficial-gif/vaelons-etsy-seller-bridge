@@ -34,9 +34,9 @@ export default async function HomePage() {
       </header>
 
       <section className="hero">
-        <p className="eyebrow">OPERATIONS / v0.1</p>
+        <p className="eyebrow">OPERATIONS / v0.2</p>
         <h1>Mağazayı tek ekrandan gör, ölç, düzelt.</h1>
-        <p>İlk sürüm Etsy kataloğunu canlı okur ve baseline conversion audit üretir. Bu branch Etsy’ye hiçbir değişiklik yazamaz.</p>
+        <p>Etsy kataloğunu canlı okur, metadata denetimi yapar ve görsel/performance incelemesine hazırlanacak iş kuyruğunu çıkarır.</p>
       </section>
 
       {error ? (
@@ -50,14 +50,14 @@ export default async function HomePage() {
           <section className="statsGrid">
             <StatCard label="Etsy bağlantısı" value={snapshot.etsy_connected ? 'HEALTHY' : 'OFFLINE'} sub="VAELONS shop identity checked" />
             <StatCard label="Aktif listing" value={snapshot.catalog.loaded_count} sub={`Etsy total: ${snapshot.catalog.total_count}`} />
-            <StatCard label="Hero adayı" value={snapshot.decisions.HERO_CANDIDATE || 0} sub="Baseline score ≥ 88" />
+            <StatCard label="Görsel inceleme" value={snapshot.decisions.REVIEW_REQUIRED || 0} sub="Hero + performance doğrulaması bekliyor" />
             <StatCard label="Repair / Blocked" value={(snapshot.decisions.REPAIR || 0) + (snapshot.decisions.BLOCKED || 0)} sub="Reklamdan önce iyileştirme" />
           </section>
 
           <section className="notice">
             <div>
-              <b>Bu skorlar karar motorunun ilk baseline sürümüdür.</b>
-              <p>Ads spend, CTR, favori, sepet, sipariş ve marj verisi henüz bağlanmadığı için reklam kararı otomatik uygulanmaz.</p>
+              <b>HERO ve reklam kararları şimdilik kilitli.</b>
+              <p>Metadata tek başına satış potansiyelini kanıtlamaz. Görsel kalite ile CTR, favori, sipariş, harcama ve marj verisi bağlanmadan hiçbir listing reklama uygun sayılmaz.</p>
             </div>
             <div className="syncInfo">Son canlı okuma<br /><strong>{new Date(snapshot.generated_at).toLocaleString('tr-TR')}</strong></div>
           </section>

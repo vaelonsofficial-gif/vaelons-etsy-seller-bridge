@@ -1,10 +1,11 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+
+const PAGE_SIZE = 24;
 
 const decisionLabels = {
-  HERO_CANDIDATE: 'Hero adayı',
-  TEST_CANDIDATE: 'Test adayı',
+  REVIEW_REQUIRED: 'Görsel inceleme',
   REPAIR: 'Onarım gerekli',
   BLOCKED: 'Reklama kapalı'
 };
@@ -25,6 +26,7 @@ function money(price) {
 export default function CatalogClient({ listings }) {
   const [query, setQuery] = useState('');
   const [decision, setDecision] = useState('ALL');
+  const [page, setPage] = useState(1);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -34,6 +36,13 @@ export default function CatalogClient({ listings }) {
       return matchesQuery && matchesDecision;
     });
   }, [listings, query, decision]);
+
+  useEffect(() => setPage(1), [query, decision]);
+
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, pageCount);
+  const start = (safePage - 1) * PAGE_SIZE;
+  const visible = filtered.slice(start, start + PAGE_SIZE);
 
   return (
     <section className="catalogSection">
@@ -46,21 +55,22 @@ export default function CatalogClient({ listings }) {
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Başlık veya listing ID ara" />
           <select value={decision} onChange={(event) => setDecision(event.target.value)}>
             <option value="ALL">Tüm kararlar</option>
-            <option value="HERO_CANDIDATE">Hero adayları</option>
-            <option value="TEST_CANDIDATE">Test adayları</option>
+            <option value="REVIEW_REQUIRED">Görsel inceleme bekleyenler</option>
             <option value="REPAIR">Onarım gerekli</option>
             <option value="BLOCKED">Reklama kapalı</option>
           </select>
         </div>
       </div>
 
-      <div className="resultMeta">{filtered.length} / {listings.length} listing gösteriliyor</div>
+      <div className="resultMeta">
+        {filtered.length === 0 ? 'Sonuç bulunamadı' : `${start + 1}–${Math.min(start + PAGE_SIZE, filtered.length)} / ${filtered.length} listing`}
+      </div>
 
       <div className="listingGrid">
-        {filtered.map((listing) => (
+        {visible.map((listing) => (
           <article className="listingCard" key={listing.listing_id}>
             <div className="imageWrap">
-              {listing.hero_url ? <img src={listing.hero_url} alt="" /> : <div className="imagePlaceholder">Görsel yok</div>}
+              {listing.hero_url ? <img src={listing.hero_url} alt="" loading="lazy" width="570" height="422" /> : <div className="imagePlaceholder">Görsel yok</div>}
               <span className={`decisionBadge decision-${listing.audit.decision}`}>{decisionLabels[listing.audit.decision]}</span>
             </div>
             <div className="listingBody">
@@ -70,15 +80,15 @@ export default function CatalogClient({ listings }) {
               </div>
               <h3>{listing.title}</h3>
               <div className="scores">
-                <div><span>Conversion</span><b>{listing.audit.conversion_readiness}</b></div>
-                <div><span>Hero/Image</span><b>{listing.audit.image_score}</b></div>
+                <div><span>Metadata</span><b>{listing.audit.metadata_readiness}</b></div>
+                <div><span>Image Set</span><b>{listing.audit.image_score}</b></div>
                 <div><span>SEO</span><b>{listing.audit.seo_score}</b></div>
                 <div><span>Trust</span><b>{listing.audit.trust_score}</b></div>
               </div>
               <div className="cardFooter">
                 <span>{listing.image_count} görsel</span>
                 <span>{listing.tags.length} tag</span>
-                <span>READ ONLY</span>
+                <span>ADS LOCKED</span>
               </div>
               {listing.audit.findings.length > 0 && (
                 <ul className="findings">
@@ -89,6 +99,14 @@ export default function CatalogClient({ listings }) {
           </article>
         ))}
       </div>
+
+      {filtered.length > PAGE_SIZE && (
+        <nav className="pagination" aria-label="Katalog sayfaları">
+          <button type="button" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={safePage === 1}>Önceki</button>
+          <span>Sayfa {safePage} / {pageCount}</span>
+          <button type="button" onClick={() => setPage((value) => Math.min(pageCount, value + 1))} disabled={safePage === pageCount}>Sonraki</button>
+        </nav>
+      )}
     </section>
   );
 }

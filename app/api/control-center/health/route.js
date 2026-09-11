@@ -10,7 +10,7 @@ export async function GET() {
     return NextResponse.json({
       ok: true,
       service: 'vaelons-control-center',
-      version: '0.1.0',
+      version: '0.2.0',
       mode: 'READ_ONLY',
       write_lock: true,
       etsy_connected: Boolean(token?.connected),
@@ -22,7 +22,7 @@ export async function GET() {
     return NextResponse.json({
       ok: false,
       service: 'vaelons-control-center',
-      version: '0.1.0',
+      version: '0.2.0',
       mode: 'READ_ONLY',
       write_lock: true,
       shop_identity_verified: false,

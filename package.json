@@ -1,6 +1,6 @@
 {
   "name": "vaelons-control-center",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test": "node --test"
   },
   "dependencies": {
     "@upstash/redis": "^1.35.3",
