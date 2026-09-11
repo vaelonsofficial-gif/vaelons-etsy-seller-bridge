@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
 import { fetchListingDetail } from '../../../lib/control-center/catalog.js';
+import CreativeAuditPanel from '../../components/CreativeAuditPanel.js';
 import ListingEditor from './ListingEditor.js';
 
 export const dynamic = 'force-dynamic';
@@ -49,7 +50,7 @@ export default async function ListingDetailPage({ params }) {
                 <p className="eyebrow">CREATIVE SET</p>
                 <h2>{listing.images.length} görsel</h2>
               </div>
-              <span className="cleanBadge">Artwork locked</span>
+              <span className="dirtyBadge">Artwork source required</span>
             </div>
 
             {listing.images[0]?.url_570xN ? (
@@ -79,6 +80,8 @@ export default async function ListingDetailPage({ params }) {
               ))}
             </div>
           </section>
+
+          <CreativeAuditPanel audit={listing.creative_audit} />
 
           <section className="panel auditPanel">
             <div className="sectionHeading compact">

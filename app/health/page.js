@@ -20,6 +20,7 @@ export default async function HealthPage() {
   const token = health.checks.etsy_token;
   const identity = health.checks.shop_identity;
   const persistence = health.checks.persistence;
+  const vision = health.vision_policy;
 
   return (
     <main className="pageShell">
@@ -52,6 +53,12 @@ export default async function HealthPage() {
           ok
           status={health.write_policy.write_locked ? 'PROTECTED' : 'SAFE_WRITE READY'}
           detail={health.write_policy.write_locked ? 'Etsy yazma işlemleri güvenli şekilde kilitli' : 'SAFE_WRITE yürütmeye hazır'}
+        />
+        <CheckCard
+          title="Vision Engine"
+          ok={vision.ready}
+          status={vision.status}
+          detail={vision.ready ? `${vision.provider} · ${vision.model}` : 'AI görsel analizi henüz etkinleştirilmedi'}
         />
       </section>
 

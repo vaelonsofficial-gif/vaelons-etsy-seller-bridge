@@ -2,7 +2,9 @@
 
 ## Control Center preview
 
-The `control-center-v1` branch extends the proven Etsy connector with a private, desktop-first VAELONS operations interface. Version 0.3 includes verified catalog reads, listing detail pages, image-rank visibility, deterministic metadata validation, a durable action queue adapter, per-listing locks, post-write verification and metadata rollback.
+The `control-center-v1` branch extends the proven Etsy connector with a private, desktop-first VAELONS operations interface. Version 0.4 includes verified catalog reads, listing detail pages, image-rank visibility, deterministic metadata validation, a durable action queue adapter, per-listing locks, post-write verification, metadata rollback and a Creative Audit queue.
+
+Creative Audit keeps technical integrity separate from visual judgment. It verifies image IDs, ranks, URLs, dimensions, hero resolution and 10-role capacity, then records a deterministic manifest hash. Artwork locking and AI vision are fail-closed: no visual-quality score, creative-readiness score, generation or upload is allowed until a source artwork is explicitly selected and the configured vision review has actually run.
 
 Etsy mutations are fail-closed by default. Enabling a bounded SAFE_WRITE test requires all four independent conditions: `CONTROL_CENTER_WRITE_MODE=SAFE_WRITE`, `CONTROL_CENTER_KILL_SWITCH=OFF`, `CONTROL_CENTER_AUTH_READY=true`, and an exact `CONTROL_CENTER_SAFE_LISTING_ID`. AUTOPILOT cannot be enabled from environment variables alone.
 

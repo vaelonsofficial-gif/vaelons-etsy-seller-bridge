@@ -1,16 +1,19 @@
 # VAELONS Control Center — Delivery Roadmap
 
-## Current build status — v0.3.1
+## Current build status — v0.4.0
 - isolated `control-center-v1` preview branch
 - verified Etsy catalog read and strict VAELONS shop identity check
 - desktop-first app shell, catalog, listing detail, image ranks, action queue and health screens
 - deterministic metadata validation and unsupported-claim guard
 - existing unverified-claim detection and dedicated compliance review signal
+- separate technical image-integrity audit for IDs, ranks, URLs, dimensions, hero resolution and 10-role capacity
+- Creative Audit queue, per-listing creative panel and deterministic image-manifest hashes
+- fail-closed artwork source lock and vision policy; visual quality remains unknown until a real vision review runs
 - preview snapshot, idempotency record, per-listing lock, exact confirmation and post-write verification path
 - rollback path for title, tags and description
 - global mode, authentication gate, kill switch and single-listing allowlist all default to locked
 
-No Control Center Etsy mutation is enabled in this build. SAFE_WRITE will be promoted only after persistence, UI and end-to-end staging checks pass.
+No Control Center Etsy mutation or AI vision execution is enabled in this build. SAFE_WRITE will be promoted only after persistence, UI and end-to-end staging checks pass. Visual quality, creative readiness and ad eligibility are never inferred from image count alone.
 
 ## Phase 0 — Discovery and architecture freeze
 Goal: understand current reusable Etsy capabilities and lock boundaries before app code.
@@ -59,6 +62,11 @@ Deliverables:
 - conversion readiness score
 - ad readiness score
 - finding severity and confidence
+
+Current delivery:
+- metadata and trust audit is active
+- technical image-integrity audit is active
+- visual quality remains explicitly `NOT_RUN` until the vision provider and persisted result store are enabled
 
 Exit criteria:
 - manual review of a representative listing set agrees with system findings at an acceptable rate
