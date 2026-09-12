@@ -580,6 +580,9 @@ input:disabled {
 .status-REVIEW_REQUIRED,
 .status-VALIDATED,
 .status-READY,
+.status-QUEUED,
+.status-IN_PROGRESS,
+.status-SEZAR_REVIEW_REQUIRED,
 .status-EXECUTING {
   color: #73501f;
   background: var(--warning-soft);
@@ -592,6 +595,7 @@ input:disabled {
 }
 
 .status-COMPLETED,
+.status-FREE_QUEUE_READY,
 .status-ROLLED_BACK {
   color: var(--success);
   background: var(--success-soft);
@@ -1695,6 +1699,22 @@ input:disabled {
   line-height: 1.55;
 }
 
+.editorForm input,
+.commandForm select {
+  width: 100%;
+  min-height: 43px;
+  padding: 0 12px;
+  color: var(--ink);
+  background: #ffffff;
+  border: 1px solid var(--line-dark);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.commandForm select {
+  margin-top: 6px;
+}
+
 .primaryButton,
 .secondaryButton,
 .dangerButton {
@@ -2032,6 +2052,15 @@ input:disabled {
 
 .eventPanel {
   margin-top: 20px;
+}
+
+.taskEditorPanel {
+  margin-top: 20px;
+  padding: 23px;
+}
+
+.taskEditorForm {
+  margin-top: 18px;
 }
 
 .eventList {

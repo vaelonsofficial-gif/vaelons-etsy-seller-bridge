@@ -7,7 +7,7 @@ import {
   prepareMetadataAction,
   rollbackMetadataAction
 } from '../../../lib/control-center/actions.js';
-import { generateListingContent } from '../../../lib/control-center/content-generator.js';
+import { queueListingContentTask } from '../../../lib/control-center/content-generator.js';
 
 function failure(error) {
   return {
@@ -60,23 +60,22 @@ export async function prepareListingChange(_previousState, formData) {
 
 export async function generateListingDraft(_previousState, formData) {
   try {
-    const result = await generateListingContent({
+    const result = await queueListingContentTask({
       listingId: String(formData.get('listing_id') || ''),
-      command: String(formData.get('command') || '')
+      command: String(formData.get('command') || ''),
+      scope: String(formData.get('task_scope') || 'FULL_LISTING')
     });
 
     revalidatePath('/actions');
     revalidatePath(`/generations/${result.id}`);
 
-    const valid = result.status === 'COMPLETED' && result.validation?.valid === true;
     return {
-      ok: valid,
-      message: valid
-        ? result.cached
-          ? 'Aynı listing sürümü için doğrulanmış içerik yeniden kullanıldı.'
-          : 'İçerik hazırlandı, güvenlik kontrollerinden geçti ve onayınıza sunuldu.'
-        : 'Üretilen içerik güvenlik doğrulamasından geçemedi; Etsy’ye gönderilemez.',
+      ok: true,
+      message: result.cached
+        ? 'Aynı görev zaten ücretsiz Sezar kuyruğunda; tekrar ücret veya kayıt oluşturulmadı.'
+        : 'Görev ücretsiz Sezar kuyruğuna alındı. Harici AI servisi çağrılmadı ve Etsy değişmedi.',
       generation: result,
+      generation_id: result.id,
       action: result.action,
       validation: result.validation,
       etsy_modified: false

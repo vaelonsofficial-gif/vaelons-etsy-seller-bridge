@@ -116,7 +116,7 @@ Checks:
 The listing detail page is the single owner approval surface:
 `owner command -> persisted AI generation -> deterministic validation -> editable preview -> exact diff -> explicit approval -> Etsy patch -> read-back verification`.
 
-Every model generation is allocated an ID and persisted before the provider call. The stored record includes source revision hash, model, owner command, generated proposal, safety notes, validation result, token usage, estimated cost, linked action ID and timestamps. Generation does not imply publication and cannot bypass the write policy.
+Every owner command is allocated a durable task ID and persisted before preparation begins. The stored record includes source revision hash, task scope, owner command, prepared proposal, safety notes, validation result, linked action ID and timestamps. The free Sezar work queue does not call a paid external AI provider. Preparation does not imply publication and cannot bypass the write policy.
 
 ### 7. Performance & Ads Engine
 Separates observation from action.

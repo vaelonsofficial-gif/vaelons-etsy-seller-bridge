@@ -16,7 +16,7 @@ export async function GET() {
     return NextResponse.json({
       ok: false,
       service: 'vaelons-control-center',
-      version: '0.5.0',
+      version: '0.6.0',
       mode: 'READ_ONLY',
       write_lock: true,
       shop_identity_verified: false,

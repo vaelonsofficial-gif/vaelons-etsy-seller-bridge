@@ -26,12 +26,12 @@ export default function CreativeAuditPanel({ audit }) {
         <div>
           <span>Visual quality</span>
           <strong>{audit.visual_quality_score ?? '—'}</strong>
-          <small>Vision çalışmadan puanlanmaz</small>
+          <small>Sezar incelemeden puanlanmaz</small>
         </div>
         <div>
           <span>Creative readiness</span>
           <strong>{audit.creative_readiness ?? '—'}</strong>
-          <small>Artwork lock + vision gerekir</small>
+          <small>Artwork lock + Sezar incelemesi gerekir</small>
         </div>
       </div>
 
@@ -60,7 +60,7 @@ export default function CreativeAuditPanel({ audit }) {
             <p className="eyebrow">10-IMAGE BLUEPRINT</p>
             <h3>Görsel rol matrisi</h3>
           </div>
-          <span className="statusBadge status-VISION_REQUIRED">VISION NOT RUN</span>
+          <span className="statusBadge status-VISION_REQUIRED">SEZAR REVIEW WAITING</span>
         </div>
         <div className="roleGrid">
           {audit.required_roles.map((role, index) => (
@@ -90,7 +90,7 @@ export default function CreativeAuditPanel({ audit }) {
 
       <div className="noFakeScore">
         <strong>Neden puan eksik?</strong>
-        <p>Görsel sayısı, hero’nun güçlü olduğunu kanıtlamaz. Artwork görünürlüğü, kırpılma, kompozisyon ve rol kapsamı vision incelemesi tamamlanmadan tahmin edilmiyor.</p>
+        <p>Görsel sayısı, hero’nun güçlü olduğunu kanıtlamaz. Artwork görünürlüğü, kırpılma, kompozisyon ve rol kapsamı Sezar incelemesi tamamlanmadan tahmin edilmiyor.</p>
       </div>
     </section>
   );

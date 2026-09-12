@@ -36,7 +36,7 @@ function StatusMessage({ state }) {
       {state.code && <small>{state.code}</small>}
       {state.generation_id && (
         <Link className="statusRecordLink" href={`/generations/${state.generation_id}`}>
-          Üretim kaydını aç →
+          Görev kaydını aç →
         </Link>
       )}
     </div>
@@ -86,25 +86,27 @@ function ValidationDetails({ validation }) {
 
 function GenerationSummary({ generation }) {
   if (!generation) return null;
-  const cost = generation.estimated_cost?.amount;
+  const queued = generation.status === 'QUEUED';
 
   return (
     <section className="generationSummary">
       <div className="generationSummaryTop">
         <div>
-          <p className="eyebrow">CONTENT READY</p>
-          <h3>{generation.summary || 'İçerik önerisi hazır'}</h3>
+          <p className="eyebrow">{queued ? 'SEZAR WORK QUEUE' : 'CONTENT READY'}</p>
+          <h3>{queued ? 'Görev Sezar kuyruğunda' : generation.summary || 'İçerik önerisi hazır'}</h3>
         </div>
-        <Link href={`/generations/${generation.id}`}>Üretim kaydı →</Link>
+        <Link href={`/generations/${generation.id}`}>Görev kaydı →</Link>
       </div>
-      <p>{generation.expected_outcome}</p>
+      <p>{queued
+        ? 'SEO, başlık, açıklama ve seçilen görsel kapsamı Sezar tarafından hazırlanacak. Hazırlama tamamlanmadan Etsy’ye hiçbir şey gönderilmez.'
+        : generation.expected_outcome}</p>
       {generation.safety_notes?.length > 0 && (
         <ul>{generation.safety_notes.map((note) => <li key={note}>{note}</li>)}</ul>
       )}
       <div className="generationMeta">
-        <span>{generation.model}</span>
+        <span>{generation.task_scope || generation.model}</span>
         <span>{generation.cached ? 'CACHE' : 'NEW'}</span>
-        <span>{Number.isFinite(cost) ? `Tahmini $${cost.toFixed(4)}` : 'Maliyet bekleniyor'}</span>
+        <span>Harici AI ücreti $0</span>
         <span>Etsy değişmedi</span>
       </div>
     </section>
@@ -121,12 +123,13 @@ function normalizedEditorTags(value) {
     .join('\n');
 }
 
-export default function ListingEditor({ listing, writePolicy, contentPolicy }) {
+export default function ListingEditor({ listing, writePolicy, contentPolicy, initialAction = null }) {
   const [command, setCommand] = useState(QUICK_COMMANDS[0].command);
+  const [taskScope, setTaskScope] = useState('FULL_LISTING');
   const [title, setTitle] = useState(listing.title);
   const [tags, setTags] = useState(listing.tags.join('\n'));
   const [description, setDescription] = useState(listing.description);
-  const [activeAction, setActiveAction] = useState(null);
+  const [activeAction, setActiveAction] = useState(initialAction);
   const [generationState, generationAction, generationPending] = useActionState(generateListingDraft, initialState);
   const [prepareState, prepareAction, preparePending] = useActionState(prepareListingChange, initialState);
   const [executeState, executeAction, executePending] = useActionState(executeListingChange, initialState);
@@ -183,18 +186,29 @@ export default function ListingEditor({ listing, writePolicy, contentPolicy }) {
 
       <ol className="commandSteps" aria-label="İşlem adımları">
         <li className="active"><span>1</span> Komut</li>
-        <li className={generation ? 'active' : ''}><span>2</span> Hazırlık</li>
+        <li className={generation ? 'active' : ''}><span>2</span> Sezar hazırlığı</li>
         <li className={activeAction?.status === 'VALIDATED' ? 'active' : ''}><span>3</span> Onay</li>
         <li className={executeState?.ok ? 'active' : ''}><span>4</span> Yayın</li>
       </ol>
 
       <div className="safetyCallout">
-        <strong>Hazırlama ve yayınlama birbirinden ayrıdır.</strong>
-        <p>Komut içerik taslağı üretir. Etsy ancak doğrulanmış farkları görüp “Onayla ve yayınla” düğmesine bastığınızda değişir.</p>
+        <strong>Ücretsiz hazırlama ile yayınlama birbirinden ayrıdır.</strong>
+        <p>Komut ücretsiz Sezar kuyruğuna kaydolur. Harici AI API kullanılmaz. Etsy yalnızca hazırlanmış kesin farkları görüp “Onayla ve yayınla” düğmesine bastığınızda değişir.</p>
       </div>
 
       <form action={generationAction} className="commandForm">
         <input type="hidden" name="listing_id" value={listing.listing_id} />
+        <label htmlFor={`scope-${listing.listing_id}`}>Görev kapsamı</label>
+        <select
+          id={`scope-${listing.listing_id}`}
+          name="task_scope"
+          value={taskScope}
+          onChange={(event) => setTaskScope(event.target.value)}
+        >
+          <option value="FULL_LISTING">Tam listing · içerik + görseller</option>
+          <option value="SEO_CONTENT">SEO · başlık + etiket + açıklama</option>
+          <option value="CREATIVE_IMAGES">Görseller · hero + bilgi görselleri</option>
+        </select>
         <label htmlFor={`command-${listing.listing_id}`}>Sezar’a görev ver</label>
         <textarea
           id={`command-${listing.listing_id}`}
@@ -213,17 +227,17 @@ export default function ListingEditor({ listing, writePolicy, contentPolicy }) {
           ))}
         </div>
         <div className="commandSubmitRow">
-          <small>{command.length}/{contentPolicy.max_command_characters} · Bu adım Etsy’yi değiştirmez</small>
+          <small>{command.length}/{contentPolicy.max_command_characters} · Ücretsiz kuyruk · Etsy değişmez</small>
           <button className="primaryButton prepareContentButton" type="submit" disabled={generationPending || !contentPolicy.ready || command.trim().length < 8}>
-            {generationPending ? 'İçerik hazırlanıyor…' : 'İçeriği hazırla'}
+            {generationPending ? 'Görev kaydediliyor…' : 'Ücretsiz Sezar kuyruğuna al'}
           </button>
         </div>
       </form>
 
       {!contentPolicy.ready && (
         <div className="formStatus error" role="status">
-          <strong>İçerik motoru bağlantı bekliyor</strong>
-          <p>AI Gateway yetkilendirmesi hazır olduğunda aynı panelden içerik üretilebilecek.</p>
+          <strong>Sezar iş kuyruğu kapalı</strong>
+          <p>Ücretsiz görev kuyruğu tekrar etkinleştirildiğinde bu panelden görev verilebilecek.</p>
           <small>{contentPolicy.blockers.join(' · ')}</small>
         </div>
       )}
@@ -235,9 +249,11 @@ export default function ListingEditor({ listing, writePolicy, contentPolicy }) {
         <div className="sectionHeading compact">
           <div>
             <p className="eyebrow">CONTENT WORKSPACE</p>
-            <h3>Hazırlanan içerik</h3>
+            <h3>{generation?.status === 'QUEUED' ? 'Mevcut içerik · Sezar hazırlığı bekleniyor' : 'Hazırlanan içerik'}</h3>
           </div>
-          {generation && <span className="cleanBadge">Düzenlenebilir</span>}
+          {generation && <span className={generation.status === 'QUEUED' ? 'dirtyBadge' : 'cleanBadge'}>
+            {generation.status === 'QUEUED' ? 'Kuyrukta' : 'Düzenlenebilir'}
+          </span>}
         </div>
 
         <form action={prepareAction} className="editorForm">

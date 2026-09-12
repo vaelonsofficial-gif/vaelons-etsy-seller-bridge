@@ -3,35 +3,27 @@ import assert from 'node:assert/strict';
 
 import { getVisionPolicy } from '../lib/control-center/vision-policy.js';
 
-test('vision policy is staged and fail-closed by default', () => {
+test('creative review uses the free Sezar queue without provider credentials', () => {
   const policy = getVisionPolicy({});
 
   assert.equal(policy.ready, false);
-  assert.equal(policy.status, 'STAGED');
-  assert.ok(policy.blockers.includes('vision_not_enabled'));
-  assert.ok(policy.blockers.includes('vision_credential_not_ready'));
+  assert.equal(policy.status, 'SEZAR_REVIEW_REQUIRED');
+  assert.equal(policy.provider, 'ChatGPT Work');
+  assert.equal(policy.credential_required, false);
+  assert.equal(policy.billing_required, false);
+  assert.equal(policy.external_ai_cost_usd, 0);
+  assert.deepEqual(policy.blockers, ['visual_review_not_completed']);
 });
 
-test('vision only becomes ready with explicit enablement, provider, model and credential', () => {
+test('legacy Gateway variables cannot enable automatic visual judgment', () => {
   const policy = getVisionPolicy({
     CONTROL_CENTER_VISION_ENABLED: 'true',
     CONTROL_CENTER_VISION_PROVIDER: 'vercel-ai-gateway',
     CONTROL_CENTER_VISION_MODEL: 'provider/model',
-    AI_GATEWAY_API_KEY: 'test-only-key'
-  });
-
-  assert.equal(policy.ready, true);
-  assert.equal(policy.status, 'READY');
-  assert.deepEqual(policy.blockers, []);
-});
-
-test('missing credential keeps an otherwise configured policy staged', () => {
-  const policy = getVisionPolicy({
-    CONTROL_CENTER_VISION_ENABLED: 'true',
-    CONTROL_CENTER_VISION_PROVIDER: 'vercel-ai-gateway',
-    CONTROL_CENTER_VISION_MODEL: 'provider/model'
+    AI_GATEWAY_API_KEY: 'unused-key'
   });
 
   assert.equal(policy.ready, false);
-  assert.ok(policy.blockers.includes('vision_credential_not_ready'));
+  assert.equal(policy.status, 'SEZAR_REVIEW_REQUIRED');
+  assert.equal(JSON.stringify(policy).includes('unused-key'), false);
 });

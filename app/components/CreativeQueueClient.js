@@ -54,14 +54,14 @@ export default function CreativeQueueClient({ listings }) {
           >
             <option value="ALL">Tüm durumlar</option>
             <option value="BLOCKED">Teknik blokaj</option>
-            <option value="VISION_REQUIRED">Vision bekliyor</option>
+            <option value="VISION_REQUIRED">Sezar incelemesi bekliyor</option>
           </select>
         </div>
       </div>
 
       <div className="creativeQueueTable" role="table" aria-label="Creative audit kuyruğu">
         <div className="creativeQueueHead" role="row">
-          <span role="columnheader">Listing</span><span role="columnheader">Teknik</span><span role="columnheader">Artwork lock</span><span role="columnheader">Vision</span><span role="columnheader">Öncelikli bulgu</span><span role="columnheader">Aksiyon</span>
+          <span role="columnheader">Listing</span><span role="columnheader">Teknik</span><span role="columnheader">Artwork lock</span><span role="columnheader">Sezar review</span><span role="columnheader">Öncelikli bulgu</span><span role="columnheader">Aksiyon</span>
         </div>
         {visibleListings.map((listing) => (
           <div className="creativeQueueRow" key={listing.listing_id} role="row">

@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
 import { fetchListingDetail } from '../../../lib/control-center/catalog.js';
+import { getAction } from '../../../lib/control-center/store.js';
 import CreativeAuditPanel from '../../components/CreativeAuditPanel.js';
 import ListingEditor from './ListingEditor.js';
 
@@ -18,12 +19,18 @@ function money(price) {
   }).format(price.amount);
 }
 
-export default async function ListingDetailPage({ params }) {
+export default async function ListingDetailPage({ params, searchParams }) {
   const { listingId } = await params;
+  const query = await searchParams;
   let listing;
+  let initialAction = null;
 
   try {
     listing = await fetchListingDetail(listingId);
+    if (query?.action) {
+      const candidate = await getAction(String(query.action));
+      if (candidate && String(candidate.listing_id) === String(listingId)) initialAction = candidate;
+    }
   } catch (error) {
     if (error?.status === 404 || error?.status === 400) notFound();
     throw error;
@@ -114,6 +121,7 @@ export default async function ListingDetailPage({ params }) {
           listing={listing}
           writePolicy={listing.write_policy}
           contentPolicy={listing.content_policy}
+          initialAction={initialAction}
         />
       </section>
     </main>

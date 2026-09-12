@@ -8,8 +8,14 @@ export const dynamic = 'force-dynamic';
 
 function generationStatus(generation) {
   const error = generation.error ? classifyGenerationError(generation.error) : null;
+  if (generation.status === 'QUEUED') {
+    return {
+      heading: generation.task_scope || 'FULL_LISTING',
+      detail: generation.command
+    };
+  }
   return {
-    heading: error?.code || generation.response_model || generation.model,
+    heading: error?.code || generation.task_scope || generation.response_model || generation.model,
     detail: error?.message || generation.summary || 'İşlem sürüyor'
   };
 }
@@ -38,7 +44,7 @@ export default async function ActionsPage() {
 
       <section className="hero compactHero">
         <h2>Hazırlıktan Etsy doğrulamasına kadar tek kayıt zinciri.</h2>
-        <p>AI üretimleri, güvenlik kontrolleri, onay bekleyen değişiklikler, yayınlar ve geri almalar aynı merkezde izlenir.</p>
+        <p>Ücretsiz Sezar görevleri, güvenlik kontrolleri, onay bekleyen değişiklikler, yayınlar ve geri almalar aynı merkezde izlenir.</p>
       </section>
 
       {errors.length > 0 && (
@@ -51,23 +57,23 @@ export default async function ActionsPage() {
       <section className="operationsSection">
         <div className="sectionHeading operationsHeading">
           <div>
-            <p className="eyebrow">AI GENERATIONS</p>
-            <h2>İçerik üretimleri</h2>
+            <p className="eyebrow">SEZAR WORK QUEUE</p>
+            <h2>İyileştirme görevleri</h2>
           </div>
           <span className="modePill">{generations.length} KAYIT</span>
         </div>
 
         {generations.length === 0 ? (
           <section className="emptyState compactEmpty panel">
-            <span>AI</span>
-            <h2>Henüz içerik üretimi yok</h2>
-            <p>Bir listing seçip komut verdiğinde sonuç, hata ve maliyet kaydı burada görünür.</p>
+            <span>SZ</span>
+            <h2>Henüz Sezar görevi yok</h2>
+            <p>Bir listing seçip komut verdiğinde ücretsiz görev, sonuç ve güvenlik kaydı burada görünür.</p>
           </section>
         ) : (
           <section className="panel actionTablePanel">
             <div className="actionTable generationOperationsTable">
               <div className="actionTableHead generationOperationsRow">
-                <span>Durum</span><span>Listing</span><span>Model / sonuç</span><span>Oluşturma</span><span></span>
+                <span>Durum</span><span>Listing</span><span>Kapsam / görev</span><span>Oluşturma</span><span></span>
               </div>
               {generations.map((generation) => {
                 const result = generationStatus(generation);
@@ -117,7 +123,7 @@ export default async function ActionsPage() {
                   <span>#{action.listing_id}</span>
                   <span>{action.changed_fields.join(', ')}</span>
                   <span>{new Date(action.created_at).toLocaleString('tr-TR')}</span>
-                  <span><Link href={`/listings/${action.listing_id}`}>Aç →</Link></span>
+                  <span><Link href={`/listings/${action.listing_id}?action=${action.id}`}>Aç →</Link></span>
                 </div>
               ))}
             </div>

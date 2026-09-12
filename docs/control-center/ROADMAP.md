@@ -1,6 +1,6 @@
 # VAELONS Control Center — Delivery Roadmap
 
-## Current build status — v0.5.0
+## Current build status — v0.6.0
 - isolated `control-center-v1` preview branch
 - verified Etsy catalog read and strict VAELONS shop identity check
 - desktop-first app shell, catalog, listing detail, image ranks, action queue and health screens
@@ -8,16 +8,16 @@
 - existing unverified-claim detection and dedicated compliance review signal
 - separate technical image-integrity audit for IDs, ranks, URLs, dimensions, hero resolution and 10-role capacity
 - Creative Audit queue, per-listing creative panel and deterministic image-manifest hashes
-- fail-closed artwork source lock and vision policy; visual quality remains unknown until a real vision review runs
+- fail-closed artwork source lock and Sezar review policy; visual quality remains unknown until a real review runs
 - preview snapshot, idempotency record, per-listing lock, exact confirmation and post-write verification path
 - rollback path for title, tags and description
 - global mode, authentication gate, kill switch and single-listing allowlist all default to locked
-- single-panel owner command, AI content preparation, editable proposal and exact approval diff
-- Vercel AI Gateway structured output with strict title/tag/description validation
-- permanent generation IDs, output/usage/cost records and addressable generation audit pages
+- single-panel owner command, free Sezar work queue, editable proposal and exact approval diff
+- no Vercel AI Gateway or paid external AI dependency for content and creative task preparation
+- permanent task IDs, source snapshots, validation records and addressable task audit pages
 - one-click explicit owner approval while the server retains exact-action confirmation and shop/listing verification
 
-No Control Center Etsy mutation or AI vision execution is enabled in this build. Content generation is non-mutating and can run independently of the write gate. SAFE_WRITE will be promoted only after persistence, UI and end-to-end staging checks pass. Visual quality, creative readiness and ad eligibility are never inferred from image count alone.
+No Control Center Etsy mutation is enabled in this build. Task preparation is non-mutating and independent of the write gate. SAFE_WRITE will be promoted only after persistence, UI and end-to-end staging checks pass. Visual quality, creative readiness and ad eligibility are never inferred from image count alone.
 
 ## Phase 0 — Discovery and architecture freeze
 Goal: understand current reusable Etsy capabilities and lock boundaries before app code.
@@ -70,7 +70,7 @@ Deliverables:
 Current delivery:
 - metadata and trust audit is active
 - technical image-integrity audit is active
-- visual quality remains explicitly `NOT_RUN` until the vision provider and persisted result store are enabled
+- visual quality remains explicitly `NOT_RUN` until Sezar review and the persisted result store are completed
 
 Exit criteria:
 - manual review of a representative listing set agrees with system findings at an acceptable rate

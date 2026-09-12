@@ -56,34 +56,34 @@ export default async function HealthPage() {
           detail={health.write_policy.write_locked ? 'Etsy yazma işlemleri güvenli şekilde kilitli' : 'SAFE_WRITE yürütmeye hazır'}
         />
         <CheckCard
-          title="Content Engine"
+          title="Sezar Work Queue"
           ok={content.ready}
-          status={content.ready ? 'AUTH READY' : content.status}
+          status={content.status}
           detail={content.ready
-            ? `${content.provider} · ${content.model} · Kullanım/billing ilk üretimde doğrulanır`
+            ? `${content.provider} · Harici AI API ve ek kullanım ücreti yok`
             : content.blockers.join(' · ')}
         />
         <CheckCard
-          title="Vision Engine"
+          title="Creative Review"
           ok={vision.ready}
           status={vision.status}
-          detail={vision.ready ? `${vision.provider} · ${vision.model}` : 'AI görsel analizi henüz etkinleştirilmedi'}
+          detail="Sezar incelemesi bekleniyor · harici AI API ve ek ücret yok"
         />
       </section>
 
       <section className="panel policyPanel">
         <div className="sectionHeading compact">
           <div>
-            <p className="eyebrow">CONTENT POLICY</p>
-            <h2>Komut → taslak → onay</h2>
+            <p className="eyebrow">FREE CONTENT POLICY</p>
+            <h2>Komut → Sezar kuyruğu → taslak → onay</h2>
           </div>
           <span className={content.ready ? 'statusBadge status-COMPLETED' : 'statusBadge status-BLOCKED'}>
-            {content.ready ? 'AUTH READY' : content.status}
+            {content.status}
           </span>
         </div>
         <div className="policyFacts">
-          <div><span>Model</span><strong>{content.model}</strong></div>
-          <div><span>Gateway auth</span><strong>{content.auth_source || 'MISSING'}</strong></div>
+          <div><span>Çalışma biçimi</span><strong>{content.engine}</strong></div>
+          <div><span>Harici AI maliyeti</span><strong>$0 · GATEWAY YOK</strong></div>
           <div><span>Yayın davranışı</span><strong>ONAY ZORUNLU</strong></div>
         </div>
       </section>

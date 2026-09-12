@@ -42,15 +42,15 @@ export default async function CreativePage() {
     <main className="pageShell">
       <header className="pageTopbar">
         <div>
-          <p className="eyebrow">CREATIVE OPERATIONS / v0.5</p>
+          <p className="eyebrow">CREATIVE OPERATIONS / v0.6</p>
           <h1>Creative Audit</h1>
         </div>
-        <div className="modePill"><span className="statusDot" /> VISION {vision.status}</div>
+        <div className="modePill"><span className="statusDot" /> {vision.status}</div>
       </header>
 
       <section className="hero compactHero">
         <h2>Görsel sayısını değil, satış görevini denetle.</h2>
-        <p>Her listing artwork doğruluğu, hero gücü, ölçek algısı ve 10 görsel rolüyle incelenir. Vision çalışmadan görsel kalite puanı üretilmez.</p>
+        <p>Her listing artwork doğruluğu, hero gücü, ölçek algısı ve 10 görsel rolüyle incelenir. Sezar görsel incelemesi tamamlanmadan kalite puanı üretilmez.</p>
       </section>
 
       {error ? (
@@ -58,14 +58,14 @@ export default async function CreativePage() {
       ) : (
         <>
           <section className="statsGrid">
-            <Metric label="Vision bekleyen" value={snapshot.summary.visual_review_count} detail="Görsel karar üretilmedi" />
+            <Metric label="Sezar incelemesi" value={snapshot.summary.visual_review_count} detail="Görsel karar bekliyor" />
             <Metric label="Teknik blokaj" value={snapshot.summary.creative_blocked_count} detail="Image ID, rank veya URL kontrolü" />
             <Metric label="10 slot altı" value={snapshot.summary.role_capacity_short_count} detail="Blueprint kapasitesi yetersiz" />
             <Metric label="Artwork locked" value="0" detail="Kaynak doğrulaması olmadan üretim yok" />
           </section>
           <section className="creativeSafetyBanner">
             <strong>Artwork locked product kuralı aktif.</strong>
-            <p>Kaynak artwork seçilmeden, referans parmak izi oluşturulmadan ve vision kontrolü tamamlanmadan yeni mockup üretimi veya Etsy upload işlemi açılamaz.</p>
+            <p>Kaynak artwork seçilmeden, referans parmak izi oluşturulmadan ve Sezar incelemesi tamamlanmadan yeni mockup üretimi veya Etsy upload işlemi açılamaz.</p>
           </section>
           <CreativeQueueClient listings={queueListings} />
         </>

@@ -2,15 +2,15 @@
 
 ## Control Center preview
 
-The `control-center-v1` branch extends the proven Etsy connector with a private, desktop-first VAELONS operations interface. Version 0.5 includes verified catalog reads, listing detail pages, image-rank visibility, deterministic metadata validation, a durable action queue adapter, per-listing locks, post-write verification, metadata rollback, a Creative Audit queue, and a command-driven content approval workflow.
+The `control-center-v1` branch extends the proven Etsy connector with a private, desktop-first VAELONS operations interface. Version 0.6 includes verified catalog reads, listing detail pages, image-rank visibility, deterministic metadata validation, a durable Sezar work queue, per-listing locks, post-write verification, metadata rollback, Creative Audit, and a command-driven approval workflow.
 
-From one listing panel the owner can issue a Turkish-language instruction, prepare a complete English Etsy title/tag/description proposal through Vercel AI Gateway, inspect and edit the exact before/after diff, and explicitly approve the verified patch. Content generation never writes to Etsy. Every model call receives a durable generation ID before execution and stores its command, output, validation, token use, estimated cost, timestamps, linked action, and event trail.
+From one listing panel the owner can issue a Turkish-language instruction and store it in the free Sezar work queue without calling Vercel AI Gateway or any paid external AI API. Sezar prepares the metadata or creative work through ChatGPT Work, stores the validated result on the task, and the owner can inspect the exact before/after diff before explicitly approving an Etsy patch. Every task keeps a durable ID, source snapshot, scope, command, validation, linked action and event trail.
 
-Creative Audit keeps technical integrity separate from visual judgment. It verifies image IDs, ranks, URLs, dimensions, hero resolution and 10-role capacity, then records a deterministic manifest hash. Artwork locking and AI vision are fail-closed: no visual-quality score, creative-readiness score, generation or upload is allowed until a source artwork is explicitly selected and the configured vision review has actually run.
+Creative Audit keeps technical integrity separate from visual judgment. It verifies image IDs, ranks, URLs, dimensions, hero resolution and 10-role capacity, then records a deterministic manifest hash. Artwork locking and Sezar visual review are fail-closed: no visual-quality score, creative-readiness score, generation or upload is allowed until a source artwork is explicitly selected and the review has actually run.
 
 Etsy mutations are fail-closed by default. Enabling a bounded SAFE_WRITE test requires all four independent conditions: `CONTROL_CENTER_WRITE_MODE=SAFE_WRITE`, `CONTROL_CENTER_KILL_SWITCH=OFF`, `CONTROL_CENTER_AUTH_READY=true`, and an exact `CONTROL_CENTER_SAFE_LISTING_ID`. AUTOPILOT cannot be enabled from environment variables alone.
 
-Content preparation uses `openai/gpt-5.6-sol` by default. On Vercel it authenticates through `VERCEL_OIDC_TOKEN`; `AI_GATEWAY_API_KEY` is the manual alternative. `CONTROL_CENTER_CONTENT_AI_ENABLED=off` disables generation, and `CONTROL_CENTER_CONTENT_MODEL` can select another currently supported Gateway model. These settings never unlock Etsy writes.
+Content preparation has no external AI billing dependency. `CONTROL_CENTER_FREE_QUEUE_ENABLED=off` is the emergency queue kill switch. The work queue never unlocks Etsy writes; SAFE_WRITE remains a separate owner-authenticated, single-listing gate.
 
 The scheduling workflow in the separate `etsy-price-manager` project is out of scope and remains untouched.
 
