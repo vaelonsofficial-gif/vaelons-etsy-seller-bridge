@@ -4,11 +4,9 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
 const items = [
-  { href: '/', label: 'Genel Bakış', code: 'OV' },
-  { href: '/#catalog', label: 'Listingler', code: 'LS' },
-  { href: '/creative', label: 'Creative Audit', code: 'CR' },
-  { href: '/actions', label: 'İşlem Merkezi', code: 'IM' },
-  { href: '/health', label: 'Sistem Sağlığı', code: 'SH' }
+  { href: '/#approvals', label: 'Onay bekleyenler', code: 'ON' },
+  { href: '/#catalog', label: 'Ürünler', code: 'ÜR' },
+  { href: '/actions', label: 'İşlem geçmişi', code: 'İŞ' }
 ];
 
 export default function AppNav() {
@@ -28,7 +26,7 @@ export default function AppNav() {
         {items.map((item) => {
           const baseHref = item.href.split('#')[0] || '/';
           const active = baseHref === '/'
-            ? pathname === '/' && item.href === '/'
+            ? pathname === '/' && item.href === '/#approvals'
             : pathname.startsWith(baseHref);
 
           return (
@@ -39,6 +37,12 @@ export default function AppNav() {
           );
         })}
       </nav>
+
+      <details className="navDetails">
+        <summary>Ayrıntılar</summary>
+        <Link className="navLink" href="/creative">Görsel inceleme</Link>
+        <Link className="navLink" href="/health">Sistem sağlığı</Link>
+      </details>
 
       <div className="navSafety">
         <span className="statusDot" />

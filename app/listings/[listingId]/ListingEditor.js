@@ -1,7 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { useActionState, useEffect, useMemo, useState } from 'react';
+import { useActionState, useEffect, useMemo, useRef, useState } from 'react';
+import { METADATA_LABELS, reviewStatusLabel } from '../../../lib/control-center/review.js';
 
 import {
   executeListingChange,
@@ -33,7 +34,7 @@ function StatusMessage({ state }) {
     <div className={state.ok ? 'formStatus success' : 'formStatus error'} role="status">
       <strong>{state.ok ? 'Hazır' : 'İşlem engellendi'}</strong>
       <p>{state.message}</p>
-      {state.code && <small>{state.code}</small>}
+      {state.code && <details className="recordDetails"><summary>Teknik ayrıntı</summary><small>{state.code}</small></details>}
       {state.generation_id && (
         <Link className="statusRecordLink" href={`/generations/${state.generation_id}`}>
           Görev kaydını aç →
@@ -47,26 +48,32 @@ function FieldDiff({ action }) {
   if (!action) return null;
 
   return (
-    <section className="diffPanel" id="approval-preview">
+    <section className="reviewDiff" id="approval-preview" aria-label="Eski ve yeni içerik">
       <div className="sectionHeading compact">
         <div>
-          <p className="eyebrow">APPROVAL PREVIEW</p>
-          <h3>Yayınlanacak kesin değişiklik</h3>
+          <p className="eyebrow">ESKİ VE YENİ</p>
+          <h2>Hazırlanan değişiklikler</h2>
         </div>
-        <span className={`statusBadge status-${action.status}`}>{action.status}</span>
+        <span className={`statusBadge status-${action.status}`}>{reviewStatusLabel(action.status)}</span>
       </div>
       <div className="diffFields">
         {action.changed_fields.map((field) => (
-          <div className="diffRow" key={field}>
-            <strong>{field}</strong>
-            <span>Şu an Etsy’de</span>
-            <p>{field === 'tags' ? action.before[field].join(', ') : action.before[field]}</p>
-            <span>Onay sonrası</span>
-            <p>{field === 'tags' ? action.proposed[field].join(', ') : action.proposed[field]}</p>
+          <div className="reviewDiffField" key={field}>
+            <h3>{METADATA_LABELS[field] || field}</h3>
+            <div className="reviewDiffColumns">
+              <div className="reviewBefore">
+                <span className="diffColumnLabel">Şu an Etsy’de</span>
+                <p>{field === 'tags' ? action.before[field].join(', ') : action.before[field]}</p>
+              </div>
+              <div className="reviewAfter">
+                <span className="diffColumnLabel">Hazırlanan yeni metin</span>
+                <p>{field === 'tags' ? action.proposed[field].join(', ') : action.proposed[field]}</p>
+              </div>
+            </div>
           </div>
         ))}
       </div>
-      <div className="actionId">Action ID: {action.id}</div>
+      <details className="recordDetails"><summary>İşlem ayrıntıları</summary><p>İşlem: {action.id}</p><p>Durum: {action.status}</p></details>
     </section>
   );
 }
@@ -77,10 +84,10 @@ function ValidationDetails({ validation }) {
   if (issues.length === 0) return null;
 
   return (
-    <div className="validationDetails">
-      <strong>Doğrulama ayrıntıları</strong>
+    <details className="validationDetails">
+      <summary>Doğrulama ayrıntıları</summary>
       <ul>{issues.map((issue) => <li key={issue}>{issue}</li>)}</ul>
-    </div>
+    </details>
   );
 }
 
@@ -107,17 +114,17 @@ function GenerationSummary({ generation }) {
       <p>{pending
         ? working
           ? 'Görev tek kullanımlık güvenli biletle alındı. Bu ekran sonucu otomatik kontrol ediyor; Etsy’ye hiçbir şey gönderilmiyor.'
-          : 'SEO, başlık ve açıklama en geç yaklaşık 60 dakika içinde Sezar tarafından hazırlanacak. Bu sayfaya veya sohbete dönmeniz gerekmez.'
+          : 'Görev, Sezar’ın sonraki arka plan kontrolünde hazırlanacak. Hazır olunca ana ekranda görünecek.'
         : generation.expected_outcome}</p>
-      {generation.safety_notes?.length > 0 && (
-        <ul>{generation.safety_notes.map((note) => <li key={note}>{note}</li>)}</ul>
-      )}
-      <div className="generationMeta">
+      <details className="recordDetails"><summary>Görev ayrıntıları</summary>
+        {generation.safety_notes?.length > 0 && <ul>{generation.safety_notes.map((note) => <li key={note}>{note}</li>)}</ul>}
+        <div className="generationMeta">
         <span>{generation.task_scope || generation.model}</span>
         <span>{generation.cached ? 'CACHE' : 'NEW'}</span>
         <span>Harici AI ücreti $0</span>
         <span>Etsy değişmedi</span>
-      </div>
+        </div>
+      </details>
     </section>
   );
 }
@@ -144,12 +151,22 @@ export default function ListingEditor({ listing, writePolicy, contentPolicy, ini
   );
   const [activeAction, setActiveAction] = useState(initialAction);
   const [polledGeneration, setPolledGeneration] = useState(null);
+  const [revisionOpen, setRevisionOpen] = useState(false);
+  const [editingOpen, setEditingOpen] = useState(false);
+  const commandInput = useRef(null);
   const [generationState, generationAction, generationPending] = useActionState(generateListingDraft, initialState);
   const [prepareState, prepareAction, preparePending] = useActionState(prepareListingChange, initialState);
   const [executeState, executeAction, executePending] = useActionState(executeListingChange, initialState);
   const [rollbackState, rollbackAction, rollbackPending] = useActionState(rollbackListingChange, initialState);
 
-  const generation = polledGeneration || generationState?.generation || null;
+  const generation = polledGeneration?.id === generationState?.generation?.id
+    ? polledGeneration
+    : generationState?.generation || null;
+  const taskPending = generationPending || ['QUEUED', 'IN_PROGRESS'].includes(generation?.status);
+
+  useEffect(() => {
+    if (revisionOpen) commandInput.current?.focus();
+  }, [revisionOpen]);
 
   useEffect(() => {
     const taskId = generationState?.generation?.id;
@@ -211,6 +228,7 @@ export default function ListingEditor({ listing, writePolicy, contentPolicy, ini
   );
   const canExecuteThisListing = Boolean(
     !executeState?.ok &&
+    !taskPending && !preparePending && !revisionOpen &&
     writePolicy.can_execute &&
     writePolicy.allowed_listing_id === String(listing.listing_id) &&
     activeAction?.status === 'VALIDATED' &&
@@ -219,51 +237,45 @@ export default function ListingEditor({ listing, writePolicy, contentPolicy, ini
   );
 
   return (
-    <section className="editorPanel commandCenterPanel">
+    <section className={`editorPanel commandCenterPanel ownerWorkspace${activeAction ? ' hasReview' : ''}`}>
       <div className="sectionHeading">
         <div>
-          <p className="eyebrow">VAELONS COMMAND CENTER</p>
-          <h2>Komut ver, incele, onayla</h2>
+          <p className="eyebrow">ÜRÜN #{listing.listing_id}</p>
+          <h2>{activeAction ? 'İncele ve karar ver' : 'Bu ürün için içerik hazırla'}</h2>
+          <p className="sectionIntro">{activeAction
+            ? 'Eski ve yeni metinler aşağıda. Karar düğmeleri ekranın altında sabit durur.'
+            : 'İstediğin değişikliği yaz. Hazır taslak ana ekranda incelemene sunulur.'}</p>
         </div>
-        <span className={changedFields.length ? 'dirtyBadge' : 'cleanBadge'}>
-          {changedFields.length ? `${changedFields.length} alan hazır` : 'Canlı sürüm'}
-        </span>
+        {activeAction && <a className="secondaryButton" href="#approval-preview">Değişikliklere git</a>}
       </div>
 
-      <ol className="commandSteps" aria-label="İşlem adımları">
-        <li className="active"><span>1</span> Komut</li>
-        <li className={generation ? 'active' : ''}><span>2</span> Sezar hazırlığı</li>
-        <li className={activeAction?.status === 'VALIDATED' ? 'active' : ''}><span>3</span> Onay</li>
-        <li className={executeState?.ok ? 'active' : ''}><span>4</span> Yayın</li>
-      </ol>
+      <FieldDiff action={executeState?.action || activeAction} />
 
-      <div className="safetyCallout">
-        <strong>Ücretsiz hazırlama ile yayınlama birbirinden ayrıdır.</strong>
-        <p>Komut ücretsiz arka plan kuyruğuna kaydolur ve Sezar en geç yaklaşık 60 dakika içinde işler. Harici AI API kullanılmaz. Etsy yalnızca hazırlanmış kesin farkları görüp “Onayla ve yayınla” düğmesine bastığınızda değişir.</p>
-      </div>
-
+      <details className="disclosure requestDisclosure" open={!activeAction || revisionOpen} onToggle={(event) => setRevisionOpen(event.currentTarget.open)}>
+        <summary>{activeAction ? 'Sezar’dan düzeltme iste' : 'Sezar’a görev ver'}</summary>
       <form action={generationAction} className="commandForm">
         <input type="hidden" name="listing_id" value={listing.listing_id} />
-        <label htmlFor={`scope-${listing.listing_id}`}>Görev kapsamı</label>
+        <input type="hidden" name="revision_action_id" value={activeAction?.id || ''} />
+        <label htmlFor={`scope-${listing.listing_id}`}>Ne hazırlansın?</label>
         <select
           id={`scope-${listing.listing_id}`}
           name="task_scope"
           value={taskScope}
           onChange={(event) => setTaskScope(event.target.value)}
         >
-          <option value="FULL_LISTING">Tam metadata · başlık + etiket + açıklama</option>
-          <option value="SEO_CONTENT">SEO · başlık + etiket + açıklama</option>
-          <option value="CREATIVE_IMAGES">Görseller · hero + bilgi görselleri</option>
+          <option value="FULL_LISTING">Başlık, etiketler ve açıklama</option>
+          {!activeAction && <option value="CREATIVE_IMAGES">Görseller (ayrı inceleme)</option>}
         </select>
-        <label htmlFor={`command-${listing.listing_id}`}>Sezar’a görev ver</label>
+        <label htmlFor={`command-${listing.listing_id}`}>{activeAction ? 'Neyi değiştirmemi istersin?' : 'Ne yapılmasını istersin?'}</label>
         <textarea
+          ref={commandInput}
           id={`command-${listing.listing_id}`}
           name="command"
           rows="5"
-          maxLength={contentPolicy.max_command_characters}
+          maxLength={activeAction ? 800 : contentPolicy.max_command_characters}
           value={command}
           onChange={(event) => setCommand(event.target.value)}
-          placeholder="Örn. Bu listingin başlığını, 13 etiketini ve açıklamasını satışa hazır hale getir."
+          placeholder={activeAction ? 'Örn. Başlığı kısalt, açıklamanın girişini daha sade yaz.' : 'Örn. Başlığı ve açıklamayı daha anlaşılır yap.'}
         />
         <div className="quickCommands" aria-label="Hazır komutlar">
           {QUICK_COMMANDS.map((item) => (
@@ -273,12 +285,13 @@ export default function ListingEditor({ listing, writePolicy, contentPolicy, ini
           ))}
         </div>
         <div className="commandSubmitRow">
-          <small>{command.length}/{contentPolicy.max_command_characters} · Arka planda ≤60 dk · Etsy değişmez</small>
-          <button className="primaryButton prepareContentButton" type="submit" disabled={generationPending || !contentPolicy.ready || command.trim().length < 8}>
-            {generationPending ? 'Görev kaydediliyor…' : 'Arka planda hazırla'}
+          <small>Hazırlık arka planda yapılır. Etsy’ye uygulanmaz.</small>
+          <button className="primaryButton prepareContentButton" type="submit" disabled={taskPending || !contentPolicy.ready || command.trim().length < 8}>
+            {taskPending ? 'Hazırlık bekleniyor…' : activeAction ? 'Düzeltme isteğini gönder' : 'Arka planda hazırla'}
           </button>
         </div>
       </form>
+      </details>
 
       {!contentPolicy.ready && (
         <div className="formStatus error" role="status">
@@ -291,7 +304,8 @@ export default function ListingEditor({ listing, writePolicy, contentPolicy, ini
       <GenerationSummary generation={generation} />
       <ValidationDetails validation={generationState?.validation} />
 
-      <section className="contentWorkspace">
+      <details className="contentWorkspace disclosure" open={editingOpen} onToggle={(event) => setEditingOpen(event.currentTarget.open)}>
+        <summary>Metinleri kendim düzenleyeceğim</summary>
         <div className="sectionHeading compact">
           <div>
             <p className="eyebrow">CONTENT WORKSPACE</p>
@@ -325,37 +339,46 @@ export default function ListingEditor({ listing, writePolicy, contentPolicy, ini
             {preparePending ? 'Doğrulanıyor…' : draftMatchesEditor ? 'Taslak doğrulandı' : 'Düzenlemeleri yeniden doğrula'}
           </button>
         </form>
-      </section>
+      </details>
 
       <StatusMessage state={prepareState} />
       <ValidationDetails validation={prepareState?.validation} />
-      <FieldDiff action={activeAction} />
 
-      <section className="publishGate">
+      {activeAction && <section className="publishGate approvalDock" aria-label="Onay ve yayın işlemleri">
         <div>
-          <p className="eyebrow">HUMAN APPROVAL GATE</p>
-          <h3>Onay ve Etsy yayını</h3>
-          <p>{executeState?.ok
+          <strong>{executeState?.ok ? 'Yayın tamamlandı' : taskPending ? 'Yeni hazırlık bekleniyor' : writePolicy.write_locked ? 'Etsy yayını şu anda kapalı' : 'Kararın hazır mı?'}</strong>
+          <p id="approval-explanation">{executeState?.ok
             ? 'Değişiklik Etsy’ye uygulandı ve Etsy’den yeniden okunarak doğrulandı.'
+            : taskPending
+              ? 'Yeni taslak hazırlanırken önceki taslak bu ekrandan yayınlanamaz.'
+            : revisionOpen
+              ? 'Düzeltme isteğini gönder veya formu kapatıp taslağı incelemeye dön.'
             : canExecuteThisListing
-              ? 'Taslak doğrulandı. Bu düğme yalnızca yukarıda gösterilen alanları Etsy’ye uygular ve sonucu tekrar kontrol eder.'
+              ? 'Onayın, yukarıda gösterilen değişiklikleri Etsy’ye uygular.'
               : activeAction && !draftMatchesEditor
                 ? 'İçerik taslağından sonra düzenleme yaptınız. Yayından önce düzenlemeleri yeniden doğrulayın.'
                 : writePolicy.write_locked
-                  ? 'Yayın güvenlik kilidi aktif. İçerik hazırlama çalışır; canlı yayın seçili test listingi yetkilendirilene kadar kapalıdır.'
-                  : 'Yayın için doğrulanmış bir içerik taslağı hazırlayın.'}</p>
+                  ? 'Taslağı inceleyebilir veya düzeltme isteyebilirsin. Yayın yetkisi henüz açılmadı.'
+                  : 'Bu taslak için yayın yetkisi veya doğrulama eksik. İşlem ayrıntılarını kontrol et.'}</p>
         </div>
 
+        <div className="approvalDockActions">
+          <button className="secondaryButton" type="button" disabled={executePending || taskPending || executeState?.ok === true} onClick={() => {
+            if (!revisionOpen) setCommand('');
+            setTaskScope('FULL_LISTING');
+            setRevisionOpen(true);
+            commandInput.current?.focus();
+          }}>Düzeltme iste</button>
         <form action={executeAction} className="oneClickApproval">
           <input type="hidden" name="action_id" value={activeAction?.id || ''} />
           <input type="hidden" name="approval" value={`YAYINLA ${listing.listing_id}`} />
-          <button className="dangerButton" type="submit" disabled={!canExecuteThisListing || executePending}>
+          <button className="dangerButton" aria-describedby="approval-explanation" type="submit" disabled={!canExecuteThisListing || executePending}>
             {executePending ? 'Etsy’ye uygulanıyor…' : executeState?.ok ? 'Yayın doğrulandı' : 'Onayla ve Etsy’de yayınla'}
           </button>
-          <small>Tek listing · yalnızca gösterilen farklar · yayın sonrası otomatik doğrulama</small>
         </form>
+        </div>
         <StatusMessage state={executeState} />
-      </section>
+      </section>}
 
       {executeState?.ok && executeState?.action && (
         <section className="rollbackGate">

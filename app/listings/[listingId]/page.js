@@ -3,7 +3,9 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
 import { fetchListingDetail } from '../../../lib/control-center/catalog.js';
-import { getAction } from '../../../lib/control-center/store.js';
+import { getAction, listActions } from '../../../lib/control-center/store.js';
+import { publicAction } from '../../../lib/control-center/actions.js';
+import { selectPendingReviews } from '../../../lib/control-center/review.js';
 import CreativeAuditPanel from '../../components/CreativeAuditPanel.js';
 import ListingEditor from './ListingEditor.js';
 
@@ -30,6 +32,9 @@ export default async function ListingDetailPage({ params, searchParams }) {
     if (query?.action) {
       const candidate = await getAction(String(query.action));
       if (candidate && String(candidate.listing_id) === String(listingId)) initialAction = candidate;
+    } else {
+      initialAction = selectPendingReviews(await listActions(100))
+        .find((action) => String(action.listing_id) === String(listingId)) || null;
     }
   } catch (error) {
     if (error?.status === 404 || error?.status === 400) notFound();
@@ -37,20 +42,29 @@ export default async function ListingDetailPage({ params, searchParams }) {
   }
 
   return (
-    <main className="pageShell">
+    <main className={`pageShell reviewPage${initialAction ? ' hasApprovalDock' : ''}`}>
       <header className="pageTopbar detailTopbar">
         <div>
-          <Link className="backLink" href="/#catalog">← Listinglere dön</Link>
+          <Link className="backLink" href="/#approvals">← Mağaza paneline dön</Link>
           <p className="eyebrow">LISTING #{listing.listing_id}</p>
           <h1>{listing.title}</h1>
         </div>
         <div className="detailMeta">
           <strong>{money(listing.price)}</strong>
-          <span className="modePill"><span className="statusDot" /> {listing.write_policy.mode}</span>
+          <span className="modePill"><span className="statusDot" /> {listing.write_policy.write_locked ? 'Etsy yayını kapalı' : 'Etsy yayını onaya bağlı'}</span>
         </div>
       </header>
 
-      <section className="detailGrid">
+      {query?.action && !initialAction && <p className="formStatus error" role="status">Bu ürüne ait taslak bulunamadı. Ana ekrandaki onay bekleyenleri kontrol et.</p>}
+      <ListingEditor
+        key={initialAction?.id || listing.listing_id}
+        listing={listing}
+        writePolicy={listing.write_policy}
+        contentPolicy={listing.content_policy}
+        initialAction={publicAction(initialAction)}
+      />
+      <details className="disclosure productDetails">
+        <summary>Ürün görselleri ve denetim ayrıntıları</summary>
         <div className="detailRail">
           <section className="panel galleryPanel">
             <div className="sectionHeading compact">
@@ -117,13 +131,7 @@ export default async function ListingDetailPage({ params, searchParams }) {
           </section>
         </div>
 
-        <ListingEditor
-          listing={listing}
-          writePolicy={listing.write_policy}
-          contentPolicy={listing.content_policy}
-          initialAction={initialAction}
-        />
-      </section>
+      </details>
     </main>
   );
 }

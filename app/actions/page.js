@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { classifyGenerationError } from '../../lib/control-center/content-generator.js';
 import { listActions, listGenerations } from '../../lib/control-center/store.js';
 import { getWritePolicy } from '../../lib/control-center/write-policy.js';
+import PendingReviews from '../components/PendingReviews.js';
 
 export const dynamic = 'force-dynamic';
 
@@ -39,15 +40,12 @@ export default async function ActionsPage() {
       <header className="pageTopbar">
         <div>
           <p className="eyebrow">OPERATIONS</p>
-          <h1>İşlem Merkezi</h1>
+          <h1>İşlem geçmişi</h1>
         </div>
-        <div className="modePill"><span className="statusDot" /> {policy.mode} · {policy.write_locked ? 'LOCKED' : 'READY'}</div>
+        <div className="modePill"><span className="statusDot" /> {policy.write_locked ? 'Etsy yayını kapalı' : 'Etsy yayını onaya bağlı'}</div>
       </header>
 
-      <section className="hero compactHero">
-        <h2>Hazırlıktan Etsy doğrulamasına kadar tek kayıt zinciri.</h2>
-        <p>Ücretsiz Sezar görevleri, güvenlik kontrolleri, onay bekleyen değişiklikler, yayınlar ve geri almalar aynı merkezde izlenir.</p>
-      </section>
+      <PendingReviews actions={actions} error={actionResult.status === 'rejected' ? actionResult.reason : null} />
 
       {errors.length > 0 && (
         <section className="errorPanel">
@@ -56,7 +54,8 @@ export default async function ActionsPage() {
         </section>
       )}
 
-      <section className="operationsSection">
+      <details className="operationsSection disclosure">
+        <summary>Hazırlama geçmişi · {generations.length} kayıt</summary>
         <div className="sectionHeading operationsHeading">
           <div>
             <p className="eyebrow">SEZAR WORK QUEUE</p>
@@ -95,9 +94,10 @@ export default async function ActionsPage() {
             </div>
           </section>
         )}
-      </section>
+      </details>
 
-      <section className="operationsSection">
+      <details className="operationsSection disclosure">
+        <summary>Değişiklik ve yayın geçmişi · {actions.length} kayıt</summary>
         <div className="sectionHeading operationsHeading">
           <div>
             <p className="eyebrow">ETSY ACTIONS</p>
@@ -131,7 +131,7 @@ export default async function ActionsPage() {
             </div>
           </section>
         )}
-      </section>
+      </details>
     </main>
   );
 }

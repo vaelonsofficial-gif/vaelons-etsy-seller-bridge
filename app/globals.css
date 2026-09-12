@@ -2690,3 +2690,89 @@ input:disabled {
     animation-iteration-count: 1 !important;
   }
 }
+
+/* Owner review: keep the next decision visible, with optional details below. */
+.sectionIntro { color: #69685f; font-size: 14px; line-height: 1.6; margin: 8px 0 0; }
+.pendingReviews { margin: 8px 0 42px; scroll-margin-top: 24px; }
+.reviewCount { background: #e7ecdf; color: #355443; border-radius: 24px; padding: 9px 16px; font-weight: 700; white-space: nowrap; }
+.reviewCards { display: grid; gap: 14px; }
+.reviewCard { display: grid; grid-template-columns: 120px minmax(0, 1fr) auto; gap: 22px; align-items: center; background: #fffdfa; border: 1px solid #d6d8cb; border-radius: 16px; padding: 20px; box-shadow: 0 4px 18px #20251a06; }
+.reviewThumb { position: relative; width: 120px; height: 120px; overflow: hidden; border-radius: 10px; background: #eeece5; display: grid; place-items: center; color: #737267; font-size: 12px; }
+.reviewThumb img { object-fit: contain; }
+.reviewCardBody { min-width: 0; }
+.reviewCardBody h3 { font-size: 18px; line-height: 1.45; margin: 10px 0 6px; overflow-wrap: anywhere; }
+.reviewCardBody p { color: #64665a; font-size: 13px; margin: 0 0 7px; }
+.reviewCardBody small { color: #747568; }
+.reviewLink { display: inline-flex; gap: 14px; align-items: center; justify-content: center; text-decoration: none; white-space: nowrap; }
+.reviewEmpty { background: #fffdfa; border: 1px solid #e2dfd4; border-radius: 14px; padding: 24px; }
+.reviewEmpty p { color: #747568; line-height: 1.6; margin-bottom: 0; }
+.disclosure { border: 1px solid #dedcd1; background: #fffdfa; border-radius: 12px; padding: 0 20px; margin: 20px 0; }
+.disclosure > summary { cursor: pointer; padding: 18px 0; font-weight: 650; font-size: 14px; color: #454a3c; }
+.disclosure[open] { padding-bottom: 20px; }
+.disclosure > summary:focus-visible, .recordDetails > summary:focus-visible, .catalogDetails > summary:focus-visible { outline: 2px solid #687b50; outline-offset: 4px; }
+.systemDisclosure { margin-top: 36px; }
+.recordDetails { margin-top: 16px; font-size: 12px; overflow-wrap: anywhere; color: #646b60; }
+.recordDetails summary, .validationDetails summary { cursor: pointer; padding: 8px 0; }
+.catalogDetails { margin-top: 12px; }
+.catalogDetails summary { cursor: pointer; color: #77776d; font-size: 12px; padding: 10px 0; }
+.catalogDetails .scores { margin-top: 10px; }
+.navDetails { color: #aaa99b; margin: 14px 12px; font-size: 12px; }
+.navDetails summary { cursor: pointer; padding: 8px 0; }
+.navDetails a { display: block; padding: 9px 0; color: #c5c4b6; text-decoration: none; }
+.reviewPage:has(.approvalDock) { padding-bottom: 220px; }
+.reviewPage .detailTopbar h1 { font-size: clamp(23px, 2.8vw, 34px); max-width: 900px; line-height: 1.3; }
+.ownerWorkspace { position: static; width: 100%; }
+.reviewDiff { scroll-margin-top: 24px; }
+.reviewDiffField { margin: 24px 0; }
+.reviewDiffField h3 { font-size: 16px; margin: 0 0 12px; }
+.reviewDiffColumns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.reviewBefore, .reviewAfter { padding: 20px; border-radius: 12px; border: 1px solid #dedbd2; background: #f5f3ed; }
+.reviewAfter { background: #f0f5ec; border-color: #bfceb1; }
+.diffColumnLabel { font-size: 12px; font-weight: 700; color: #64695c; }
+.reviewAfter .diffColumnLabel { color: #35583e; }
+.reviewDiffColumns p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 12px 0 0; font-size: 14px; line-height: 1.75; color: #383f32; }
+.approvalDock { position: fixed; left: calc(var(--nav-width) + 24px); right: 24px; bottom: 16px; z-index: 40; margin: 0; padding: 18px 22px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 18px; background: #fffefa; border: 1px solid #cccdbb; border-radius: 14px; box-shadow: 0 -5px 32px #1c29191c; }
+.approvalDock strong { font-size: 15px; color: #303a2d; }
+.approvalDock p { font-size: 12px; line-height: 1.6; color: #686e61; margin: 5px 0 0; max-width: 560px; }
+.approvalDockActions { display: flex; align-items: center; gap: 10px; }
+.approvalDockActions form { margin: 0; }
+.approvalDockActions button { min-height: 46px; white-space: nowrap; }
+.approvalDock .formStatus { grid-column: 1 / -1; margin: 0; }
+.approvalDock button:disabled { opacity: 1; color: #717669; background: #e9eade; border-color: #d8dbcc; cursor: not-allowed; }
+.productDetails .detailHeroImage { max-height: 440px; }
+.productDetails .detailHeroImage img { object-fit: contain; }
+.taskReceipts { display: grid; gap: 12px; margin-top: 22px; }
+.taskReceipts h3 { margin: 0; font-size: 16px; }
+.taskReceipt { border: 1px solid #cbd4bf; border-radius: 10px; padding: 16px; background: #f0f5ea; overflow-wrap: anywhere; }
+.taskReceipt strong { font-size: 14px; }
+.taskReceipt p, .taskReceipt small { font-size: 12px; margin: 7px 0; color: #59654f; }
+.taskReceipt .statusRecordLink { display: block; margin-top: 12px; }
+html { scroll-padding-bottom: 190px; }
+@media (max-width: 1180px) {
+  .reviewCard { grid-template-columns: 100px minmax(0, 1fr); }
+  .reviewThumb { width: 100px; height: 100px; }
+  .reviewLink { grid-column: 2; justify-self: start; }
+  .approvalDock { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .approvalDockActions { justify-content: flex-end; }
+}
+@media (max-width: 760px) {
+  .appNav { flex-wrap: wrap; gap: 12px; }
+  .navLinks { width: 100%; margin-left: 0; gap: 6px; }
+  .navLink { font-size: 12px; padding: 0 10px; white-space: nowrap; }
+  .navLink > span { display: none; }
+  .navDetails { margin: 0; }
+  .reviewCard { grid-template-columns: 76px minmax(0, 1fr); padding: 15px; gap: 15px; }
+  .reviewThumb { width: 76px; height: 90px; }
+  .reviewCardBody h3 { font-size: 16px; }
+  .reviewCardBody small { font-size: 11px; }
+  .reviewLink { grid-column: 1 / -1; width: 100%; }
+  .reviewDiffColumns { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .reviewBefore, .reviewAfter { padding: 16px; }
+  .approvalDock { left: 8px; right: 8px; bottom: 8px; padding: 14px; gap: 10px; }
+  .approvalDockActions { flex-wrap: wrap; justify-content: stretch; }
+  .approvalDockActions > button, .approvalDockActions > form { flex: 1 1 auto; }
+  .approvalDockActions form button { width: 100%; }
+  .approvalDockActions button { font-size: 12px; padding: 10px 12px; }
+  .reviewPage:has(.approvalDock) { padding-bottom: 260px; }
+  .disclosure { padding-left: 14px; padding-right: 14px; }
+}

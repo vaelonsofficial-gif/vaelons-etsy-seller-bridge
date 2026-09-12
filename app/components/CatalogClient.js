@@ -50,12 +50,12 @@ export default function CatalogClient({ listings }) {
     <section className="catalogSection">
       <div className="toolbar">
         <div>
-          <p className="eyebrow">CATALOG AUDIT</p>
-          <h2>Listing kontrol merkezi</h2>
+          <p className="eyebrow">YENİ BİR İŞ BAŞLAT</p>
+          <h2>Ürünlerim</h2>
         </div>
         <div className="filters">
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Başlık veya listing ID ara" />
-          <select value={decision} onChange={(event) => setDecision(event.target.value)}>
+          <input aria-label="Ürün ara" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Ürün adı veya numarası ara" />
+          <select aria-label="Denetim durumuna göre filtrele" value={decision} onChange={(event) => setDecision(event.target.value)}>
             <option value="ALL">Tüm kararlar</option>
             <option value="REVIEW_REQUIRED">Görsel inceleme bekleyenler</option>
             <option value="REPAIR">Onarım gerekli</option>
@@ -88,6 +88,9 @@ export default function CatalogClient({ listings }) {
                 <strong>{money(listing.price)}</strong>
               </div>
               <h3>{listing.title}</h3>
+              <Link className="cardAction" href={`/listings/${listing.listing_id}`}>Ürünü aç <span>→</span></Link>
+              <details className="catalogDetails">
+                <summary>Denetim ayrıntıları</summary>
               <div className="scores">
                 <div><span>Metadata</span><b>{listing.audit.metadata_readiness}</b></div>
                 <div><span>Image Set</span><b>{listing.audit.image_score}</b></div>
@@ -104,7 +107,7 @@ export default function CatalogClient({ listings }) {
                   {listing.audit.findings.slice(0, 2).map((finding) => <li key={finding}>{finding}</li>)}
                 </ul>
               )}
-              <Link className="cardAction" href={`/listings/${listing.listing_id}`}>Listingi incele <span>→</span></Link>
+              </details>
             </div>
           </article>
         ))}

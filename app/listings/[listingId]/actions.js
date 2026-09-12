@@ -8,6 +8,8 @@ import {
   rollbackMetadataAction
 } from '../../../lib/control-center/actions.js';
 import { queueListingContentTask } from '../../../lib/control-center/content-generator.js';
+import { getAction } from '../../../lib/control-center/store.js';
+import { revisionCommand } from '../../../lib/control-center/review.js';
 
 function failure(error) {
   return {
@@ -60,10 +62,13 @@ export async function prepareListingChange(_previousState, formData) {
 
 export async function generateListingDraft(_previousState, formData) {
   try {
+    const listingId = String(formData.get('listing_id') || '');
+    const revisionId = String(formData.get('revision_action_id') || '');
+    const command = String(formData.get('command') || '');
     const result = await queueListingContentTask({
-      listingId: String(formData.get('listing_id') || ''),
-      command: String(formData.get('command') || ''),
-      scope: String(formData.get('task_scope') || 'FULL_LISTING')
+      listingId,
+      command: revisionId ? revisionCommand(await getAction(revisionId), listingId, command) : command,
+      scope: revisionId ? 'FULL_LISTING' : String(formData.get('task_scope') || 'FULL_LISTING')
     });
 
     revalidatePath('/actions');

@@ -11,7 +11,7 @@ function sourceTags(task) {
   return Array.isArray(task?.before?.tags) ? task.before.tags.join('\n') : '';
 }
 
-export default function BackgroundQueuePanel({ task = null, queueError = null }) {
+export default function BackgroundQueuePanel({ task = null, queueError = null, receipts = [] }) {
   const submitTask = completeBoundQueuedTask.bind(null, task?.id || '');
   const [state, action, pending] = useActionState(submitTask, initialState);
 
@@ -95,13 +95,16 @@ export default function BackgroundQueuePanel({ task = null, queueError = null })
             </button>
           </form>
 
+        </>
+      )}
+
           {state.message && (
             <div className={state.ok ? 'formStatus success' : 'formStatus error'} role="status">
               <strong>{state.ok ? 'Onaya hazır' : 'Kalite kontrolü engelledi'}</strong>
               <p>{state.message}</p>
               {state.code && <small>{state.code}</small>}
-              {state.ok && state.action && (
-                <small>Görev {state.generation_status} · Taslak {state.action.status} · Etsy değişmedi</small>
+              {state.ok && state.action && state.etsy_modified === false && (
+                <small>Görev {state.generation_id}: {state.generation_status} · Taslak {state.action.id}: {state.action.status} · Etsy değişmedi</small>
               )}
               {!state.ok && state.validation?.errors?.length > 0 && (
                 <ul>
@@ -115,8 +118,17 @@ export default function BackgroundQueuePanel({ task = null, queueError = null })
               )}
             </div>
           )}
-        </>
-      )}
+
+      {receipts.length > 0 && <div className="taskReceipts" aria-label="Tamamlanan metadata görevleri">
+        <h3>Son hazırlanan taslaklar</h3>
+        {receipts.map((receipt) => <div className="taskReceipt" key={receipt.task_id}>
+          <strong>Ürün #{receipt.listing_id} · Sahip incelemesine hazır</strong>
+          <p>Görev {receipt.task_id} · {receipt.generation_status}</p>
+          <p>Taslak {receipt.action_id} · {receipt.action_status}</p>
+          <small>Etsy değişikliği: HAYIR</small>
+          <Link className="statusRecordLink" href={`/listings/${receipt.listing_id}?action=${receipt.action_id}`}>Değişiklikleri incele →</Link>
+        </div>)}
+      </div>}
 
       <div className="backgroundWorkerRules" aria-label="Arka plan güvenlik kuralları">
         <span>Harici AI ücreti $0</span>

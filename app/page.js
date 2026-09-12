@@ -1,8 +1,10 @@
 import CatalogClient from './components/CatalogClient.js';
 import BackgroundQueuePanel from './components/BackgroundQueuePanel.js';
+import PendingReviews from './components/PendingReviews.js';
 import { getDashboardSnapshot } from '../lib/control-center/catalog.js';
 import { selectNextAutomationTask } from '../lib/control-center/content-generator.js';
-import { listGenerations } from '../lib/control-center/store.js';
+import { listActions, listGenerations } from '../lib/control-center/store.js';
+import { verifiedTaskReceipts } from '../lib/control-center/review.js';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,9 +24,10 @@ export default async function HomePage() {
   let backgroundTask = null;
   let queueError = null;
 
-  const [snapshotResult, queueResult] = await Promise.allSettled([
+  const [snapshotResult, queueResult, actionsResult] = await Promise.allSettled([
     getDashboardSnapshot(),
-    listGenerations(100)
+    listGenerations(100),
+    listActions(100)
   ]);
 
   if (snapshotResult.status === 'fulfilled') snapshot = snapshotResult.value;
@@ -57,18 +60,17 @@ export default async function HomePage() {
     <main className="pageShell">
       <header className="pageTopbar">
         <div>
-          <p className="eyebrow">OPERATIONS / v0.7.2</p>
-          <h1>Genel Bakış</h1>
+          <p className="eyebrow">VAELONS / v0.8.0</p>
+          <h1>Mağaza paneli</h1>
         </div>
-        <div className="modePill"><span className="statusDot" /> {snapshot?.mode || 'READ_ONLY'} · {snapshot?.write_lock !== false ? 'WRITE LOCKED' : 'WRITE READY'}</div>
+        <div className="modePill"><span className="statusDot" /> {snapshot?.write_lock !== false ? 'Etsy yayını kapalı' : 'Etsy yayını onaya bağlı'}</div>
       </header>
 
-      <section className="hero introHero">
-        <h2>Mağazayı tek ekrandan gör, ölç, düzelt.</h2>
-        <p>Etsy kataloğunu canlı okur, metadata denetimi yapar ve görsel/performance incelemesine hazırlanacak iş kuyruğunu çıkarır.</p>
-      </section>
-
-      <BackgroundQueuePanel task={backgroundTask} queueError={queueError} />
+      <PendingReviews
+        actions={actionsResult.status === 'fulfilled' ? actionsResult.value : []}
+        listings={snapshot?.catalog?.listings || []}
+        error={actionsResult.status === 'rejected' ? actionsResult.reason : null}
+      />
 
       {error ? (
         <section className="errorPanel">
@@ -78,6 +80,11 @@ export default async function HomePage() {
         </section>
       ) : (
         <>
+          <div id="catalog">
+            <CatalogClient listings={snapshot.catalog.listings} />
+          </div>
+          <details className="disclosure systemDisclosure">
+            <summary>Sistem ve denetim ayrıntıları</summary>
           <section className="statsGrid">
             <StatCard label="Etsy bağlantısı" value={snapshot.etsy_connected ? 'HEALTHY' : 'OFFLINE'} sub="VAELONS shop identity checked" />
             <StatCard label="Aktif listing" value={snapshot.catalog.loaded_count} sub={`Etsy total: ${snapshot.catalog.total_count}`} />
@@ -93,11 +100,14 @@ export default async function HomePage() {
             <div className="syncInfo">Son canlı okuma<br /><strong>{new Date(snapshot.generated_at).toLocaleString('tr-TR')}</strong></div>
           </section>
 
-          <div id="catalog">
-            <CatalogClient listings={snapshot.catalog.listings} />
-          </div>
+          </details>
         </>
       )}
+      <BackgroundQueuePanel task={backgroundTask} queueError={queueError}
+        receipts={verifiedTaskReceipts(
+          queueResult.status === 'fulfilled' ? queueResult.value : [],
+          actionsResult.status === 'fulfilled' ? actionsResult.value : []
+        )} />
     </main>
   );
 }
