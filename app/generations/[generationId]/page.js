@@ -5,6 +5,7 @@ import {
   getGeneration,
   getGenerationEvents
 } from '../../../lib/control-center/store.js';
+import { classifyGenerationError } from '../../../lib/control-center/content-generator.js';
 
 export const dynamic = 'force-dynamic';
 
@@ -33,6 +34,7 @@ export default async function GenerationPage({ params }) {
   }
 
   if (!generation) notFound();
+  const safeError = generation.error ? classifyGenerationError(generation.error) : null;
 
   return (
     <main className="pageShell">
@@ -64,6 +66,15 @@ export default async function GenerationPage({ params }) {
           {generation.summary && metadataBlock('Değişiklik özeti', generation.summary)}
           {generation.expected_outcome && metadataBlock('Beklenen etki', generation.expected_outcome)}
           {generation.safety_notes?.length > 0 && metadataBlock('Güvenlik notları', generation.safety_notes)}
+          {safeError && (
+            <div className="errorPanel generationError">
+              <b>{safeError.code}</b>
+              <p>{safeError.message}</p>
+              {safeError.code === 'GATEWAY_BILLING_REQUIRED' && (
+                <small>Hesap sahibi adımı: Vercel Dashboard → AI Gateway → Billing</small>
+              )}
+            </div>
+          )}
         </section>
 
         <section className="panel generationRecordPanel">
@@ -74,9 +85,18 @@ export default async function GenerationPage({ params }) {
             </div>
             <span className="cleanBadge">Kayıtlı</span>
           </div>
-          {metadataBlock('Başlık', generation.proposal?.title)}
-          {metadataBlock('13 etiket', generation.proposal?.tags)}
-          {metadataBlock('Açıklama', generation.proposal?.description)}
+          {generation.proposal ? (
+            <>
+              {metadataBlock('Başlık', generation.proposal.title)}
+              {metadataBlock('13 etiket', generation.proposal.tags)}
+              {metadataBlock('Açıklama', generation.proposal.description)}
+            </>
+          ) : (
+            <div className="recordEmpty">
+              <strong>İçerik oluşturulmadı</strong>
+              <p>Model çağrısı tamamlanmadığı için yayın taslağı oluşmadı. Etsy’de hiçbir alan değiştirilmedi.</p>
+            </div>
+          )}
         </section>
       </section>
 

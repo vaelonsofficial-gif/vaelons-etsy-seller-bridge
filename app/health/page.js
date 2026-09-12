@@ -58,8 +58,10 @@ export default async function HealthPage() {
         <CheckCard
           title="Content Engine"
           ok={content.ready}
-          status={content.status}
-          detail={content.ready ? `${content.provider} · ${content.model}` : content.blockers.join(' · ')}
+          status={content.ready ? 'AUTH READY' : content.status}
+          detail={content.ready
+            ? `${content.provider} · ${content.model} · Kullanım/billing ilk üretimde doğrulanır`
+            : content.blockers.join(' · ')}
         />
         <CheckCard
           title="Vision Engine"
@@ -76,7 +78,7 @@ export default async function HealthPage() {
             <h2>Komut → taslak → onay</h2>
           </div>
           <span className={content.ready ? 'statusBadge status-COMPLETED' : 'statusBadge status-BLOCKED'}>
-            {content.status}
+            {content.ready ? 'AUTH READY' : content.status}
           </span>
         </div>
         <div className="policyFacts">

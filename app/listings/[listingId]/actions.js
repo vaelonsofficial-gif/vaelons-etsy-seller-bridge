@@ -14,6 +14,7 @@ function failure(error) {
     ok: false,
     message: error?.message || 'İşlem tamamlanamadı',
     code: error?.code || 'ACTION_FAILED',
+    generation_id: error?.generationId || null,
     etsy_modified: error?.etsyModified === true
   };
 }

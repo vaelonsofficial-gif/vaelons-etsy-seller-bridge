@@ -34,6 +34,11 @@ function StatusMessage({ state }) {
       <strong>{state.ok ? 'Hazır' : 'İşlem engellendi'}</strong>
       <p>{state.message}</p>
       {state.code && <small>{state.code}</small>}
+      {state.generation_id && (
+        <Link className="statusRecordLink" href={`/generations/${state.generation_id}`}>
+          Üretim kaydını aç →
+        </Link>
+      )}
     </div>
   );
 }

@@ -1809,6 +1809,16 @@ input:disabled {
   font-size: 9px;
 }
 
+.statusRecordLink {
+  display: inline-flex;
+  margin-top: 9px;
+  color: inherit;
+  font-size: 10px;
+  font-weight: 800;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .diffPanel,
 .publishGate,
 .rollbackGate {
@@ -1929,6 +1939,39 @@ input:disabled {
   color: var(--gold-dark);
   font-size: 10px;
   font-weight: 800;
+}
+
+.generationError {
+  margin-top: 16px;
+}
+
+.generationError small {
+  display: block;
+  margin-top: 9px;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.recordEmpty {
+  margin-top: 18px;
+  padding: 25px;
+  color: var(--ink-soft);
+  background: #f3efe7;
+  border: 1px dashed var(--line-dark);
+  border-radius: 9px;
+  text-align: center;
+}
+
+.recordEmpty strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.recordEmpty p {
+  max-width: 430px;
+  margin: 7px auto 0;
+  font-size: 10px;
+  line-height: 1.55;
 }
 
 .recordFacts {
@@ -2155,6 +2198,27 @@ input:disabled {
   min-width: 150px;
 }
 
+.operationsSection {
+  margin-top: 25px;
+}
+
+.operationsHeading {
+  align-items: end;
+  margin-bottom: 13px;
+}
+
+.operationsHeading h2 {
+  margin-top: 5px;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 24px;
+  font-weight: 500;
+}
+
+.compactEmpty {
+  padding-top: 36px;
+  padding-bottom: 36px;
+}
+
 .actionTable {
   min-width: 730px;
 }
@@ -2196,6 +2260,33 @@ input:disabled {
 .actionTableRow a {
   color: var(--gold-dark);
   font-weight: 800;
+}
+
+.generationOperationsRow {
+  grid-template-columns: 150px 120px minmax(260px, 1fr) 180px 65px;
+}
+
+.operationResult {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.operationResult strong,
+.operationResult small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operationResult strong {
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.operationResult small {
+  color: var(--ink-soft);
+  font-size: 9px;
 }
 
 .errorPanel {

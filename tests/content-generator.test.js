@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   buildContentPrompt,
+  classifyGenerationError,
   contentCacheKey,
   estimateGenerationCost,
   normalizeContentCommand
@@ -60,4 +61,24 @@ test('known model token usage gets a transparent USD estimate', () => {
   );
   assert.deepEqual(cost, { currency: 'USD', amount: 0.007, estimated: true });
   assert.equal(estimateGenerationCost({}, 'unknown/model'), null);
+});
+
+test('provider billing failures are converted to a safe operational blocker', () => {
+  const result = classifyGenerationError(new Error('AI Gateway requires a valid credit card on file'));
+  assert.equal(result.code, 'GATEWAY_BILLING_REQUIRED');
+  assert.equal(result.status, 402);
+  assert.match(result.message, /ödeme yöntemi doğrulaması/i);
+  assert.doesNotMatch(result.message, /https?:\/\//);
+});
+
+test('internal safety errors keep their specific code and message', () => {
+  const source = new Error('Bu listing için başka bir işlem devam ediyor');
+  source.code = 'LISTING_LOCKED';
+  source.status = 423;
+
+  const result = classifyGenerationError(source);
+  assert.equal(result.code, 'LISTING_LOCKED');
+  assert.equal(result.status, 423);
+  assert.equal(result.message, source.message);
+  assert.equal(result.providerCode, null);
 });
