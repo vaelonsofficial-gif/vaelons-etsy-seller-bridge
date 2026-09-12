@@ -25,6 +25,7 @@ export async function completeQueuedTask(_previousState, formData) {
     });
     const { task, result, valid } = completion;
 
+    revalidatePath('/');
     revalidatePath('/actions');
     revalidatePath(`/generations/${task.id}`);
     revalidatePath(`/listings/${task.listing_id}`);

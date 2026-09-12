@@ -1,5 +1,8 @@
 import CatalogClient from './components/CatalogClient.js';
+import BackgroundQueuePanel from './components/BackgroundQueuePanel.js';
 import { getDashboardSnapshot } from '../lib/control-center/catalog.js';
+import { selectNextAutomationTask } from '../lib/control-center/content-generator.js';
+import { listGenerations } from '../lib/control-center/store.js';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,18 +19,45 @@ function StatCard({ label, value, sub }) {
 export default async function HomePage() {
   let snapshot = null;
   let error = null;
+  let backgroundTask = null;
+  let queueError = null;
 
-  try {
-    snapshot = await getDashboardSnapshot();
-  } catch (cause) {
-    error = cause instanceof Error ? cause.message : String(cause);
+  const [snapshotResult, queueResult] = await Promise.allSettled([
+    getDashboardSnapshot(),
+    listGenerations(100)
+  ]);
+
+  if (snapshotResult.status === 'fulfilled') snapshot = snapshotResult.value;
+  else error = snapshotResult.reason instanceof Error
+    ? snapshotResult.reason.message
+    : String(snapshotResult.reason);
+
+  if (queueResult.status === 'fulfilled') {
+    const selectedTask = selectNextAutomationTask(queueResult.value);
+    if (selectedTask) {
+      backgroundTask = {
+        id: selectedTask.id,
+        listing_id: selectedTask.listing_id,
+        task_scope: selectedTask.task_scope,
+        command: selectedTask.command,
+        before: {
+          title: selectedTask.before?.title || '',
+          tags: Array.isArray(selectedTask.before?.tags) ? selectedTask.before.tags : [],
+          description: selectedTask.before?.description || ''
+        }
+      };
+    }
+  } else {
+    queueError = queueResult.reason instanceof Error
+      ? queueResult.reason.message
+      : String(queueResult.reason);
   }
 
   return (
     <main className="pageShell">
       <header className="pageTopbar">
         <div>
-          <p className="eyebrow">OPERATIONS / v0.6</p>
+          <p className="eyebrow">OPERATIONS / v0.7</p>
           <h1>Genel Bakış</h1>
         </div>
         <div className="modePill"><span className="statusDot" /> {snapshot?.mode || 'READ_ONLY'} · {snapshot?.write_lock !== false ? 'WRITE LOCKED' : 'WRITE READY'}</div>
@@ -37,6 +67,8 @@ export default async function HomePage() {
         <h2>Mağazayı tek ekrandan gör, ölç, düzelt.</h2>
         <p>Etsy kataloğunu canlı okur, metadata denetimi yapar ve görsel/performance incelemesine hazırlanacak iş kuyruğunu çıkarır.</p>
       </section>
+
+      <BackgroundQueuePanel task={backgroundTask} queueError={queueError} />
 
       {error ? (
         <section className="errorPanel">

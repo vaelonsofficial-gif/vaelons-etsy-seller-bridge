@@ -251,7 +251,7 @@ export default function ListingEditor({ listing, writePolicy, contentPolicy, ini
           value={taskScope}
           onChange={(event) => setTaskScope(event.target.value)}
         >
-          <option value="FULL_LISTING">Tam listing · içerik + görseller</option>
+          <option value="FULL_LISTING">Tam metadata · başlık + etiket + açıklama</option>
           <option value="SEO_CONTENT">SEO · başlık + etiket + açıklama</option>
           <option value="CREATIVE_IMAGES">Görseller · hero + bilgi görselleri</option>
         </select>

@@ -620,6 +620,105 @@ input:disabled {
   gap: 10px;
 }
 
+.backgroundQueuePanel {
+  margin-bottom: 28px;
+  overflow: hidden;
+}
+
+.backgroundQueueEmpty {
+  padding: 22px;
+  color: var(--ink-soft);
+  background: #f8f5ee;
+  border: 1px dashed #d8cfbf;
+  border-radius: 10px;
+}
+
+.backgroundQueueEmpty strong,
+.backgroundQueueEmpty p,
+.backgroundQueueEmpty small {
+  display: block;
+}
+
+.backgroundQueueEmpty p {
+  margin: 8px 0;
+  line-height: 1.6;
+}
+
+.backgroundTaskBrief {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.backgroundTaskBrief > div {
+  min-width: 0;
+  padding: 13px;
+  background: #f8f5ee;
+  border: 1px solid #e7e0d5;
+  border-radius: 9px;
+}
+
+.backgroundTaskBrief span,
+.backgroundTaskBrief strong {
+  display: block;
+}
+
+.backgroundTaskBrief span,
+.backgroundOwnerCommand span {
+  color: var(--ink-soft);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.backgroundTaskBrief strong {
+  margin-top: 6px;
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backgroundOwnerCommand {
+  margin-bottom: 20px;
+  padding: 16px;
+  background: var(--gold-soft);
+  border-left: 3px solid var(--gold-dark);
+  border-radius: 8px;
+}
+
+.backgroundOwnerCommand p {
+  margin: 7px 0 0;
+  line-height: 1.6;
+}
+
+.backgroundWorkerRules {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.backgroundWorkerRules span {
+  padding: 7px 10px;
+  color: var(--ink-soft);
+  background: #f4f1ea;
+  border: 1px solid #e1d9cc;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+@media (max-width: 760px) {
+  .backgroundTaskBrief {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .listingTopline {
   color: var(--ink-soft);
   font-size: 10px;
