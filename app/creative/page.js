@@ -42,7 +42,7 @@ export default async function CreativePage() {
     <main className="pageShell">
       <header className="pageTopbar">
         <div>
-          <p className="eyebrow">CREATIVE OPERATIONS / v0.6</p>
+          <p className="eyebrow">CREATIVE OPERATIONS / v0.7</p>
           <h1>Creative Audit</h1>
         </div>
         <div className="modePill"><span className="statusDot" /> {vision.status}</div>
