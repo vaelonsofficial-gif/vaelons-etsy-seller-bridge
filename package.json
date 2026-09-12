@@ -1,6 +1,6 @@
 {
   "name": "vaelons-control-center",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "private": true,
   "type": "module",
   "engines": {

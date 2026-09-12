@@ -57,7 +57,7 @@ export default async function HomePage() {
     <main className="pageShell">
       <header className="pageTopbar">
         <div>
-          <p className="eyebrow">OPERATIONS / v0.7.1</p>
+          <p className="eyebrow">OPERATIONS / v0.7.2</p>
           <h1>Genel Bakış</h1>
         </div>
         <div className="modePill"><span className="statusDot" /> {snapshot?.mode || 'READ_ONLY'} · {snapshot?.write_lock !== false ? 'WRITE LOCKED' : 'WRITE READY'}</div>

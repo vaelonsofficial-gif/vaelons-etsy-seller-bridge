@@ -8,6 +8,7 @@ import {
   contentCacheKey,
   isAutomationClaimExpired,
   isRecoverableNoChangeCompletion,
+  isRetryableMetadataChangeBlock,
   normalizeAutomationPayload,
   normalizeContentCommand,
   normalizeTaskScope,
@@ -119,6 +120,37 @@ test('unchanged task metadata is blocked instead of being completed', () => {
   assert.equal(validation.valid, false);
   assert.equal(validation.qa.passed, false);
   assert.ok(validation.errors.includes('metadata_change_required'));
+});
+
+test('a metadata-change block returns to the queue exactly once', () => {
+  const retryable = {
+    id: 'retryable-no-change',
+    status: 'BLOCKED',
+    task_scope: 'SEO_CONTENT',
+    created_at: '2026-09-12T00:00:00Z',
+    action_id: null,
+    action: null,
+    etsy_modified: false,
+    validation: {
+      errors: ['metadata_change_required'],
+      changed_fields: []
+    }
+  };
+  const exhausted = {
+    ...retryable,
+    id: 'exhausted-no-change',
+    metadata_change_retry_count: 2
+  };
+  const legacyNullCounter = {
+    ...retryable,
+    id: 'legacy-null-counter',
+    metadata_change_retry_count: null
+  };
+
+  assert.equal(isRetryableMetadataChangeBlock(retryable), true);
+  assert.equal(isRetryableMetadataChangeBlock(legacyNullCounter), true);
+  assert.equal(isRetryableMetadataChangeBlock(exhausted), false);
+  assert.equal(selectNextAutomationTask([exhausted, retryable]).id, retryable.id);
 });
 
 test('a repeated validated submission is recognized as idempotent', () => {
