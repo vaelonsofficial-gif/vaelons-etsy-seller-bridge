@@ -7,6 +7,7 @@ import CreativeAuditPanel from '../../components/CreativeAuditPanel.js';
 import ListingEditor from './ListingEditor.js';
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
 
 function money(price) {
   if (!price) return '—';
@@ -109,7 +110,11 @@ export default async function ListingDetailPage({ params }) {
           </section>
         </div>
 
-        <ListingEditor listing={listing} writePolicy={listing.write_policy} />
+        <ListingEditor
+          listing={listing}
+          writePolicy={listing.write_policy}
+          contentPolicy={listing.content_policy}
+        />
       </section>
     </main>
   );

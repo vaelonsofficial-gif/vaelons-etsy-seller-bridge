@@ -7,6 +7,7 @@ import {
   prepareMetadataAction,
   rollbackMetadataAction
 } from '../../../lib/control-center/actions.js';
+import { generateListingContent } from '../../../lib/control-center/content-generator.js';
 
 function failure(error) {
   return {
@@ -25,7 +26,9 @@ export async function prepareListingChange(_previousState, formData) {
       title: String(formData.get('title') || ''),
       tags: String(formData.get('tags') || '').split(/\r?\n/),
       description: String(formData.get('description') || ''),
-      reason: String(formData.get('reason') || 'control_center_editor')
+      reason: String(formData.get('reason') || 'control_center_editor'),
+      strictClaims: true,
+      source: 'OWNER_EDIT'
     });
 
     revalidatePath('/actions');
@@ -45,6 +48,34 @@ export async function prepareListingChange(_previousState, formData) {
       message: result.validation.valid
         ? 'Değişiklik taslağı doğrulandı ve işlem kuyruğuna kaydedildi.'
         : 'Taslak güvenlik doğrulamasından geçemedi.',
+      action: result.action,
+      validation: result.validation,
+      etsy_modified: false
+    };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function generateListingDraft(_previousState, formData) {
+  try {
+    const result = await generateListingContent({
+      listingId: String(formData.get('listing_id') || ''),
+      command: String(formData.get('command') || '')
+    });
+
+    revalidatePath('/actions');
+    revalidatePath(`/generations/${result.id}`);
+
+    const valid = result.status === 'COMPLETED' && result.validation?.valid === true;
+    return {
+      ok: valid,
+      message: valid
+        ? result.cached
+          ? 'Aynı listing sürümü için doğrulanmış içerik yeniden kullanıldı.'
+          : 'İçerik hazırlandı, güvenlik kontrollerinden geçti ve onayınıza sunuldu.'
+        : 'Üretilen içerik güvenlik doğrulamasından geçemedi; Etsy’ye gönderilemez.',
+      generation: result,
       action: result.action,
       validation: result.validation,
       etsy_modified: false

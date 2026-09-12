@@ -1,6 +1,6 @@
 # VAELONS Control Center — Delivery Roadmap
 
-## Current build status — v0.4.0
+## Current build status — v0.5.0
 - isolated `control-center-v1` preview branch
 - verified Etsy catalog read and strict VAELONS shop identity check
 - desktop-first app shell, catalog, listing detail, image ranks, action queue and health screens
@@ -12,8 +12,12 @@
 - preview snapshot, idempotency record, per-listing lock, exact confirmation and post-write verification path
 - rollback path for title, tags and description
 - global mode, authentication gate, kill switch and single-listing allowlist all default to locked
+- single-panel owner command, AI content preparation, editable proposal and exact approval diff
+- Vercel AI Gateway structured output with strict title/tag/description validation
+- permanent generation IDs, output/usage/cost records and addressable generation audit pages
+- one-click explicit owner approval while the server retains exact-action confirmation and shop/listing verification
 
-No Control Center Etsy mutation or AI vision execution is enabled in this build. SAFE_WRITE will be promoted only after persistence, UI and end-to-end staging checks pass. Visual quality, creative readiness and ad eligibility are never inferred from image count alone.
+No Control Center Etsy mutation or AI vision execution is enabled in this build. Content generation is non-mutating and can run independently of the write gate. SAFE_WRITE will be promoted only after persistence, UI and end-to-end staging checks pass. Visual quality, creative readiness and ad eligibility are never inferred from image count alone.
 
 ## Phase 0 — Discovery and architecture freeze
 Goal: understand current reusable Etsy capabilities and lock boundaries before app code.

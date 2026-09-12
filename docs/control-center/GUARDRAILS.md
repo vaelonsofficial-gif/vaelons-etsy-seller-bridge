@@ -59,3 +59,9 @@ Every queued action has a unique idempotency key. Retries must not duplicate ima
 
 ## Rule 15 — Logs are permanent operational evidence
 Every sync, audit, proposal, execution, failure, verification and rollback event is logged with timestamps and target IDs.
+
+## Rule 16 — Generation is not publication
+An AI-generated title, tag set, description, image or recommendation is always a proposal. It receives deterministic validation and an exact preview. Etsy changes only after the owner explicitly approves the prepared action.
+
+## Rule 17 — Model output is untrusted until validated
+Structured generation, schema validation and business-rule validation are independent gates. Model output cannot add unsupported product claims, relax the write policy, select another shop, change unlisted fields or execute its own proposal.

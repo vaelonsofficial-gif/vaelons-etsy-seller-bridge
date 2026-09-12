@@ -20,6 +20,7 @@ export default async function HealthPage() {
   const token = health.checks.etsy_token;
   const identity = health.checks.shop_identity;
   const persistence = health.checks.persistence;
+  const content = health.content_policy;
   const vision = health.vision_policy;
 
   return (
@@ -55,11 +56,34 @@ export default async function HealthPage() {
           detail={health.write_policy.write_locked ? 'Etsy yazma işlemleri güvenli şekilde kilitli' : 'SAFE_WRITE yürütmeye hazır'}
         />
         <CheckCard
+          title="Content Engine"
+          ok={content.ready}
+          status={content.status}
+          detail={content.ready ? `${content.provider} · ${content.model}` : content.blockers.join(' · ')}
+        />
+        <CheckCard
           title="Vision Engine"
           ok={vision.ready}
           status={vision.status}
           detail={vision.ready ? `${vision.provider} · ${vision.model}` : 'AI görsel analizi henüz etkinleştirilmedi'}
         />
+      </section>
+
+      <section className="panel policyPanel">
+        <div className="sectionHeading compact">
+          <div>
+            <p className="eyebrow">CONTENT POLICY</p>
+            <h2>Komut → taslak → onay</h2>
+          </div>
+          <span className={content.ready ? 'statusBadge status-COMPLETED' : 'statusBadge status-BLOCKED'}>
+            {content.status}
+          </span>
+        </div>
+        <div className="policyFacts">
+          <div><span>Model</span><strong>{content.model}</strong></div>
+          <div><span>Gateway auth</span><strong>{content.auth_source || 'MISSING'}</strong></div>
+          <div><span>Yayın davranışı</span><strong>ONAY ZORUNLU</strong></div>
+        </div>
       </section>
 
       <section className="panel policyPanel">

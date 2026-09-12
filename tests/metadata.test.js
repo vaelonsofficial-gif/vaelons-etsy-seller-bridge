@@ -64,6 +64,22 @@ test('new unsupported product claims are blocked', () => {
   assert.ok(result.errors.includes('unsupported_claim_added:archival ink'));
 });
 
+test('AI proposals are held to strict claim validation', () => {
+  const sourceWithLegacyClaim = {
+    ...original,
+    description: `${original.description} Museum quality finish.`
+  };
+  const result = validateMetadataProposal(
+    sourceWithLegacyClaim,
+    { description: sourceWithLegacyClaim.description },
+    { strictClaims: true }
+  );
+
+  assert.equal(result.valid, false);
+  assert.equal(result.qa.strict_claims, true);
+  assert.ok(result.errors.includes('unsupported_claim_present:museum quality'));
+});
+
 test('snapshot hash changes when source listing changes', () => {
   const changed = { ...original, title: `${original.title} Premium` };
   assert.notEqual(snapshotHash(original), snapshotHash(changed));
