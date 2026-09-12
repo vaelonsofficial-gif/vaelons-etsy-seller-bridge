@@ -24,7 +24,6 @@ async function completeTask(taskId, formData) {
     });
     const { task, result, valid } = completion;
 
-    revalidatePath('/');
     revalidatePath('/actions');
     revalidatePath(`/generations/${task.id}`);
     revalidatePath(`/listings/${task.listing_id}`);
@@ -35,8 +34,18 @@ async function completeTask(taskId, formData) {
         ? result.no_changes
           ? 'İnceleme tamamlandı; yayınlanacak metadata farkı bulunmadı.'
           : 'İçerik doğrulandı ve sahibin onay kuyruğuna alındı.'
-        : 'İçerik güvenlik doğrulamasından geçemedi; Etsy’ye gönderilemez.',
+        : result.no_changes
+          ? 'Alanlar değişmedi. Hazırlanan yeni metadata metnini forma yazıp bir kez yeniden gönderin.'
+          : 'İçerik güvenlik doğrulamasından geçemedi; Etsy’ye gönderilemez.',
+      code: valid
+        ? completion.cached
+          ? 'VALIDATED_PROPOSAL_REUSED'
+          : 'VALIDATED_PROPOSAL_READY'
+        : result.no_changes
+          ? 'METADATA_CHANGE_REQUIRED'
+          : 'METADATA_VALIDATION_FAILED',
       generation_id: task.id,
+      generation_status: task.status,
       listing_id: task.listing_id,
       action: result.action,
       validation: result.validation,

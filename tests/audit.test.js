@@ -24,13 +24,14 @@ function listing(overrides = {}) {
   };
 }
 
-test('metadata-only audit never enables ads or claims conversion readiness', () => {
+test('metadata-only audit never enables ads and routes unverified promises to repair', () => {
   const result = auditListing(listing());
   assert.equal(result.ads_eligible, false);
   assert.equal(result.ad_readiness, null);
   assert.equal(result.conversion_readiness, null);
   assert.equal(result.confidence, 'metadata_only');
-  assert.equal(result.decision, 'REVIEW_REQUIRED');
+  assert.equal(result.decision, 'REPAIR');
+  assert.equal(result.claim_review_required, true);
 });
 
 test('missing hero image blocks the listing', () => {

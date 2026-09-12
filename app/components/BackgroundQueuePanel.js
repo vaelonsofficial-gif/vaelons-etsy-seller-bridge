@@ -86,8 +86,12 @@ export default function BackgroundQueuePanel({ task = null, queueError = null })
               <textarea name="description" rows="18" defaultValue={task.before?.description || ''} required />
             </label>
 
-            <button className="primaryButton" type="submit" disabled={pending}>
-              {pending ? 'Kalite kontrolü yapılıyor…' : 'Hazırla ve sahibin onayına bırak'}
+            <button className="primaryButton" type="submit" disabled={pending || state.ok === true}>
+              {pending
+                ? 'Kalite kontrolü yapılıyor…'
+                : state.ok === true
+                  ? 'Onaya hazır'
+                  : 'Hazırla ve sahibin onayına bırak'}
             </button>
           </form>
 
@@ -96,6 +100,14 @@ export default function BackgroundQueuePanel({ task = null, queueError = null })
               <strong>{state.ok ? 'Onaya hazır' : 'Kalite kontrolü engelledi'}</strong>
               <p>{state.message}</p>
               {state.code && <small>{state.code}</small>}
+              {state.ok && state.action && (
+                <small>Görev {state.generation_status} · Taslak {state.action.status} · Etsy değişmedi</small>
+              )}
+              {!state.ok && state.validation?.errors?.length > 0 && (
+                <ul>
+                  {state.validation.errors.map((item) => <li key={item}>{item}</li>)}
+                </ul>
+              )}
               {state.action && (
                 <Link className="statusRecordLink" href={`/listings/${state.listing_id}?action=${state.action.id}`}>
                   Kesin farkı incele ve onayla →

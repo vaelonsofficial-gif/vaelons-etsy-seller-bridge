@@ -80,6 +80,24 @@ test('AI proposals are held to strict claim validation', () => {
   assert.ok(result.errors.includes('unsupported_claim_present:museum quality'));
 });
 
+test('strict validation blocks unsupported production, durability and shipping promises', () => {
+  const result = validateMetadataProposal(
+    original,
+    {
+      ...original,
+      description: 'Printed to order with lasting quality, guaranteed safe arrival and free worldwide shipping.'
+    },
+    { strictClaims: true }
+  );
+
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.includes('unsupported_claim_present:made to order'));
+  assert.ok(result.errors.includes('unsupported_claim_present:lasting quality'));
+  assert.ok(result.errors.includes('unsupported_claim_present:guarantee'));
+  assert.ok(result.errors.includes('unsupported_claim_present:safe arrival'));
+  assert.ok(result.errors.includes('unsupported_claim_present:shipping promise'));
+});
+
 test('snapshot hash changes when source listing changes', () => {
   const changed = { ...original, title: `${original.title} Premium` };
   assert.notEqual(snapshotHash(original), snapshotHash(changed));

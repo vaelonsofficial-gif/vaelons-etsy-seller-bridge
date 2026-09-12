@@ -4,11 +4,14 @@ import assert from 'node:assert/strict';
 import {
   automationClaimHash,
   classifyGenerationError,
+  completedSubmissionMatches,
   contentCacheKey,
   isAutomationClaimExpired,
+  isRecoverableNoChangeCompletion,
   normalizeAutomationPayload,
   normalizeContentCommand,
   normalizeTaskScope,
+  requireTaskMetadataChange,
   selectNextAutomationTask
 } from '../lib/control-center/content-generator.js';
 
@@ -80,6 +83,58 @@ test('expired background claims can be safely reclaimed', () => {
   };
   assert.equal(isAutomationClaimExpired(expired, Date.parse('2026-09-12T01:00:00Z')), true);
   assert.equal(selectNextAutomationTask([expired], Date.parse('2026-09-12T01:00:00Z')).id, 'expired');
+});
+
+test('legacy completed no-change tasks are recoverable but validated proposals are not', () => {
+  const recoverable = {
+    id: 'legacy-no-change',
+    status: 'COMPLETED',
+    task_scope: 'SEO_CONTENT',
+    created_at: '2026-09-12T00:00:00Z',
+    action_id: null,
+    action: null,
+    etsy_modified: false,
+    validation: { warnings: ['no_changes'], changed_fields: [] }
+  };
+  const validated = {
+    ...recoverable,
+    id: 'validated',
+    action_id: 'action-1',
+    action: { id: 'action-1', status: 'VALIDATED' }
+  };
+
+  assert.equal(isRecoverableNoChangeCompletion(recoverable), true);
+  assert.equal(isRecoverableNoChangeCompletion(validated), false);
+  assert.equal(selectNextAutomationTask([validated, recoverable]).id, recoverable.id);
+});
+
+test('unchanged task metadata is blocked instead of being completed', () => {
+  const validation = requireTaskMetadataChange({
+    valid: true,
+    errors: [],
+    warnings: ['no_changes'],
+    qa: { passed: true, etsy_modified: false }
+  }, true);
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.qa.passed, false);
+  assert.ok(validation.errors.includes('metadata_change_required'));
+});
+
+test('a repeated validated submission is recognized as idempotent', () => {
+  const proposal = {
+    title: 'Flamingo Canvas Wall Art for Coastal Interiors',
+    tags: Array.from({ length: 13 }, (_, index) => `tag ${index + 1}`),
+    description: 'A flamingo artwork with calm coastal water and soft color.'
+  };
+  const task = {
+    status: 'COMPLETED',
+    proposal,
+    action: { status: 'VALIDATED', proposed: proposal }
+  };
+
+  assert.equal(completedSubmissionMatches(task, proposal), true);
+  assert.equal(completedSubmissionMatches(task, { ...proposal, title: `${proposal.title} Print` }), false);
 });
 
 test('automation payload is normalized and size-limited', () => {
