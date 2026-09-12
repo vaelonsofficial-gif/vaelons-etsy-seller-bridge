@@ -12,6 +12,8 @@ Etsy mutations are fail-closed by default. Enabling a bounded SAFE_WRITE test re
 
 Content preparation has no external AI billing dependency. `CONTROL_CENTER_FREE_QUEUE_ENABLED=off` is the emergency queue kill switch. The work queue never unlocks Etsy writes; SAFE_WRITE remains a separate owner-authenticated, single-listing gate.
 
+Metadata tasks can be processed unattended by an hourly ChatGPT Scheduled Task. The worker checks the protected automation status route, claims one queued task with a single-use 55-minute ticket, prepares English metadata within deterministic Etsy limits, and returns a base64url JSON payload to the completion route. The ticket can only create a validated proposal; it cannot publish to Etsy. Owner review and the existing exact `YAYINLA <listing-id>` approval remain mandatory.
+
 The scheduling workflow in the separate `etsy-price-manager` project is out of scope and remains untouched.
 
 A small, private bridge between ChatGPT Custom Actions and the official Etsy Open API v3.

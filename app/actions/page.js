@@ -8,10 +8,12 @@ export const dynamic = 'force-dynamic';
 
 function generationStatus(generation) {
   const error = generation.error ? classifyGenerationError(generation.error) : null;
-  if (generation.status === 'QUEUED') {
+  if (['QUEUED', 'IN_PROGRESS'].includes(generation.status)) {
     return {
       heading: generation.task_scope || 'FULL_LISTING',
-      detail: generation.command
+      detail: generation.status === 'IN_PROGRESS'
+        ? 'Sezar içeriği arka planda hazırlıyor.'
+        : generation.command
     };
   }
   return {

@@ -14,6 +14,8 @@ test('free Sezar queue is ready without Gateway credentials', () => {
   assert.equal(policy.auth_source, 'NO_EXTERNAL_AI_API');
   assert.equal(policy.billing_required, false);
   assert.equal(policy.external_ai_cost_usd, 0);
+  assert.equal(policy.background_worker, 'CHATGPT_SCHEDULED_TASK');
+  assert.equal(policy.maximum_background_wait_minutes, 60);
   assert.doesNotThrow(() => assertContentReady(policy));
 });
 

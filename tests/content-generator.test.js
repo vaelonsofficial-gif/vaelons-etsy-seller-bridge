@@ -2,10 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  automationClaimHash,
   classifyGenerationError,
   contentCacheKey,
+  isAutomationClaimExpired,
+  normalizeAutomationPayload,
   normalizeContentCommand,
-  normalizeTaskScope
+  normalizeTaskScope,
+  selectNextAutomationTask
 } from '../lib/control-center/content-generator.js';
 
 test('content command is normalized and bounded', () => {
@@ -50,4 +54,49 @@ test('internal queue errors keep their specific code and message', () => {
   assert.equal(result.code, 'LISTING_LOCKED');
   assert.equal(result.status, 423);
   assert.equal(result.message, source.message);
+});
+
+test('automation claim hashes are deterministic and task-bound', () => {
+  assert.equal(automationClaimHash('task-a', 'secret'), automationClaimHash('task-a', 'secret'));
+  assert.notEqual(automationClaimHash('task-a', 'secret'), automationClaimHash('task-b', 'secret'));
+});
+
+test('automation selects the oldest queued metadata task and skips creative work', () => {
+  const selected = selectNextAutomationTask([
+    { id: 'new', status: 'QUEUED', task_scope: 'SEO_CONTENT', created_at: '2026-09-12T02:00:00Z' },
+    { id: 'creative', status: 'QUEUED', task_scope: 'CREATIVE_IMAGES', created_at: '2026-09-12T00:00:00Z' },
+    { id: 'old', status: 'QUEUED', task_scope: 'FULL_LISTING', created_at: '2026-09-12T01:00:00Z' }
+  ]);
+  assert.equal(selected.id, 'old');
+});
+
+test('expired background claims can be safely reclaimed', () => {
+  const expired = {
+    id: 'expired',
+    status: 'IN_PROGRESS',
+    task_scope: 'SEO_CONTENT',
+    created_at: '2026-09-12T00:00:00Z',
+    automation_claim_expires_at: '2026-09-12T00:55:00Z'
+  };
+  assert.equal(isAutomationClaimExpired(expired, Date.parse('2026-09-12T01:00:00Z')), true);
+  assert.equal(selectNextAutomationTask([expired], Date.parse('2026-09-12T01:00:00Z')).id, 'expired');
+});
+
+test('automation payload is normalized and size-limited', () => {
+  const payload = normalizeAutomationPayload({
+    title: 'Title',
+    tags: ['one', 'two'],
+    description: 'Description',
+    summary: '  concise\nsummary  '
+  });
+  assert.deepEqual(payload.tags, ['one', 'two']);
+  assert.equal(payload.summary, 'concise summary');
+  assert.throws(
+    () => normalizeAutomationPayload({ title: 'T', tags: [], description: 'x'.repeat(13_000) }),
+    (error) => error.code === 'AUTOMATION_PAYLOAD_TOO_LARGE'
+  );
+  assert.throws(
+    () => normalizeAutomationPayload({ title: 'T', tags: [], description: 'x'.repeat(4_001) }),
+    (error) => error.code === 'AUTOMATION_DESCRIPTION_TOO_LONG'
+  );
 });

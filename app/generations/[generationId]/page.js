@@ -99,9 +99,13 @@ export default async function GenerationPage({ params }) {
             </>
           ) : (
             <div className="recordEmpty">
-              <strong>{generation.status === 'QUEUED' ? 'Sezar hazırlığı bekleniyor' : 'İçerik oluşturulmadı'}</strong>
-              <p>{generation.status === 'QUEUED'
-                ? 'Görev ücretsiz kuyruğa kaydedildi. Hazırlık tamamlanana kadar Etsy’de hiçbir alan değiştirilmez.'
+              <strong>{generation.status === 'QUEUED'
+                ? 'Arka plan hazırlığı bekleniyor'
+                : generation.status === 'IN_PROGRESS'
+                  ? 'Sezar içeriği arka planda hazırlıyor'
+                  : 'İçerik oluşturulmadı'}</strong>
+              <p>{['QUEUED', 'IN_PROGRESS'].includes(generation.status)
+                ? 'Görev güvenli otomasyon kuyruğunda. Hazırlık tamamlanana ve siz yayın onayı verene kadar Etsy’de hiçbir alan değiştirilmez.'
                 : 'Bu görevde yayın taslağı oluşmadı. Etsy’de hiçbir alan değiştirilmedi.'}</p>
             </div>
           )}

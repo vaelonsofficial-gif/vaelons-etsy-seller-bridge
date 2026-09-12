@@ -87,18 +87,27 @@ function ValidationDetails({ validation }) {
 function GenerationSummary({ generation }) {
   if (!generation) return null;
   const queued = generation.status === 'QUEUED';
+  const working = generation.status === 'IN_PROGRESS';
+  const pending = queued || working;
+  const blocked = generation.status === 'BLOCKED';
 
   return (
     <section className="generationSummary">
       <div className="generationSummaryTop">
         <div>
-          <p className="eyebrow">{queued ? 'SEZAR WORK QUEUE' : 'CONTENT READY'}</p>
-          <h3>{queued ? 'Görev Sezar kuyruğunda' : generation.summary || 'İçerik önerisi hazır'}</h3>
+          <p className="eyebrow">{queued ? 'SEZAR WORK QUEUE' : working ? 'BACKGROUND WORKER' : blocked ? 'QA BLOCKED' : 'CONTENT READY'}</p>
+          <h3>{queued
+            ? 'Görev arka plan kuyruğunda'
+            : working
+              ? 'Sezar içeriği arka planda hazırlıyor'
+              : generation.summary || (blocked ? 'İçerik kalite kontrolünde engellendi' : 'İçerik önerisi hazır')}</h3>
         </div>
         <Link href={`/generations/${generation.id}`}>Görev kaydı →</Link>
       </div>
-      <p>{queued
-        ? 'SEO, başlık, açıklama ve seçilen görsel kapsamı Sezar tarafından hazırlanacak. Hazırlama tamamlanmadan Etsy’ye hiçbir şey gönderilmez.'
+      <p>{pending
+        ? working
+          ? 'Görev tek kullanımlık güvenli biletle alındı. Bu ekran sonucu otomatik kontrol ediyor; Etsy’ye hiçbir şey gönderilmiyor.'
+          : 'SEO, başlık ve açıklama en geç yaklaşık 60 dakika içinde Sezar tarafından hazırlanacak. Bu sayfaya veya sohbete dönmeniz gerekmez.'
         : generation.expected_outcome}</p>
       {generation.safety_notes?.length > 0 && (
         <ul>{generation.safety_notes.map((note) => <li key={note}>{note}</li>)}</ul>
@@ -134,12 +143,45 @@ export default function ListingEditor({ listing, writePolicy, contentPolicy, ini
     initialAction?.proposed?.description ?? listing.description
   );
   const [activeAction, setActiveAction] = useState(initialAction);
+  const [polledGeneration, setPolledGeneration] = useState(null);
   const [generationState, generationAction, generationPending] = useActionState(generateListingDraft, initialState);
   const [prepareState, prepareAction, preparePending] = useActionState(prepareListingChange, initialState);
   const [executeState, executeAction, executePending] = useActionState(executeListingChange, initialState);
   const [rollbackState, rollbackAction, rollbackPending] = useActionState(rollbackListingChange, initialState);
 
-  const generation = generationState?.generation || null;
+  const generation = polledGeneration || generationState?.generation || null;
+
+  useEffect(() => {
+    const taskId = generationState?.generation?.id;
+    if (!taskId || !['QUEUED', 'IN_PROGRESS'].includes(generation?.status)) return undefined;
+
+    let cancelled = false;
+    let timer;
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/control-center/tasks/${taskId}`, { cache: 'no-store' });
+        const payload = await response.json();
+        if (!cancelled && response.ok && payload.task) {
+          setPolledGeneration(payload.task);
+          if (payload.task.action) setActiveAction(payload.task.action);
+          if (payload.task.proposal) {
+            setTitle(payload.task.proposal.title);
+            setTags(payload.task.proposal.tags.join('\n'));
+            setDescription(payload.task.proposal.description);
+          }
+        }
+      } catch {
+        // A later poll retries transient network failures.
+      }
+      if (!cancelled) timer = window.setTimeout(poll, 30_000);
+    };
+
+    timer = window.setTimeout(poll, 5_000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [generation?.status, generationState?.generation?.id]);
 
   useEffect(() => {
     if (!generation?.proposal) return;
@@ -197,7 +239,7 @@ export default function ListingEditor({ listing, writePolicy, contentPolicy, ini
 
       <div className="safetyCallout">
         <strong>Ücretsiz hazırlama ile yayınlama birbirinden ayrıdır.</strong>
-        <p>Komut ücretsiz Sezar kuyruğuna kaydolur. Harici AI API kullanılmaz. Etsy yalnızca hazırlanmış kesin farkları görüp “Onayla ve yayınla” düğmesine bastığınızda değişir.</p>
+        <p>Komut ücretsiz arka plan kuyruğuna kaydolur ve Sezar en geç yaklaşık 60 dakika içinde işler. Harici AI API kullanılmaz. Etsy yalnızca hazırlanmış kesin farkları görüp “Onayla ve yayınla” düğmesine bastığınızda değişir.</p>
       </div>
 
       <form action={generationAction} className="commandForm">
@@ -231,9 +273,9 @@ export default function ListingEditor({ listing, writePolicy, contentPolicy, ini
           ))}
         </div>
         <div className="commandSubmitRow">
-          <small>{command.length}/{contentPolicy.max_command_characters} · Ücretsiz kuyruk · Etsy değişmez</small>
+          <small>{command.length}/{contentPolicy.max_command_characters} · Arka planda ≤60 dk · Etsy değişmez</small>
           <button className="primaryButton prepareContentButton" type="submit" disabled={generationPending || !contentPolicy.ready || command.trim().length < 8}>
-            {generationPending ? 'Görev kaydediliyor…' : 'Ücretsiz Sezar kuyruğuna al'}
+            {generationPending ? 'Görev kaydediliyor…' : 'Arka planda hazırla'}
           </button>
         </div>
       </form>
@@ -253,10 +295,10 @@ export default function ListingEditor({ listing, writePolicy, contentPolicy, ini
         <div className="sectionHeading compact">
           <div>
             <p className="eyebrow">CONTENT WORKSPACE</p>
-            <h3>{generation?.status === 'QUEUED' ? 'Mevcut içerik · Sezar hazırlığı bekleniyor' : 'Hazırlanan içerik'}</h3>
+            <h3>{['QUEUED', 'IN_PROGRESS'].includes(generation?.status) ? 'Mevcut içerik · arka plan hazırlığı sürüyor' : 'Hazırlanan içerik'}</h3>
           </div>
-          {generation && <span className={generation.status === 'QUEUED' ? 'dirtyBadge' : 'cleanBadge'}>
-            {generation.status === 'QUEUED' ? 'Kuyrukta' : 'Düzenlenebilir'}
+          {generation && <span className={['QUEUED', 'IN_PROGRESS'].includes(generation.status) ? 'dirtyBadge' : 'cleanBadge'}>
+            {generation.status === 'QUEUED' ? 'Kuyrukta' : generation.status === 'IN_PROGRESS' ? 'Hazırlanıyor' : 'Düzenlenebilir'}
           </span>}
         </div>
 
