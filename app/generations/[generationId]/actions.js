@@ -13,11 +13,10 @@ function failure(error) {
   };
 }
 
-export async function completeQueuedTask(_previousState, formData) {
+async function completeTask(taskId, formData) {
   try {
-    const taskId = String(formData.get('generation_id') || '');
     const completion = await completeListingContentTask({
-      taskId,
+      taskId: String(taskId || ''),
       title: String(formData.get('title') || ''),
       tags: String(formData.get('tags') || '').split(/\r?\n/),
       description: String(formData.get('description') || ''),
@@ -46,4 +45,12 @@ export async function completeQueuedTask(_previousState, formData) {
   } catch (error) {
     return failure(error);
   }
+}
+
+export async function completeQueuedTask(_previousState, formData) {
+  return completeTask(formData.get('generation_id'), formData);
+}
+
+export async function completeBoundQueuedTask(taskId, _previousState, formData) {
+  return completeTask(taskId, formData);
 }

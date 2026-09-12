@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useActionState } from 'react';
 
-import { completeQueuedTask } from '../generations/[generationId]/actions.js';
+import { completeBoundQueuedTask } from '../generations/[generationId]/actions.js';
 
 const initialState = { ok: null, message: '', action: null, etsy_modified: false };
 
@@ -12,7 +12,8 @@ function sourceTags(task) {
 }
 
 export default function BackgroundQueuePanel({ task = null, queueError = null }) {
-  const [state, action, pending] = useActionState(completeQueuedTask, initialState);
+  const submitTask = completeBoundQueuedTask.bind(null, task?.id || '');
+  const [state, action, pending] = useActionState(submitTask, initialState);
 
   return (
     <section className="panel backgroundQueuePanel" id="sezar-background-worker" aria-labelledby="background-worker-title">
@@ -65,8 +66,6 @@ export default function BackgroundQueuePanel({ task = null, queueError = null })
           </div>
 
           <form action={action} className="editorForm taskEditorForm backgroundWorkerForm">
-            <input type="hidden" name="generation_id" value={task.id} />
-
             <label>
               <span>İş özeti</span>
               <input name="summary" maxLength="500" placeholder="Arama niyeti, açıklık ve satın alma güveni güçlendirildi." />
