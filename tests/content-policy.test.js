@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { assertContentReady, getContentPolicy } from '../lib/control-center/content-policy.js';
+import {
+  assertContentReady,
+  getContentPolicy,
+  resolveContentPolicy
+} from '../lib/control-center/content-policy.js';
 
 test('content policy fails closed without Gateway authentication', () => {
   const policy = getContentPolicy({});
@@ -24,4 +28,24 @@ test('explicit content kill switch wins over valid authentication', () => {
   });
   assert.equal(policy.ready, false);
   assert.ok(policy.blockers.includes('content_ai_disabled'));
+});
+
+test('request-scoped Vercel OIDC is resolved without exposing the token', async () => {
+  const policy = await resolveContentPolicy(
+    {},
+    { getOidcToken: async () => 'request-token' }
+  );
+  assert.equal(policy.ready, true);
+  assert.equal(policy.auth_source, 'REQUEST_OIDC');
+  assert.equal(JSON.stringify(policy).includes('request-token'), false);
+});
+
+test('request OIDC cannot override the content kill switch', async () => {
+  let called = false;
+  const policy = await resolveContentPolicy(
+    { CONTROL_CENTER_CONTENT_AI_ENABLED: 'off' },
+    { getOidcToken: async () => { called = true; return 'request-token'; } }
+  );
+  assert.equal(policy.ready, false);
+  assert.equal(called, false);
 });
