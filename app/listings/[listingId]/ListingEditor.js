@@ -126,9 +126,13 @@ function normalizedEditorTags(value) {
 export default function ListingEditor({ listing, writePolicy, contentPolicy, initialAction = null }) {
   const [command, setCommand] = useState(QUICK_COMMANDS[0].command);
   const [taskScope, setTaskScope] = useState('FULL_LISTING');
-  const [title, setTitle] = useState(listing.title);
-  const [tags, setTags] = useState(listing.tags.join('\n'));
-  const [description, setDescription] = useState(listing.description);
+  const [title, setTitle] = useState(initialAction?.proposed?.title ?? listing.title);
+  const [tags, setTags] = useState(
+    initialAction?.proposed?.tags?.join('\n') ?? listing.tags.join('\n')
+  );
+  const [description, setDescription] = useState(
+    initialAction?.proposed?.description ?? listing.description
+  );
   const [activeAction, setActiveAction] = useState(initialAction);
   const [generationState, generationAction, generationPending] = useActionState(generateListingDraft, initialState);
   const [prepareState, prepareAction, preparePending] = useActionState(prepareListingChange, initialState);
