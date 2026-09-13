@@ -3,6 +3,8 @@
 import Link from 'next/link';
 import { useActionState, useEffect, useMemo, useRef, useState } from 'react';
 import { METADATA_LABELS, reviewStatusLabel } from '../../../lib/control-center/review.js';
+import { publicationStatus } from '../../../lib/control-center/publication-status.js';
+import PublicationNotice from '../../components/PublicationNotice.js';
 
 import {
   executeListingChange,
@@ -226,11 +228,11 @@ export default function ListingEditor({ listing, writePolicy, contentPolicy, ini
     activeAction.proposed.description === description.replace(/\r\n/g, '\n').trim() &&
     activeAction.proposed.tags.join('\n') === normalizedEditorTags(tags)
   );
+  const publication = publicationStatus(writePolicy, listing.listing_id);
   const canExecuteThisListing = Boolean(
     !executeState?.ok &&
     !taskPending && !preparePending && !revisionOpen &&
-    writePolicy.can_execute &&
-    writePolicy.allowed_listing_id === String(listing.listing_id) &&
+    publication.canPublish &&
     activeAction?.status === 'VALIDATED' &&
     activeAction?.qa?.passed === true &&
     draftMatchesEditor
@@ -249,6 +251,7 @@ export default function ListingEditor({ listing, writePolicy, contentPolicy, ini
         {activeAction && <a className="secondaryButton" href="#approval-preview">Değişikliklere git</a>}
       </div>
 
+      {activeAction && !executeState?.ok && <PublicationNotice writePolicy={writePolicy} listingId={listing.listing_id} />}
       <FieldDiff action={executeState?.action || activeAction} />
 
       <details className="disclosure requestDisclosure" open={!activeAction || revisionOpen} onToggle={(event) => setRevisionOpen(event.currentTarget.open)}>
@@ -346,7 +349,7 @@ export default function ListingEditor({ listing, writePolicy, contentPolicy, ini
 
       {activeAction && <section className="publishGate approvalDock" aria-label="Onay ve yayın işlemleri">
         <div>
-          <strong>{executeState?.ok ? 'Yayın tamamlandı' : taskPending ? 'Yeni hazırlık bekleniyor' : writePolicy.write_locked ? 'Etsy yayını şu anda kapalı' : 'Kararın hazır mı?'}</strong>
+          <strong>{executeState?.ok ? 'Yayın tamamlandı' : taskPending ? 'Yeni hazırlık bekleniyor' : !publication.canPublish ? 'Onay ve yayın şu anda kapalı' : 'Kararın hazır mı?'}</strong>
           <p id="approval-explanation">{executeState?.ok
             ? 'Değişiklik Etsy’ye uygulandı ve Etsy’den yeniden okunarak doğrulandı.'
             : taskPending
@@ -357,8 +360,8 @@ export default function ListingEditor({ listing, writePolicy, contentPolicy, ini
               ? 'Onayın, yukarıda gösterilen değişiklikleri Etsy’ye uygular.'
               : activeAction && !draftMatchesEditor
                 ? 'İçerik taslağından sonra düzenleme yaptınız. Yayından önce düzenlemeleri yeniden doğrulayın.'
-                : writePolicy.write_locked
-                  ? 'Taslağı inceleyebilir veya düzeltme isteyebilirsin. Yayın yetkisi henüz açılmadı.'
+                : !publication.canPublish
+                  ? publication.summary
                   : 'Bu taslak için yayın yetkisi veya doğrulama eksik. İşlem ayrıntılarını kontrol et.'}</p>
         </div>
 
@@ -373,7 +376,7 @@ export default function ListingEditor({ listing, writePolicy, contentPolicy, ini
           <input type="hidden" name="action_id" value={activeAction?.id || ''} />
           <input type="hidden" name="approval" value={`YAYINLA ${listing.listing_id}`} />
           <button className="dangerButton" aria-describedby="approval-explanation" type="submit" disabled={!canExecuteThisListing || executePending}>
-            {executePending ? 'Etsy’ye uygulanıyor…' : executeState?.ok ? 'Yayın doğrulandı' : 'Onayla ve Etsy’de yayınla'}
+            {executePending ? 'Etsy’ye uygulanıyor…' : executeState?.ok ? 'Yayın doğrulandı' : !publication.canPublish ? 'Onay ve yayın kapalı' : 'Onayla ve Etsy’de yayınla'}
           </button>
         </form>
         </div>

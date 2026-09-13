@@ -2695,6 +2695,15 @@ input:disabled {
 .sectionIntro { color: #69685f; font-size: 14px; line-height: 1.6; margin: 8px 0 0; }
 .pendingReviews { margin: 8px 0 42px; scroll-margin-top: 24px; }
 .reviewCount { background: #e7ecdf; color: #355443; border-radius: 24px; padding: 9px 16px; font-weight: 700; white-space: nowrap; }
+.publicationNotice { margin: 0 0 22px; padding: 18px 22px; background: #fff6e5; border: 1px solid #dfc69a; border-radius: 12px; color: #694b20; }
+.publicationNotice h3 { margin: 0 0 8px; font-size: 17px; }
+.publicationNotice p, .publicationNotice li { font-size: 13px; line-height: 1.65; }
+.publicationNotice p { margin: 6px 0; }
+.publicationNotice ul { margin: 10px 0; padding-left: 20px; }
+.publicationBadge { display: block; width: fit-content; margin-top: 10px; padding: 5px 9px; border-radius: 6px; font-size: 12px; font-weight: 600; }
+.publicationBadge.locked { color: #75531f; background: #fff1d7; }
+.publicationBadge.available { color: #355443; background: #e7ecdf; }
+.reviewCardBody .publicationHint { font-size: 12px; margin: 7px 0 0; }
 .reviewCards { display: grid; gap: 14px; }
 .reviewCard { display: grid; grid-template-columns: 120px minmax(0, 1fr) auto; gap: 22px; align-items: center; background: #fffdfa; border: 1px solid #d6d8cb; border-radius: 16px; padding: 20px; box-shadow: 0 4px 18px #20251a06; }
 .reviewThumb { position: relative; width: 120px; height: 120px; overflow: hidden; border-radius: 10px; background: #eeece5; display: grid; place-items: center; color: #737267; font-size: 12px; }

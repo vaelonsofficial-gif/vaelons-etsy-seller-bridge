@@ -60,7 +60,7 @@ export default async function HomePage() {
     <main className="pageShell">
       <header className="pageTopbar">
         <div>
-          <p className="eyebrow">VAELONS / v0.8.0</p>
+          <p className="eyebrow">VAELONS / v0.8.1</p>
           <h1>Mağaza paneli</h1>
         </div>
         <div className="modePill"><span className="statusDot" /> {snapshot?.write_lock !== false ? 'Etsy yayını kapalı' : 'Etsy yayını onaya bağlı'}</div>
@@ -69,6 +69,7 @@ export default async function HomePage() {
       <PendingReviews
         actions={actionsResult.status === 'fulfilled' ? actionsResult.value : []}
         listings={snapshot?.catalog?.listings || []}
+        writePolicy={snapshot?.write_policy || null}
         error={actionsResult.status === 'rejected' ? actionsResult.reason : null}
       />
 

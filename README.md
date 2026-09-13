@@ -2,7 +2,9 @@
 
 ## Control Center preview
 
-The `control-center-v1` branch extends the proven Etsy connector with a private, desktop-first VAELONS operations interface. Version 0.7 includes verified catalog reads, listing detail pages, image-rank visibility, deterministic metadata validation, a durable Sezar work queue, per-listing locks, post-write verification, metadata rollback, Creative Audit, and a command-driven approval workflow.
+The `control-center-v1` branch extends the proven Etsy connector with a private, desktop-first VAELONS operations interface. Version 0.8.1 includes verified catalog reads, listing detail pages, image-rank visibility, deterministic metadata validation, a durable Sezar work queue, per-listing locks, post-write verification, metadata rollback, Creative Audit, and a command-driven approval workflow.
+
+Prepared metadata appears first under “Onay bekleyen işler”, with a direct “Taslağı aç” link to the exact proposal. Both the dashboard and review page explain the current publication blockers in Turkish. Reviewing a draft is available while publishing is locked; the UI cannot grant write access. Persistent completion receipts remain in the root-page background desk for the metadata worker.
 
 From one listing panel the owner can issue a Turkish-language instruction and store it in the free Sezar work queue without calling Vercel AI Gateway or any paid external AI API. An hourly ChatGPT task processes one metadata job from the protected background desk, stores the validated result on the task, and the owner can inspect the exact before/after diff before explicitly approving an Etsy patch. Every task keeps a durable ID, source snapshot, scope, command, validation, linked action and event trail. Creative-image jobs remain a separate, fail-closed phase and are not processed by the metadata worker.
 
