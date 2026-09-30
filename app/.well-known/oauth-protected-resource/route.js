@@ -1,39 +1,25 @@
-import { generateClerkProtectedResourceMetadata } from '@clerk/mcp-tools/server';
-
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-function publishableKey() {
-  return (
-    process.env.CLERK_PUBLISHABLE_KEY ||
-    process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ||
-    ''
-  ).trim();
-}
-
+const AUTH_SERVER = 'https://etsy-price-manager.vercel.app';
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  'Cache-Control': 'no-store'
 };
 
 export async function GET(request) {
-  const key = publishableKey();
-  if (!key) {
-    return Response.json(
-      { error: 'plugin_auth_not_configured', etsy_modified: false },
-      { status: 503, headers: corsHeaders }
-    );
-  }
-
-  const resourceUrl = new URL('/api/mcp', request.url).toString();
-  const metadata = generateClerkProtectedResourceMetadata({
-    publishableKey: key,
-    resourceUrl,
-    scopes_supported: ['openid', 'profile', 'email', 'offline_access']
-  });
-
-  return Response.json(metadata, { headers: corsHeaders });
+  const resource = new URL('/api/mcp', request.url).toString();
+  return Response.json(
+    {
+      resource,
+      authorization_servers: [AUTH_SERVER],
+      scopes_supported: ['vaelons:read', 'vaelons:write', 'offline_access'],
+      bearer_methods_supported: ['header']
+    },
+    { headers: corsHeaders }
+  );
 }
 
 export async function OPTIONS() {
