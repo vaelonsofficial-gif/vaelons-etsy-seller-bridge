@@ -14,11 +14,8 @@
     "check": "npm test && next build"
   },
   "dependencies": {
-    "@clerk/express": "^2.1.72",
-    "@clerk/mcp-tools": "^0.6.0",
     "@modelcontextprotocol/sdk": "^1.31.0",
     "@upstash/redis": "^1.35.3",
-    "cors": "^2.8.6",
     "express": "^5.1.0",
     "next": "^15.5.9",
     "react": "^19.1.0",
