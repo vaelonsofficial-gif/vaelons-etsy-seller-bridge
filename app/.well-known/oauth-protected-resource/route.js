@@ -30,7 +30,7 @@ export async function GET(request) {
   const metadata = generateClerkProtectedResourceMetadata({
     publishableKey: key,
     resourceUrl,
-    scopes_supported: ['openid', 'profile', 'email']
+    scopes_supported: ['openid', 'profile', 'email', 'offline_access']
   });
 
   return Response.json(metadata, { headers: corsHeaders });
