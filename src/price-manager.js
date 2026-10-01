@@ -1,5 +1,3 @@
-import crypto from 'node:crypto';
-
 import {
   etsyRequest,
   getShopId
@@ -509,16 +507,4 @@ export async function updateRolledCanvas13x18({
     nextOffset,
     results
   };
-}
-
-export function capabilityTokenMatches(rawToken, expectedHash) {
-  const raw = Buffer.from(
-    crypto.createHash('sha256').update(String(rawToken || '')).digest('hex')
-  );
-  const expected = Buffer.from(String(expectedHash || ''));
-
-  return (
-    raw.length === expected.length &&
-    crypto.timingSafeEqual(raw, expected)
-  );
 }
