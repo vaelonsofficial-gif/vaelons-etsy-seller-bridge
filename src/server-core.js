@@ -106,7 +106,7 @@ function bridgeAuth(req, res, next) {
 }
 
 const RENDER_PRICE_BRIDGE_TOKEN_HASH =
-  '6b91ddd0e715b120e13c650e885e3921b2f6eb2164bf07ed364fc43bf7c05142';
+  'b8926bd052244448b80ef05d16f583bafbe08653a0c9a98cd90057a150168a0e';
 
 function renderPriceBridgeAuth(req, res, next) {
   const auth = String(req.get('authorization') || '');
