@@ -199,6 +199,7 @@ export async function etsyRequest(
     method = 'GET',
     params,
     body,
+    json,
     multipart
   } = {}
 ) {
@@ -255,6 +256,13 @@ export async function etsyRequest(
   if (multipart) {
     payload =
       multipart;
+
+  } else if (json !== undefined) {
+    headers['content-type'] =
+      'application/json; charset=utf-8';
+
+    payload =
+      JSON.stringify(json);
 
   } else if (body) {
     const form =
