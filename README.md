@@ -58,3 +58,5 @@ This Vercel-safe build does not write OAuth tokens to local disk. After OAuth, c
 Adds the OAuth Bearer header when resolving the authorized seller's shop from the Etsy user ID.
 Production environment refresh
 
+
+<!-- Render OAuth bridge preview check -->
