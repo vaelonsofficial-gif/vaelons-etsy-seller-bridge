@@ -54,7 +54,10 @@ function required(name) {
 }
 
 function publicBase() {
-  return required('PUBLIC_BASE_URL').replace(/\/$/, '');
+  return String(
+    process.env.PUBLIC_BASE_URL ||
+    'https://vaelons-etsy-seller-bridge-x2bh.vercel.app'
+  ).replace(/\/$/, '');
 }
 
 function clampInt(value, min, max) {
