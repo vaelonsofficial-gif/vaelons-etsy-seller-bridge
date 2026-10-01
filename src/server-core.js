@@ -168,6 +168,22 @@ app.get('/health', async (_req, res) => {
   });
 });
 
+app.get('/oauth/etsy/meta', (_req, res) => {
+  try {
+    res.json({
+      ok: true,
+      client_id: etsyApiKeyForOAuth(),
+      redirect_uri: `${publicBase()}/oauth/etsy/callback`,
+      etsy_modified: false
+    });
+  } catch (error) {
+    res.status(error.status || 500).json({
+      error: error.message,
+      etsy_modified: false
+    });
+  }
+});
+
 app.get('/oauth/etsy/start', (req, res) => {
   try {
     if (req.query.setup_secret !== required('SETUP_SECRET')) {
