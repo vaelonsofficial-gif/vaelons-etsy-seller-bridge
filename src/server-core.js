@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import express from 'express';
 
 import {
@@ -21,6 +22,12 @@ import {
   scanRolledCanvas13x18,
   updateRolledCanvas13x18
 } from './price-manager.js';
+
+import {
+  bridgeVariationTemplates,
+  bridgePreviewVariation,
+  bridgeApplyVariation
+} from './render-price-bridge.js';
 
 const app = express();
 
@@ -89,6 +96,44 @@ function bridgeAuth(req, res, next) {
   const key = process.env.BRIDGE_API_KEY || '';
 
   if (!key || auth !== `Bearer ${key}`) {
+    return res.status(401).json({
+      error: 'unauthorized',
+      etsy_modified: false
+    });
+  }
+
+  next();
+}
+
+const RENDER_PRICE_BRIDGE_TOKEN_HASH =
+  '6b91ddd0e715b120e13c650e885e3921b2f6eb2164bf07ed364fc43bf7c05142';
+
+function renderPriceBridgeAuth(req, res, next) {
+  const auth = String(req.get('authorization') || '');
+  const match = auth.match(/^Bearer\s+(.+)$/i);
+  const token = match ? match[1].trim() : '';
+
+  if (!token) {
+    return res.status(401).json({
+      error: 'unauthorized',
+      etsy_modified: false
+    });
+  }
+
+  const actual = crypto
+    .createHash('sha256')
+    .update(token, 'utf8')
+    .digest();
+
+  const expected = Buffer.from(
+    RENDER_PRICE_BRIDGE_TOKEN_HASH,
+    'hex'
+  );
+
+  if (
+    actual.length !== expected.length ||
+    !crypto.timingSafeEqual(actual, expected)
+  ) {
     return res.status(401).json({
       error: 'unauthorized',
       etsy_modified: false
@@ -232,6 +277,98 @@ app.get('/oauth/etsy/callback', async (req, res) => {
     });
   }
 });
+
+app.get(
+  '/ops/render-price-manager/status',
+  renderPriceBridgeAuth,
+  async (_req, res, next) => {
+    try {
+      res.json({
+        ok: true,
+        bridge: 'render-price-manager',
+        etsy: await getTokenStatus(),
+        approval_required: 'ONAYLIYORUM',
+        etsy_modified: false
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+app.get(
+  '/ops/render-price-manager/variations',
+  renderPriceBridgeAuth,
+  async (_req, res, next) => {
+    try {
+      res.json({
+        ok: true,
+        ...(await bridgeVariationTemplates()),
+        etsy_modified: false
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+app.post(
+  '/ops/render-price-manager/preview',
+  renderPriceBridgeAuth,
+  async (req, res, next) => {
+    try {
+      const variationKey =
+        String(req.body?.variationKey || '').trim();
+
+      res.json({
+        ok: true,
+        preview: true,
+        variationKey,
+        ...(await bridgePreviewVariation(variationKey)),
+        etsy_modified: false
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+app.post(
+  '/ops/render-price-manager/apply',
+  renderPriceBridgeAuth,
+  async (req, res, next) => {
+    try {
+      if (
+        String(req.body?.approval || '') !==
+        'ONAYLIYORUM'
+      ) {
+        return res.status(400).json({
+          error: 'approval_required',
+          required: 'ONAYLIYORUM',
+          etsy_modified: false
+        });
+      }
+
+      const result = await bridgeApplyVariation({
+        targetKey:
+          String(req.body?.variationKey || '').trim(),
+        targetPrice:
+          Number(req.body?.price),
+        listingIds:
+          req.body?.listingIds
+      });
+
+      res.json({
+        ok: true,
+        etsy_modified:
+          result.changedCount > 0,
+        ...result
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 app.use('/api', bridgeAuth);
 
