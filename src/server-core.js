@@ -143,7 +143,16 @@ function renderPriceBridgeAuth(req, res, next) {
   next();
 }
 
-app.get('/health', (_req, res) => {
+app.get('/health', async (_req, res) => {
+  let etsyConnected = false;
+  let etsyRefreshReady = false;
+
+  try {
+    const status = await getTokenStatus();
+    etsyConnected = Boolean(status?.connected);
+    etsyRefreshReady = Boolean(status?.has_refresh_token);
+  } catch {}
+
   res.json({
     ok: true,
     service: 'vaelons-seo-manager',
@@ -153,6 +162,8 @@ app.get('/health', (_req, res) => {
     backend_openai_required_for_seo: false,
     approval_required: 'ONAYLIYORUM',
     rollback_approval_required: 'GERI_AL ONAYLIYORUM',
+    etsy_connected: etsyConnected,
+    etsy_refresh_ready: etsyRefreshReady,
     etsy_modified: false
   });
 });
