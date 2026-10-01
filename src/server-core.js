@@ -15,6 +15,14 @@ import {
   getTokenStatus
 } from './etsy.js';
 
+import {
+  TARGET_PRICE,
+  TARGET_VARIATION,
+  scanRolledCanvas13x18,
+  updateRolledCanvas13x18,
+  capabilityTokenMatches
+} from './price-manager.js';
+
 const app = express();
 
 app.use(
@@ -226,7 +234,117 @@ app.get('/oauth/etsy/callback', async (req, res) => {
   }
 });
 
+// One-time capability route used only for the current owner-approved migration.
+// The raw capability is never committed; only its SHA-256 digest is stored here.
+const PRICE_MANAGER_CAPABILITY_HASH = '388f42a7772f8c31a85b20080c924e4565007b11d778ed6062c09b2ab43d07af';
+
+app.get('/ops/price-manager-13x18', async (req, res, next) => {
+  try {
+    if (!capabilityTokenMatches(req.query.token, PRICE_MANAGER_CAPABILITY_HASH)) {
+      return res.status(401).json({
+        error: 'unauthorized',
+        etsy_modified: false
+      });
+    }
+
+    const action = String(req.query.action || 'scan');
+
+    if (action === 'scan') {
+      const scan = await scanRolledCanvas13x18();
+      return res.json({
+        ok: true,
+        action: 'scan',
+        targetVariation: TARGET_VARIATION,
+        targetPrice: TARGET_PRICE,
+        etsy_modified: false,
+        ...scan
+      });
+    }
+
+    if (action === 'apply') {
+      if (String(req.query.approval || '') !== 'ONAYLIYORUM') {
+        return res.status(400).json({
+          error: 'approval_required',
+          required: 'ONAYLIYORUM',
+          etsy_modified: false
+        });
+      }
+
+      const offset = Math.max(0, Number(req.query.offset || 0) || 0);
+      const limit = clampInt(req.query.limit || 12, 1, 20);
+      const result = await updateRolledCanvas13x18({
+        offset,
+        limit,
+        targetPrice: TARGET_PRICE
+      });
+
+      return res.json({
+        ok: true,
+        action: 'apply',
+        targetVariation: TARGET_VARIATION,
+        targetPrice: TARGET_PRICE,
+        etsy_modified: result.results.some((row) => row.status === 'UPDATED'),
+        ...result
+      });
+    }
+
+    return res.status(400).json({
+      error: 'unsupported_action',
+      allowed: ['scan', 'apply'],
+      etsy_modified: false
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.use('/api', bridgeAuth);
+
+app.get('/api/price-manager/scan', async (_req, res, next) => {
+  try {
+    const scan = await scanRolledCanvas13x18();
+    res.json({
+      ok: true,
+      targetVariation: TARGET_VARIATION,
+      targetPrice: TARGET_PRICE,
+      etsy_modified: false,
+      ...scan
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/price-manager/update', async (req, res, next) => {
+  try {
+    if (String(req.body?.approval || '') !== 'ONAYLIYORUM') {
+      return res.status(400).json({
+        error: 'approval_required',
+        required: 'ONAYLIYORUM',
+        etsy_modified: false
+      });
+    }
+
+    const offset = Math.max(0, Number(req.body?.offset || 0) || 0);
+    const limit = clampInt(req.body?.limit || 12, 1, 20);
+
+    const result = await updateRolledCanvas13x18({
+      offset,
+      limit,
+      targetPrice: TARGET_PRICE
+    });
+
+    res.json({
+      ok: true,
+      targetVariation: TARGET_VARIATION,
+      targetPrice: TARGET_PRICE,
+      etsy_modified: result.results.some((row) => row.status === 'UPDATED'),
+      ...result
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 
 app.get('/api/manager/status', async (_req, res, next) => {
   try {
