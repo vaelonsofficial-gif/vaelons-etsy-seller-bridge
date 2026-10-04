@@ -409,6 +409,23 @@ app.post(
   }
 );
 
+
+app.post(
+  '/ops/market-price-manager/analyze',
+  renderPriceBridgeAuth,
+  async (req, res, next) => {
+    try {
+      const result = await analyzeMarketPrice(req.body || {});
+      res.json({
+        ...result,
+        etsy_modified: false
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
 app.use('/api', bridgeAuth);
 
 app.get('/api/price-manager/scan', async (_req, res, next) => {
