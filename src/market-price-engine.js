@@ -157,6 +157,14 @@ function exactOfferingPrices(inventory, listing, target) {
 
     for (const offering of product?.offerings || []) {
       if (offering?.is_enabled === false) continue;
+      const currency = String(
+        offering?.price?.currency_code ||
+        listing?.price?.currency_code ||
+        ''
+      ).toUpperCase();
+
+      if (currency && currency !== 'USD') continue;
+
       const price = moneyToNumber(offering?.price);
       if (Number.isFinite(price) && price > 0) prices.push(price);
     }
@@ -416,25 +424,36 @@ export async function analyzeMarketPrice({
     ? marketReference * (1 + marketAdjustment)
     : null;
 
-  let rawRecommended;
+  const marketEligible =
+    strongMarket &&
+    Number.isFinite(marketTarget);
 
-  if (strongMarket && Number.isFinite(marketTarget)) {
+  const belowProfitFloor =
+    current < profitFloor - 0.01;
+
+  let recommendationSource = 'HOLD_INSUFFICIENT_MARKET';
+  let rawRecommended = current;
+
+  if (marketEligible) {
     rawRecommended = Math.max(profitFloor, marketTarget);
-  } else {
-    // Low-confidence public prices may be the cheapest variation.
-    // Never lower a VAELONS price from low-confidence market data.
-    rawRecommended = Math.max(profitFloor, current);
+    recommendationSource =
+      marketTarget >= profitFloor
+        ? 'MARKET'
+        : 'PROFIT_FLOOR';
+  } else if (belowProfitFloor) {
+    rawRecommended = profitFloor;
+    recommendationSource = 'PROFIT_FLOOR';
   }
 
   const lowerStep = current * (1 - maxStep);
   const upperStep = current * (1 + maxStep);
 
-  let nextPrice;
+  let nextPrice = current;
 
-  if (current < profitFloor) {
-    // Margin protection overrides the normal step limit.
+  if (recommendationSource === 'PROFIT_FLOOR' && belowProfitFloor) {
+    // Minimum margin protection may override the normal market step limit.
     nextPrice = profitFloor;
-  } else {
+  } else if (recommendationSource === 'MARKET') {
     nextPrice = clamp(rawRecommended, lowerStep, upperStep);
     nextPrice = Math.max(nextPrice, profitFloor);
   }
@@ -512,12 +531,14 @@ export async function analyzeMarketPrice({
           : null
       ),
       action,
+      source: recommendationSource,
+      market_eligible: marketEligible,
       reason:
-        current < profitFloor
-          ? 'Minimum profit margin protection'
-          : strongMarket
-            ? 'Market comparison + profit floor + safe step'
-            : 'Low market confidence: no market-driven price reduction'
+        recommendationSource === 'MARKET'
+          ? 'Exact Etsy variation market comparison + profit floor + safe step'
+          : recommendationSource === 'PROFIT_FLOOR'
+            ? 'Minimum profit margin protection; not a market-price recommendation'
+            : 'Insufficient exact Etsy variation references; current price held'
     },
     etsy_modified: false
   };
