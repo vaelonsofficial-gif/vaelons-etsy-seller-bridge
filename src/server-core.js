@@ -171,6 +171,71 @@ function renderPriceBridgeAuth(req, res, next) {
   next();
 }
 
+
+app.get('/debug-market-inventory-shape', async (_req, res) => {
+  try {
+    const listingId = 1816455659;
+
+    let single = null;
+    let batch = null;
+    let singleError = null;
+    let batchError = null;
+
+    try {
+      single = await etsyRequest(`/listings/${listingId}/inventory`);
+    } catch (error) {
+      singleError = {
+        message: error.message,
+        status: error.status || null
+      };
+    }
+
+    try {
+      batch = await etsyRequest('/listings/batch/inventory', {
+        params: { listing_ids: [listingId] }
+      });
+    } catch (error) {
+      batchError = {
+        message: error.message,
+        status: error.status || null
+      };
+    }
+
+    const sampleProducts = (inventory) =>
+      (inventory?.products || [])
+        .slice(0, 5)
+        .map((product) => ({
+          property_values: (product?.property_values || []).map((property) => ({
+            property_name: property?.property_name || null,
+            values: property?.values || []
+          })),
+          offering_prices: (product?.offerings || []).map((offering) => ({
+            enabled: offering?.is_enabled !== false,
+            price: offering?.price || null
+          }))
+        }));
+
+    res.json({
+      ok: true,
+      single_error: singleError,
+      batch_error: batchError,
+      single_keys: single ? Object.keys(single) : [],
+      batch_keys: batch ? Object.keys(batch) : [],
+      batch_result_count: Array.isArray(batch?.results) ? batch.results.length : null,
+      batch_first_keys: batch?.results?.[0] ? Object.keys(batch.results[0]) : [],
+      batch_first_listing_id:
+        batch?.results?.[0]?.listing_id ??
+        batch?.results?.[0]?.inventory?.listing?.listing_id ??
+        null,
+      single_product_count: single?.products?.length || 0,
+      single_sample_products: sampleProducts(single),
+      batch_sample_products: sampleProducts(batch?.results?.[0]?.inventory ?? batch?.results?.[0])
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 app.get('/health', async (_req, res) => {
   let etsyConnected = false;
   let etsyRefreshReady = false;
