@@ -474,7 +474,10 @@ function isObviouslyIrrelevant(listing) {
     /photo to canvas/,
     /custom canvas.*photo/,
     /set of [2-9]/,
-    /set of (two|three|four|five|six|seven|eight|nine)/
+    /set of (two|three|four|five|six|seven|eight|nine)/,
+    /\bwall art set\b/,
+    /\bset wall art\b/,
+    /\bset canvas\b/
   ];
 
   if (blocked.some((pattern) => pattern.test(text))) return true;
