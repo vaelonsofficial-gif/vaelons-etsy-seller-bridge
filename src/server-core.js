@@ -171,6 +171,38 @@ function renderPriceBridgeAuth(req, res, next) {
   next();
 }
 
+
+app.get('/debug-deep-market-smoke', async (_req, res) => {
+  try {
+    const result = await analyzeMarketPrice({
+      variationKey: '70x100cm::canvas black frame',
+      label: 'Framing: Canvas Black Frame · Size: 70x100 cm (28" x 40")',
+      currentPrice: 304.41,
+      costUsd: 111.95,
+      minMarginPct: 20,
+      marketAdjustmentPct: 0,
+      maxStepPct: 5,
+      etsyNetRatio: 200 / 249,
+      buyerCountry: 'US',
+      minReferences: 10,
+      searchLimit: 240
+    });
+
+    res.json({
+      ok: true,
+      target: result.target,
+      market: result.market,
+      recommendation: result.recommendation
+    });
+  } catch (error) {
+    res.status(error.status || 500).json({
+      ok: false,
+      error: error.message,
+      details: error.details || null
+    });
+  }
+});
+
 app.get('/health', async (_req, res) => {
   let etsyConnected = false;
   let etsyRefreshReady = false;
