@@ -194,6 +194,7 @@ app.get('/health', async (_req, res) => {
     rollback_approval_required: 'GERI_AL ONAYLIYORUM',
     etsy_connected: etsyConnected,
     etsy_refresh_ready: etsyRefreshReady,
+    sales_engine: 'read_only',
     etsy_modified: false
   });
 });
