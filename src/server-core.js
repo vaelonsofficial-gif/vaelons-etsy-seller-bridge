@@ -174,67 +174,41 @@ function renderPriceBridgeAuth(req, res, next) {
 
 app.get('/debug-market-inventory-shape', async (_req, res) => {
   try {
-    const listingId = 1816455659;
+    const listingIds = [1816455659,1850464873,1726691060,4492895281,4462966840];
+    const rows = [];
 
-    let single = null;
-    let batch = null;
-    let singleError = null;
-    let batchError = null;
+    for (const listingId of listingIds) {
+      let single = null;
+      let error = null;
+      try {
+        single = await etsyRequest(`/listings/${listingId}/inventory`);
+      } catch (err) {
+        error = { message: err.message, status: err.status || null };
+      }
 
-    try {
-      single = await etsyRequest(`/listings/${listingId}/inventory`);
-    } catch (error) {
-      singleError = {
-        message: error.message,
-        status: error.status || null
-      };
-    }
-
-    try {
-      batch = await etsyRequest('/listings/batch/inventory', {
-        params: { listing_ids: [listingId] }
-      });
-    } catch (error) {
-      batchError = {
-        message: error.message,
-        status: error.status || null
-      };
-    }
-
-    const sampleProducts = (inventory) =>
-      (inventory?.products || [])
-        .slice(0, 5)
-        .map((product) => ({
-          property_values: (product?.property_values || []).map((property) => ({
-            property_name: property?.property_name || null,
-            values: property?.values || []
+      rows.push({
+        listing_id: listingId,
+        error,
+        listing_title: single?.listing?.title || null,
+        products: (single?.products || []).slice(0,8).map((product)=>({
+          property_values:(product?.property_values||[]).map((p)=>({
+            property_name:p?.property_name||null,
+            values:p?.values||[]
           })),
-          offering_prices: (product?.offerings || []).map((offering) => ({
-            enabled: offering?.is_enabled !== false,
-            price: offering?.price || null
+          prices:(product?.offerings||[]).map((o)=>({
+            enabled:o?.is_enabled!==false,
+            price:o?.price||null
           }))
-        }));
+        }))
+      });
+    }
 
-    res.json({
-      ok: true,
-      single_error: singleError,
-      batch_error: batchError,
-      single_keys: single ? Object.keys(single) : [],
-      batch_keys: batch ? Object.keys(batch) : [],
-      batch_result_count: Array.isArray(batch?.results) ? batch.results.length : null,
-      batch_first_keys: batch?.results?.[0] ? Object.keys(batch.results[0]) : [],
-      batch_first_listing_id:
-        batch?.results?.[0]?.listing_id ??
-        batch?.results?.[0]?.inventory?.listing?.listing_id ??
-        null,
-      single_product_count: single?.products?.length || 0,
-      single_sample_products: sampleProducts(single),
-      batch_sample_products: sampleProducts(batch?.results?.[0]?.inventory ?? batch?.results?.[0])
-    });
+    res.json({ ok:true, rows });
   } catch (error) {
-    res.status(500).json({ ok: false, error: error.message });
+    res.status(500).json({ ok:false, error:error.message });
   }
 });
+
 
 app.get('/health', async (_req, res) => {
   let etsyConnected = false;
