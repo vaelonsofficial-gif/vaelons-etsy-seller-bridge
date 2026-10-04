@@ -172,58 +172,6 @@ function renderPriceBridgeAuth(req, res, next) {
 }
 
 
-app.get('/debug-deep-market-smoke', async (_req, res) => {
-  try {
-    const listingId = 4508944246;
-    let shipping = null;
-    let shippingError = null;
-
-    try {
-      shipping = await etsyRequest('/listings/batch/shipping', {
-        params: { listing_ids: [listingId] }
-      });
-    } catch (error) {
-      shippingError = {
-        message: error.message,
-        status: error.status || null,
-        details: error.details || null
-      };
-    }
-
-    const analysis = await analyzeMarketPrice({
-      variationKey: '70x100cm::canvas black frame',
-      label: 'Framing: Canvas Black Frame · Size: 70x100 cm (28" x 40")',
-      currentPrice: 304.41,
-      costUsd: 111.95,
-      minMarginPct: 20,
-      marketAdjustmentPct: 0,
-      maxStepPct: 5,
-      etsyNetRatio: 200 / 249,
-      buyerCountry: 'US',
-      minReferences: 10,
-      searchLimit: 240
-    });
-
-    res.json({
-      ok: true,
-      shipping_error: shippingError,
-      shipping_keys: shipping ? Object.keys(shipping) : [],
-      shipping_result_count: Array.isArray(shipping?.results) ? shipping.results.length : null,
-      shipping_first_keys: shipping?.results?.[0] ? Object.keys(shipping.results[0]) : [],
-      shipping_profile: shipping?.results?.[0]?.shipping_profile || null,
-      market: analysis.market,
-      recommendation: analysis.recommendation
-    });
-  } catch (error) {
-    res.status(error.status || 500).json({
-      ok: false,
-      error: error.message,
-      details: error.details || null
-    });
-  }
-});
-
-
 app.get('/health', async (_req, res) => {
   let etsyConnected = false;
   let etsyRefreshReady = false;
