@@ -48,6 +48,13 @@ function parseDimensions(value) {
     unit = 'in';
   }
 
+  if (!match) {
+    match = text.match(
+      /(\d+(?:[.,]\d+)?)\s*x\s*(\d+(?:[.,]\d+)?)\s*(?:in|inch|inches)\b/i
+    );
+    unit = 'in';
+  }
+
   if (!match) return null;
 
   let a = Number(match[1].replace(',', '.'));
@@ -61,6 +68,37 @@ function parseDimensions(value) {
   }
 
   return [a, b].sort((x, y) => x - y);
+}
+
+function extractAllDimensions(value) {
+  const text = normalizeText(value);
+  const found = [];
+
+  const cmRegex = /(\d+(?:[.,]\d+)?)\s*x\s*(\d+(?:[.,]\d+)?)\s*cm\b/gi;
+  const inchRegex = /(\d+(?:[.,]\d+)?)\s*x\s*(\d+(?:[.,]\d+)?)\s*(?:"|in|inch|inches)\b/gi;
+
+  for (const [regex, unit] of [[cmRegex, 'cm'], [inchRegex, 'in']]) {
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      let a = Number(match[1].replace(',', '.'));
+      let b = Number(match[2].replace(',', '.'));
+      if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
+      if (unit === 'in') {
+        a *= 2.54;
+        b *= 2.54;
+      }
+      found.push([a, b].sort((x, y) => x - y));
+    }
+  }
+
+  return found;
+}
+
+function containsTargetDimensions(value, targetDimensions) {
+  if (!targetDimensions) return false;
+  return extractAllDimensions(value).some(
+    (dimensions) => sizeMatches(targetDimensions, dimensions)
+  );
 }
 
 function sizeLabel(dimensions) {
@@ -98,7 +136,7 @@ function detectStyle(value) {
   }
 
   if (
-    /\b(stretched|stretch canvas|gallery wrap|gallery canvas|ready to hang|ready-to-hang|frameless canvas)\b/.test(text)
+    /\b(stretched|stretch canvas|wrapped canvas|wrapped cnvas|gallery wrap|gallery canvas|ready to hang|ready-to-hang|frameless canvas)\b/.test(text)
   ) {
     return 'stretched';
   }
@@ -150,8 +188,58 @@ function productText(product, listing) {
   return `${values} ${listing?.title || ''} ${listing?.description || ''}`;
 }
 
+function inventoryUsdConversion(inventory, listing) {
+  const visibleCurrency = String(listing?.price?.currency_code || '').toUpperCase();
+  const visibleUsd = moneyToNumber(listing?.price);
+
+  const enabled = [];
+  for (const product of inventory?.products || []) {
+    for (const offering of product?.offerings || []) {
+      if (offering?.is_enabled === false) continue;
+      const currency = String(offering?.price?.currency_code || '').toUpperCase();
+      const value = moneyToNumber(offering?.price);
+      if (currency && Number.isFinite(value) && value > 0) {
+        enabled.push({ currency, value });
+      }
+    }
+  }
+
+  const currencies = [...new Set(enabled.map((item) => item.currency))];
+  if (currencies.length !== 1) return null;
+
+  const currency = currencies[0];
+  if (currency === 'USD') {
+    return { currency, rate: 1, source: 'native_usd' };
+  }
+
+  if (!(visibleCurrency === 'USD' && Number.isFinite(visibleUsd) && visibleUsd > 0)) {
+    return null;
+  }
+
+  const minOriginal = Math.min(
+    ...enabled
+      .filter((item) => item.currency === currency)
+      .map((item) => item.value)
+  );
+
+  if (!(Number.isFinite(minOriginal) && minOriginal > 0)) return null;
+
+  return {
+    currency,
+    rate: visibleUsd / minOriginal,
+    source: 'etsy_listing_currency_ratio'
+  };
+}
+
 function exactOfferingCandidates(inventory, listing, target) {
   const matches = [];
+  const conversion = inventoryUsdConversion(inventory, listing);
+  const listingText = `${listing?.title || ''} ${listing?.description || ''}`;
+  const listingStyle = detectStyle(listingText);
+  const listingHasTargetSize = containsTargetDimensions(
+    listingText,
+    target.dimensions
+  );
 
   for (const product of inventory?.products || []) {
     const propertyValues = product?.property_values || [];
@@ -164,20 +252,30 @@ function exactOfferingCandidates(inventory, listing, target) {
 
     const productDimensions = propertyValues
       .flatMap((property) => property?.values || [])
-      .map(parseDimensions)
-      .find(Boolean);
+      .flatMap((value) => extractAllDimensions(value))
+      .find((dimensions) =>
+        target.dimensions
+          ? sizeMatches(target.dimensions, dimensions)
+          : true
+      );
 
-    if (target.dimensions && !sizeMatches(target.dimensions, productDimensions)) {
+    const fixedSizeMatch =
+      !productDimensions &&
+      listingHasTargetSize &&
+      propertyValues.length === 0;
+
+    if (target.dimensions && !productDimensions && !fixedSizeMatch) {
       continue;
     }
 
     const propertyStyle = detectStyle(propertyText);
-    const listingStyle = detectStyle(
-      `${listing?.title || ''} ${listing?.description || ''}`
-    );
     const resolvedStyle = propertyStyle || listingStyle;
 
     if (target.style && resolvedStyle && resolvedStyle !== target.style) {
+      continue;
+    }
+
+    if (target.style && !resolvedStyle) {
       continue;
     }
 
@@ -190,29 +288,49 @@ function exactOfferingCandidates(inventory, listing, target) {
     for (const offering of product?.offerings || []) {
       if (offering?.is_enabled === false) continue;
 
-      const currency = String(
-        offering?.price?.currency_code ||
-        listing?.price?.currency_code ||
-        ''
-      ).toUpperCase();
+      const rawPrice = moneyToNumber(offering?.price);
+      const currency = String(offering?.price?.currency_code || '').toUpperCase();
+      if (!(Number.isFinite(rawPrice) && rawPrice > 0)) continue;
 
-      if (currency && currency !== 'USD') continue;
+      let usdPrice = null;
+      let conversionSource = null;
 
-      const price = moneyToNumber(offering?.price);
-      if (!(Number.isFinite(price) && price > 0)) continue;
+      if (currency === 'USD') {
+        usdPrice = rawPrice;
+        conversionSource = 'native_usd';
+      } else if (
+        conversion &&
+        conversion.currency === currency &&
+        Number.isFinite(conversion.rate) &&
+        conversion.rate > 0
+      ) {
+        usdPrice = rawPrice * conversion.rate;
+        conversionSource = conversion.source;
+      }
 
-      const matchQuality =
+      if (!(Number.isFinite(usdPrice) && usdPrice > 0)) continue;
+
+      let matchQuality =
         propertyStyle === target.style
-          ? (colorMatch ? 1 : 0.9)
+          ? (colorMatch ? 1 : 0.92)
           : resolvedStyle === target.style
-            ? 0.82
-            : 0.7;
+            ? 0.84
+            : 0.72;
+
+      if (fixedSizeMatch) matchQuality -= 0.04;
+      if (conversionSource === 'etsy_listing_currency_ratio') matchQuality -= 0.03;
 
       matches.push({
-        price,
-        match_quality: matchQuality,
+        price: usdPrice,
+        raw_price: rawPrice,
+        raw_currency: currency,
+        conversion_source: conversionSource,
+        match_quality: Math.max(0.6, matchQuality),
         frame_color: propertyColor,
-        size: sizeLabel(productDimensions)
+        size:
+          sizeLabel(productDimensions) ||
+          (fixedSizeMatch ? target.size : null),
+        fixed_size_listing: fixedSizeMatch
       });
     }
   }
@@ -316,7 +434,12 @@ function buildSearchQueries(target) {
   if (cm) queries.push(`canvas wall art ${cm}`);
   if (inch) queries.push(`canvas wall art ${inch} inch`);
 
-  return [...new Set(queries)].slice(0, 6);
+  // Broad style searches catch listings where the target size exists only
+  // inside inventory and is not written in the title/description.
+  queries.push(phrases[0]);
+  if (phrases[1]) queries.push(phrases[1]);
+
+  return [...new Set(queries)].slice(0, 8);
 }
 
 function isObviouslyIrrelevant(listing) {
@@ -613,13 +736,13 @@ async function competitorReferences({
   variationKey,
   label,
   buyerCountry = 'US',
-  searchLimit = 180
+  searchLimit = 240
 }) {
   const target = targetFromInput(variationKey, label);
   const searchQueries = buildSearchQueries(target);
   const ownShopId = Number(await getShopId());
   const overallLimit = Math.min(
-    Math.max(Number(searchLimit) || 180, 40),
+    Math.max(Number(searchLimit) || 240, 60),
     300
   );
   const perQueryLimit = Math.min(
@@ -716,6 +839,12 @@ async function competitorReferences({
           ? round2(exactPrice + shippingCost)
           : null,
       match_quality: round2(averageMatchQuality),
+      currency_conversion:
+        offerings.some((item) => item.conversion_source === 'etsy_listing_currency_ratio')
+          ? 'etsy_listing_currency_ratio'
+          : 'native_usd',
+      fixed_size_listing:
+        offerings.some((item) => item.fixed_size_listing === true),
       query_hits: listing?.matched_queries?.length || 0,
       source: 'exact_variation'
     });
