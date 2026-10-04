@@ -438,8 +438,18 @@ function buildSearchQueries(target) {
   // inside inventory and is not written in the title/description.
   queries.push(phrases[0]);
   if (phrases[1]) queries.push(phrases[1]);
+  if (phrases[2]) queries.push(phrases[2]);
 
-  return [...new Set(queries)].slice(0, 8);
+  if (target.style === 'framed') {
+    queries.push('large framed canvas wall art');
+    queries.push('oversized framed canvas wall art');
+  } else if (target.style === 'stretched') {
+    queries.push('large stretched canvas wall art');
+  } else if (target.style === 'rolled') {
+    queries.push('large rolled canvas print');
+  }
+
+  return [...new Set(queries)].slice(0, 11);
 }
 
 function isObviouslyIrrelevant(listing) {
@@ -458,6 +468,11 @@ function isObviouslyIrrelevant(listing) {
     /hand[- ]?painted/,
     /custom photo/,
     /personalized photo/,
+    /\bpersonalized\b/,
+    /custom pet/,
+    /pet portrait/,
+    /photo to canvas/,
+    /custom canvas.*photo/,
     /set of [2-9]/,
     /set of (two|three|four|five|six|seven|eight|nine)/
   ];
@@ -638,9 +653,8 @@ function confidenceDetails({
   priceValues,
   averageMatchQuality
 }) {
-  const exactScore = Math.min(40, exactCount * 2);
-  const shopScore = Math.min(25, distinctShopCount * 2.5);
-  const shippingScore = Math.min(15, Math.max(0, shippingCoverage) * 15);
+  const exactScore = Math.min(40, exactCount * 3);
+  const shopScore = Math.min(25, distinctShopCount * 4);
 
   const med = median(priceValues);
   const q1 = percentile(priceValues, 0.25);
@@ -650,28 +664,30 @@ function confidenceDetails({
       ? (q3 - q1) / med
       : 1;
 
-  const dispersionScore =
+  const consistencyScore =
     dispersion <= 0.30
-      ? 15
+      ? 20
       : dispersion <= 0.45
-        ? 12
+        ? 16
         : dispersion <= 0.60
-          ? 8
+          ? 11
           : dispersion <= 0.80
-            ? 4
+            ? 6
             : 0;
 
   const relevanceScore = Math.min(
-    5,
-    Math.max(0, Number(averageMatchQuality || 0)) * 5
+    15,
+    Math.max(0, Number(averageMatchQuality || 0)) * 15
   );
 
-  const score = Math.round(
-    exactScore +
-    shopScore +
-    shippingScore +
-    dispersionScore +
-    relevanceScore
+  const score = Math.min(
+    100,
+    Math.round(
+      exactScore +
+      shopScore +
+      consistencyScore +
+      relevanceScore
+    )
   );
 
   let level = 'LOW';
@@ -679,13 +695,13 @@ function confidenceDetails({
   if (
     exactCount >= 20 &&
     distinctShopCount >= 10 &&
-    score >= 80
+    score >= 85
   ) {
     level = 'VERY_HIGH';
   } else if (
     exactCount >= 10 &&
     distinctShopCount >= 6 &&
-    score >= 65
+    score >= 70
   ) {
     level = 'HIGH';
   } else if (
@@ -703,10 +719,12 @@ function confidenceDetails({
     components: {
       exact_matches: round2(exactScore),
       distinct_shops: round2(shopScore),
-      shipping_coverage: round2(shippingScore),
-      price_consistency: round2(dispersionScore),
+      price_consistency: round2(consistencyScore),
       product_relevance: round2(relevanceScore)
-    }
+    },
+    shipping_coverage_pct: round2(
+      Math.max(0, Number(shippingCoverage || 0)) * 100
+    )
   };
 }
 
@@ -736,18 +754,18 @@ async function competitorReferences({
   variationKey,
   label,
   buyerCountry = 'US',
-  searchLimit = 240
+  searchLimit = 300
 }) {
   const target = targetFromInput(variationKey, label);
   const searchQueries = buildSearchQueries(target);
   const ownShopId = Number(await getShopId());
   const overallLimit = Math.min(
-    Math.max(Number(searchLimit) || 240, 60),
+    Math.max(Number(searchLimit) || 300, 80),
     300
   );
   const perQueryLimit = Math.min(
     100,
-    Math.max(30, Math.ceil(overallLimit / Math.max(searchQueries.length, 1)))
+    Math.max(60, Math.ceil(overallLimit / Math.max(searchQueries.length, 1)))
   );
 
   const searches = await mapWithConcurrency(
