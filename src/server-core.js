@@ -171,6 +171,7 @@ function renderPriceBridgeAuth(req, res, next) {
   next();
 }
 
+
 app.get('/health', async (_req, res) => {
   let etsyConnected = false;
   let etsyRefreshReady = false;
