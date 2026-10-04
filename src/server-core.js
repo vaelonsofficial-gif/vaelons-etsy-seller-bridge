@@ -132,6 +132,22 @@ function renderPriceBridgeAuth(req, res, next) {
     });
   }
 
+  const envToken = String(
+    process.env.RENDER_PRICE_BRIDGE_TOKEN || ''
+  ).trim();
+
+  if (envToken) {
+    const actualEnv = Buffer.from(token, 'utf8');
+    const expectedEnv = Buffer.from(envToken, 'utf8');
+
+    if (
+      actualEnv.length === expectedEnv.length &&
+      crypto.timingSafeEqual(actualEnv, expectedEnv)
+    ) {
+      return next();
+    }
+  }
+
   const actual = crypto
     .createHash('sha256')
     .update(token, 'utf8')
