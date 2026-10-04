@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: VAELONS SEO Manager
-  version: 4.0.0
+  version: 4.1.0
   description: SEO-only VAELONS Etsy manager. No thumbnail generation. Manager GPT creates SEO proposals; backend validates, previews, publishes only with approval, and supports rollback.
 
 servers:
@@ -350,3 +350,119 @@ paths:
           description: Rolled back and verified
         default:
           description: Error
+
+
+  /api/variation-intelligence/status:
+    get:
+      operationId: getVariationIntelligenceStatus
+      summary: Check read-only variation intelligence readiness
+      responses:
+        "200":
+          description: OK
+
+  /api/variation-intelligence/scan:
+    get:
+      operationId: scanVariationIntelligence
+      summary: Scan VAELONS listing inventory and variation structure
+      description: Read-only. Uses Etsy batch inventory reads and never modifies listings.
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+            default: active
+        - name: listing_limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 300
+        - name: include_rows
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+        - name: sample_rows
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 20
+            default: 3
+      responses:
+        "200":
+          description: Read-only variation scan result
+
+  /api/variation-intelligence/listings/{listingId}:
+    get:
+      operationId: getListingVariationIntelligence
+      summary: Read full variation inventory for one VAELONS listing
+      parameters:
+        - name: listingId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Listing variation rows and summary
+
+  /api/variation-intelligence/evaluate/{listingId}:
+    post:
+      operationId: evaluateListingProfit
+      summary: Evaluate listing contribution margin and maximum ad spend
+      description: Read-only profit model. Requires caller-supplied cost rules, USD/TRY rate and Etsy net ratio. Does not change Etsy.
+      parameters:
+        - name: listingId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - etsy_net_ratio
+                - usd_try
+                - costs
+              properties:
+                etsy_net_ratio:
+                  type: number
+                  exclusiveMinimum: 0
+                  maximum: 1
+                usd_try:
+                  type: number
+                  exclusiveMinimum: 0
+                target_profit_try:
+                  type: number
+                  default: 0
+                costs:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - cost_try
+                    properties:
+                      canvas_style:
+                        type: string
+                      size:
+                        type: string
+                      frame_color:
+                        type: string
+                      cost_try:
+                        type: number
+      responses:
+        "200":
+          description: Read-only profitability rows
+        "400":
+          description: Invalid assumptions
