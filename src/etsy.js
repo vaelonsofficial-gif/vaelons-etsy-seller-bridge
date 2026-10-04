@@ -356,6 +356,78 @@ export async function etsyRequest(
   return data;
 }
 
+
+export async function etsyPublicRequest(
+  path,
+  {
+    params
+  } = {}
+) {
+  const normalizedPath =
+    String(path || '').startsWith('/')
+      ? String(path)
+      : `/${String(path || '')}`;
+
+  const url =
+    new URL(
+      `${API}${normalizedPath}`
+    );
+
+  if (params) {
+    for (const [key, value] of Object.entries(params)) {
+      if (
+        value === undefined ||
+        value === null ||
+        value === ''
+      ) {
+        continue;
+      }
+
+      if (Array.isArray(value)) {
+        url.searchParams.set(key, value.join(','));
+      } else {
+        url.searchParams.set(key, String(value));
+      }
+    }
+  }
+
+  const res =
+    await fetch(
+      url,
+      {
+        method: 'GET',
+        headers: {
+          'x-api-key': apiKeyHeader()
+        }
+      }
+    );
+
+  const text = await res.text();
+  let data = null;
+
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { raw: text };
+    }
+  }
+
+  if (!res.ok) {
+    const err =
+      new Error(
+        `Etsy API GET ${normalizedPath} failed (${res.status})`
+      );
+
+    err.status = res.status;
+    err.details = data;
+    throw err;
+  }
+
+  return data;
+}
+
+
 /* =========================================================
    SHOP
 ========================================================= */

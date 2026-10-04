@@ -29,6 +29,8 @@ import {
   bridgeApplyVariation
 } from './render-price-bridge.js';
 
+import { analyzeMarketPrice } from './market-price-engine.js';
+
 import {
   getVariationIntelligenceStatus,
   scanVariationIntelligence,
@@ -400,6 +402,23 @@ app.post(
         etsy_modified:
           result.changedCount > 0,
         ...result
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+
+app.post(
+  '/ops/market-price-manager/analyze',
+  renderPriceBridgeAuth,
+  async (req, res, next) => {
+    try {
+      const result = await analyzeMarketPrice(req.body || {});
+      res.json({
+        ...result,
+        etsy_modified: false
       });
     } catch (error) {
       next(error);

@@ -340,7 +340,8 @@ export async function bridgeVariationTemplates() {
     variations.push({
       key,
       label: variationLabel(product),
-      referenceProductId: product.product_id
+      referenceProductId: product.product_id,
+      currentPrice: moneyToNumber(product?.offerings?.[0]?.price)
     });
   }
 
