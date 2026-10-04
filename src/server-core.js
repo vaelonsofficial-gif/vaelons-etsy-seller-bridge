@@ -30,6 +30,7 @@ import {
 } from './render-price-bridge.js';
 
 import { analyzeMarketPrice } from './market-price-engine.js';
+import { scanSalesEngine } from './sales-engine.js';
 
 import {
   getVariationIntelligenceStatus,
@@ -420,6 +421,24 @@ app.post(
           result.changedCount > 0,
         ...result
       });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+
+app.post(
+  '/ops/sales-engine/scan',
+  renderPriceBridgeAuth,
+  async (req, res, next) => {
+    try {
+      res.json(
+        await scanSalesEngine({
+          listingLimit: req.body?.listingLimit,
+          heroLimit: req.body?.heroLimit
+        })
+      );
     } catch (error) {
       next(error);
     }
