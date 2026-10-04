@@ -29,6 +29,8 @@ import {
   bridgeApplyVariation
 } from './render-price-bridge.js';
 
+import { analyzeMarketPrice } from './market-price-engine.js';
+
 import {
   getVariationIntelligenceStatus,
   scanVariationIntelligence,
