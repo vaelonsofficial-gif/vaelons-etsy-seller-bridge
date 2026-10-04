@@ -91,14 +91,14 @@ function detectStyle(value) {
   }
 
   if (
-    /\b(framed|floater|floating frame|wood frame|framed canvas)\b/.test(text) &&
+    /\b(framed|frame|floater|floating frame|wood frame|framed canvas)\b/.test(text) &&
     !/\bunframed\b/.test(text)
   ) {
     return 'framed';
   }
 
   if (
-    /\b(stretched|gallery wrap|gallery canvas|ready to hang|ready-to-hang|frameless canvas)\b/.test(text)
+    /\b(stretched|stretch canvas|gallery wrap|gallery canvas|ready to hang|ready-to-hang|frameless canvas)\b/.test(text)
   ) {
     return 'stretched';
   }
