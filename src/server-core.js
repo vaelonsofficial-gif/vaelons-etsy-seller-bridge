@@ -29,6 +29,13 @@ import {
   bridgeApplyVariation
 } from './render-price-bridge.js';
 
+import {
+  getVariationIntelligenceStatus,
+  scanVariationIntelligence,
+  getListingVariationIntelligence,
+  evaluateListingProfit
+} from './variation-intelligence.js';
+
 const app = express();
 
 app.use(
@@ -557,6 +564,69 @@ app.get('/api/listings/:listingId', async (req, res, next) => {
     next(error);
   }
 });
+
+
+app.get('/api/variation-intelligence/status', async (_req, res, next) => {
+  try {
+    res.json(await getVariationIntelligenceStatus());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/variation-intelligence/scan', async (req, res, next) => {
+  try {
+    const includeRows = ['1', 'true', 'yes'].includes(
+      String(req.query.include_rows || '').toLowerCase()
+    );
+    const useCache = !['0', 'false', 'no'].includes(
+      String(req.query.use_cache ?? 'true').toLowerCase()
+    );
+
+    res.json(
+      await scanVariationIntelligence({
+        state: String(req.query.state || 'active'),
+        listingLimit: clampInt(req.query.listing_limit || 300, 1, 500),
+        includeRows,
+        sampleRowsPerListing: clampInt(req.query.sample_rows || 3, 0, 20),
+        useCache
+      })
+    );
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get(
+  '/api/variation-intelligence/listings/:listingId',
+  async (req, res, next) => {
+    try {
+      res.json(
+        await getListingVariationIntelligence(
+          asListingId(req.params.listingId)
+        )
+      );
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+app.post(
+  '/api/variation-intelligence/evaluate/:listingId',
+  async (req, res, next) => {
+    try {
+      res.json(
+        await evaluateListingProfit(
+          asListingId(req.params.listingId),
+          req.body || {}
+        )
+      );
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 app.use((error, _req, res, _next) => {
   console.error('VAELONS SEO manager error:', error);
