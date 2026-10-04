@@ -289,22 +289,48 @@ function qualityScore(listing) {
 }
 
 function percentileRanks(values) {
-  const indexed = values
-    .map((value, index) => ({
-      value: Number.isFinite(value) ? value : 0,
-      index
-    }))
-    .sort((a, b) => a.value - b.value);
+  const safe = values.map((value) =>
+    Number.isFinite(value) ? value : 0
+  );
 
-  const ranks = new Array(values.length).fill(0);
+  if (!safe.length) return [];
 
-  if (indexed.length <= 1) {
-    return ranks.map(() => 50);
+  const max = Math.max(...safe);
+  const min = Math.min(...safe);
+
+  if (max <= 0) {
+    return safe.map(() => 0);
   }
 
-  for (let i = 0; i < indexed.length; i += 1) {
-    ranks[indexed[i].index] =
-      (i / (indexed.length - 1)) * 100;
+  if (max === min) {
+    return safe.map(() => 50);
+  }
+
+  const indexed = safe
+    .map((value, index) => ({ value, index }))
+    .sort((a, b) => a.value - b.value);
+
+  const ranks = new Array(safe.length).fill(0);
+
+  let i = 0;
+  while (i < indexed.length) {
+    let j = i;
+    while (
+      j + 1 < indexed.length &&
+      indexed[j + 1].value === indexed[i].value
+    ) {
+      j += 1;
+    }
+
+    const averagePosition = (i + j) / 2;
+    const rank =
+      (averagePosition / (indexed.length - 1)) * 100;
+
+    for (let k = i; k <= j; k += 1) {
+      ranks[indexed[k].index] = rank;
+    }
+
+    i = j + 1;
   }
 
   return ranks;
@@ -337,32 +363,36 @@ function baseMetrics(listing) {
   };
 }
 
-function salesAction(row) {
+function salesAction(row, availability) {
   const score = row.sales_score;
   const demand = row.scores.demand;
-  const interest = row.scores.interest;
   const quality = row.scores.quality;
   const trust = row.scores.trust;
-  const viewsRank = row.percentiles.views_per_day;
+  const favoriteRank = row.percentiles.favorites_per_day;
   const favoriteRateRank = row.percentiles.favorite_rate;
 
   if (
-    score >= 75 &&
-    demand >= 20 &&
-    interest >= 12 &&
-    quality >= 20
+    row.favorites > 0 &&
+    favoriteRank >= 70 &&
+    score >= 68 &&
+    quality >= 20 &&
+    trust >= 12
   ) {
     return {
       code: 'HERO',
-      label: 'HERO — TRAFİĞİ BÜYÜT',
+      label: availability.views
+        ? 'HERO — TRAFİĞİ BÜYÜT'
+        : 'HERO ADAYI — FAVORİ SİNYALİ GÜÇLÜ',
       priority: 1,
-      reason:
-        'Mağaza içindeki güçlü talep, ilgi ve listing kalitesi birlikte yüksek.'
+      reason: availability.views
+        ? 'Talep, ilgi ve listing kalitesi birlikte güçlü.'
+        : 'Etsy views verisi kapalı; mağaza içindeki gerçek favori hızı ve listing kalitesi güçlü.'
     };
   }
 
   if (
-    viewsRank >= 60 &&
+    availability.views &&
+    row.percentiles.views_per_day >= 60 &&
     favoriteRateRank < 40
   ) {
     return {
@@ -375,20 +405,6 @@ function salesAction(row) {
   }
 
   if (
-    quality >= 22 &&
-    trust >= 14 &&
-    viewsRank < 40
-  ) {
-    return {
-      code: 'VISIBILITY_FIX',
-      label: 'GÖRÜNÜRLÜĞÜ ARTIR',
-      priority: 2,
-      reason:
-        'Listing altyapısı güçlü ancak günlük görüntülenme hızı düşük.'
-    };
-  }
-
-  if (
     quality < 20 ||
     trust < 12
   ) {
@@ -397,17 +413,45 @@ function salesAction(row) {
       label: 'LISTINGİ DÜZELT',
       priority: 3,
       reason:
-        'Görsel/SEO/açıklama/teslimat-güven sinyallerinden biri satış için zayıf.'
+        'SEO/açıklama/teslimat-güven sinyallerinden biri satış için zayıf.'
     };
   }
 
-  if (score >= 60) {
+  if (
+    row.favorites > 0 &&
+    demand >= 12
+  ) {
     return {
-      code: 'WATCH',
-      label: 'TEST ET / İZLE',
+      code: 'GROW_CANDIDATE',
+      label: 'BÜYÜME ADAYI — TEST ET',
+      priority: 2,
+      reason:
+        'Gerçek favori sinyali var; Hero seviyesine çıkması için kontrollü trafik testi uygun.'
+    };
+  }
+
+  if (
+    !availability.views &&
+    row.favorites === 0 &&
+    quality >= 22 &&
+    trust >= 14
+  ) {
+    return {
+      code: 'VISIBILITY_UNKNOWN',
+      label: 'GÖRÜNÜRLÜK VERİSİ YETERSİZ',
       priority: 4,
       reason:
-        'Orta-üst potansiyel var; Hero grubuna girmeden önce trafik ve ilgi davranışı izlenmeli.'
+        'Listing altyapısı iyi ancak Etsy API views/impressions vermediği için trafik sorunu doğrulanamıyor.'
+    };
+  }
+
+  if (score >= 55) {
+    return {
+      code: 'WATCH',
+      label: 'İZLE / TEST ET',
+      priority: 4,
+      reason:
+        'Orta potansiyel var; daha güçlü satış veya trafik verisi gelmeden agresif reklam ölçeklenmemeli.'
     };
   }
 
@@ -416,7 +460,7 @@ function salesAction(row) {
     label: 'REKLAMI BÜYÜTME',
     priority: 5,
     reason:
-      'Mevcut organik sinyaller Hero ürünlere göre zayıf; önce güçlü ürünlere kaynak ayır.'
+      'Mevcut güvenli veride güçlü ilgi sinyali yok; önce Hero ve büyüme adaylarına kaynak ayır.'
   };
 }
 
@@ -430,6 +474,14 @@ export async function scanSalesEngine({
 
   const listings = await enrichListings(base);
   const metrics = listings.map(baseMetrics);
+
+  const availability = {
+    views: metrics.some((row) => row.views > 0),
+    images: metrics.some(
+      (row) => row.quality.image_count > 0
+    ),
+    favorites: metrics.some((row) => row.favorites > 0)
+  };
 
   const viewsPerDayRanks = percentileRanks(
     metrics.map((row) => row.views_per_day)
@@ -448,16 +500,35 @@ export async function scanSalesEngine({
   );
 
   const rows = metrics.map((row, index) => {
-    const demand =
-      (viewsPerDayRanks[index] / 100) * 18 +
-      (favoritesPerDayRanks[index] / 100) * 8 +
-      (viewsRanks[index] / 100) * 4;
+    const demand = availability.views
+      ? (
+          (viewsPerDayRanks[index] / 100) * 18 +
+          (favoritesPerDayRanks[index] / 100) * 8 +
+          (viewsRanks[index] / 100) * 4
+        )
+      : (
+          (favoritesPerDayRanks[index] / 100) * 20 +
+          (favoriteRanks[index] / 100) * 10
+        );
 
-    const interest =
-      (favoriteRateRanks[index] / 100) * 15 +
-      (favoriteRanks[index] / 100) * 5;
+    const interest = availability.views
+      ? (
+          (favoriteRateRanks[index] / 100) * 15 +
+          (favoriteRanks[index] / 100) * 5
+        )
+      : (
+          row.favorites > 0
+            ? Math.min(
+                20,
+                Math.log1p(row.favorites) * 8
+              )
+            : 0
+        );
 
-    const quality = row.quality.total;
+    const quality = availability.images
+      ? row.quality.total
+      : Math.min(30, row.quality.total + 5);
+
     const trust = row.fulfillment_score;
 
     const salesScore = round2(
@@ -512,7 +583,7 @@ export async function scanSalesEngine({
 
     return {
       ...result,
-      action: salesAction(result)
+      action: salesAction(result, availability)
     };
   });
 
@@ -581,13 +652,24 @@ export async function scanSalesEngine({
       lifetime_favorite_rate_pct:
         totalViews > 0
           ? round2((totalFavorites / totalViews) * 100)
-          : 0
+          : null,
+      listings_with_views:
+        rows.filter((row) => row.views > 0).length,
+      listings_with_favorites:
+        rows.filter((row) => row.favorites > 0).length,
+      listings_with_image_data:
+        rows.filter(
+          (row) => row.listing_health.image_count > 0
+        ).length
     },
     action_counts: counts,
     hero_count: fallbackHeroes.length,
     hero_candidates: fallbackHeroes,
     listings: rows,
     data_limits: {
+      views_available: availability.views,
+      image_counts_available: availability.images,
+      favorites_available: availability.favorites,
       impressions_available: false,
       per_listing_orders_available: false,
       etsy_ads_spend_available: false,
