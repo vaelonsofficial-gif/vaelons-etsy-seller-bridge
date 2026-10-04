@@ -106,15 +106,36 @@ function detectStyle(value) {
   return null;
 }
 
+
+function detectFrameColor(value) {
+  const text = normalizeText(value);
+  const pairs = [
+    ['dark_wood', /\b(dark wood|dark walnut)\b/],
+    ['natural_wood', /\b(natural wood|natural oak|oak|wood frame|canvas wood frame)\b/],
+    ['black', /\bblack\b/],
+    ['white', /\bwhite\b/],
+    ['gold', /\bgold\b/],
+    ['silver_gray', /\b(silver gray|silver grey|silver)\b/],
+    ['gray', /\b(gray|grey)\b/],
+    ['walnut', /\bwalnut\b/]
+  ];
+  for (const [name, pattern] of pairs) {
+    if (pattern.test(text)) return name;
+  }
+  return null;
+}
+
 function targetFromInput(variationKey, label) {
   const combined = `${variationKey || ''} ${label || ''}`;
   const dimensions = parseDimensions(combined);
   const style = detectStyle(combined);
+  const frameColor = detectFrameColor(combined);
 
   return {
     dimensions,
     size: sizeLabel(dimensions),
-    style
+    style,
+    frame_color: frameColor
   };
 }
 
@@ -129,11 +150,19 @@ function productText(product, listing) {
   return `${values} ${listing?.title || ''} ${listing?.description || ''}`;
 }
 
-function exactOfferingPrices(inventory, listing, target) {
-  const prices = [];
+function exactOfferingCandidates(inventory, listing, target) {
+  const matches = [];
 
   for (const product of inventory?.products || []) {
-    const productDimensions = (product?.property_values || [])
+    const propertyValues = product?.property_values || [];
+    const propertyText = propertyValues
+      .flatMap((property) => [
+        property?.property_name || '',
+        ...(property?.values || [])
+      ])
+      .join(' ');
+
+    const productDimensions = propertyValues
       .flatMap((property) => property?.values || [])
       .map(parseDimensions)
       .find(Boolean);
@@ -142,21 +171,25 @@ function exactOfferingPrices(inventory, listing, target) {
       continue;
     }
 
-    const style = detectStyle(productText(product, listing));
+    const propertyStyle = detectStyle(propertyText);
+    const listingStyle = detectStyle(
+      `${listing?.title || ''} ${listing?.description || ''}`
+    );
+    const resolvedStyle = propertyStyle || listingStyle;
 
-    if (target.style && style && style !== target.style) {
+    if (target.style && resolvedStyle && resolvedStyle !== target.style) {
       continue;
     }
 
-    if (target.style && !style) {
-      const listingStyle = detectStyle(
-        `${listing?.title || ''} ${listing?.description || ''}`
-      );
-      if (listingStyle && listingStyle !== target.style) continue;
-    }
+    const propertyColor = detectFrameColor(propertyText);
+    const colorMatch =
+      !target.frame_color ||
+      !propertyColor ||
+      propertyColor === target.frame_color;
 
     for (const offering of product?.offerings || []) {
       if (offering?.is_enabled === false) continue;
+
       const currency = String(
         offering?.price?.currency_code ||
         listing?.price?.currency_code ||
@@ -166,11 +199,25 @@ function exactOfferingPrices(inventory, listing, target) {
       if (currency && currency !== 'USD') continue;
 
       const price = moneyToNumber(offering?.price);
-      if (Number.isFinite(price) && price > 0) prices.push(price);
+      if (!(Number.isFinite(price) && price > 0)) continue;
+
+      const matchQuality =
+        propertyStyle === target.style
+          ? (colorMatch ? 1 : 0.9)
+          : resolvedStyle === target.style
+            ? 0.82
+            : 0.7;
+
+      matches.push({
+        price,
+        match_quality: matchQuality,
+        frame_color: propertyColor,
+        size: sizeLabel(productDimensions)
+      });
     }
   }
 
-  return prices;
+  return matches;
 }
 
 function median(values) {
@@ -218,17 +265,326 @@ function round2(value) {
   return Number.isFinite(value) ? Math.round(value * 100) / 100 : null;
 }
 
-function buildKeywords(target) {
-  const styleText =
-    target.style === 'framed'
-      ? 'framed canvas wall art'
-      : target.style === 'rolled'
-        ? 'rolled unframed canvas print'
-        : target.style === 'stretched'
-          ? 'stretched canvas wall art ready to hang'
-          : 'canvas wall art';
+function inchLabel(dimensions) {
+  if (!dimensions) return null;
+  const fmt = (cm) => {
+    const inches = cm / 2.54;
+    const rounded = Math.round(inches * 10) / 10;
+    return Math.abs(rounded - Math.round(rounded)) < 0.12
+      ? String(Math.round(rounded))
+      : String(rounded);
+  };
+  return `${fmt(dimensions[0])}x${fmt(dimensions[1])}`;
+}
 
-  return [styleText, target.size].filter(Boolean).join(' ');
+function stylePhrases(style) {
+  if (style === 'framed') {
+    return [
+      'framed canvas wall art',
+      'framed canvas print',
+      'floating frame canvas'
+    ];
+  }
+  if (style === 'rolled') {
+    return [
+      'rolled canvas print',
+      'unframed canvas print',
+      'unstretched canvas'
+    ];
+  }
+  if (style === 'stretched') {
+    return [
+      'stretched canvas wall art',
+      'gallery wrap canvas',
+      'ready to hang canvas'
+    ];
+  }
+  return ['canvas wall art'];
+}
+
+function buildSearchQueries(target) {
+  const cm = target.size;
+  const inch = inchLabel(target.dimensions);
+  const phrases = stylePhrases(target.style);
+  const queries = [];
+
+  for (const phrase of phrases.slice(0, 2)) {
+    if (cm) queries.push(`${phrase} ${cm}`);
+    if (inch) queries.push(`${phrase} ${inch} inch`);
+  }
+
+  if (cm) queries.push(`canvas wall art ${cm}`);
+  if (inch) queries.push(`canvas wall art ${inch} inch`);
+
+  return [...new Set(queries)].slice(0, 6);
+}
+
+function isObviouslyIrrelevant(listing) {
+  const text = normalizeText(
+    `${listing?.title || ''} ${listing?.description || ''}`
+  );
+
+  const blocked = [
+    /digital download/,
+    /instant download/,
+    /printable/,
+    /mockup/,
+    /size guide/,
+    /blank canvas/,
+    /original painting/,
+    /hand[- ]?painted/,
+    /custom photo/,
+    /personalized photo/,
+    /set of [2-9]/,
+    /set of (two|three|four|five|six|seven|eight|nine)/
+  ];
+
+  if (blocked.some((pattern) => pattern.test(text))) return true;
+
+  if (/\bposter\b/.test(text) && !/\bcanvas\b/.test(text)) {
+    return true;
+  }
+
+  return false;
+}
+
+function chunk(values, size) {
+  const result = [];
+  for (let i = 0; i < values.length; i += size) {
+    result.push(values.slice(i, i + size));
+  }
+  return result;
+}
+
+function inventoryMapFromBatch(batchResponse) {
+  const map = new Map();
+  const results = Array.isArray(batchResponse?.results)
+    ? batchResponse.results
+    : [];
+
+  for (const item of results) {
+    const listingId = Number(
+      item?.listing_id ||
+      item?.inventory?.listing?.listing_id ||
+      0
+    );
+    if (!listingId) continue;
+    map.set(listingId, item?.inventory ?? item);
+  }
+
+  return map;
+}
+
+function shippingMapFromBatch(batchResponse) {
+  const map = new Map();
+  const results = Array.isArray(batchResponse?.results)
+    ? batchResponse.results
+    : [];
+
+  for (const item of results) {
+    const listingId = Number(
+      item?.listing_id ||
+      item?.shipping_profile?.listing?.listing_id ||
+      0
+    );
+    if (!listingId) continue;
+    map.set(listingId, item?.shipping_profile ?? item);
+  }
+
+  return map;
+}
+
+async function fetchBatchInventories(listingIds) {
+  const map = new Map();
+
+  for (const ids of chunk(listingIds, 100)) {
+    try {
+      const batch = await etsyRequest('/listings/batch/inventory', {
+        params: { listing_ids: ids }
+      });
+      for (const [listingId, inventory] of inventoryMapFromBatch(batch).entries()) {
+        map.set(listingId, inventory);
+      }
+    } catch {
+      // Conservative fallback: do not fabricate exact variation data.
+    }
+  }
+
+  return map;
+}
+
+async function fetchBatchShipping(listingIds) {
+  const map = new Map();
+
+  for (const ids of chunk(listingIds, 100)) {
+    try {
+      const batch = await etsyRequest('/listings/batch/shipping', {
+        params: { listing_ids: ids }
+      });
+      for (const [listingId, profile] of shippingMapFromBatch(batch).entries()) {
+        map.set(listingId, profile);
+      }
+    } catch {
+      // Shipping is an enrichment signal; inventory comparison can still proceed.
+    }
+  }
+
+  return map;
+}
+
+function shippingCostUsd(profile, buyerCountry) {
+  if (!profile) return null;
+
+  const destinations = Array.isArray(profile?.shipping_profile_destinations)
+    ? profile.shipping_profile_destinations
+    : [];
+
+  const country = String(buyerCountry || '').toUpperCase();
+  const exact = destinations.find(
+    (destination) =>
+      String(destination?.destination_country_iso || '').toUpperCase() === country
+  );
+
+  if (!exact) return null;
+
+  const primary = exact?.primary_cost;
+  const currency = String(primary?.currency_code || '').toUpperCase();
+  if (currency && currency !== 'USD') return null;
+
+  const cost = moneyToNumber(primary);
+  if (!Number.isFinite(cost) || cost < 0) return null;
+
+  const origin = String(profile?.origin_country_iso || '').toUpperCase();
+  const fee =
+    origin && origin === country
+      ? Number(profile?.domestic_handling_fee || 0)
+      : Number(profile?.international_handling_fee || 0);
+
+  return cost + (Number.isFinite(fee) ? Math.max(0, fee) : 0);
+}
+
+function capPerShop(references, maxPerShop = 2) {
+  const counts = new Map();
+  const selected = [];
+
+  for (const reference of references) {
+    const shopId = Number(reference?.shop_id || 0);
+    if (!shopId) continue;
+
+    const count = counts.get(shopId) || 0;
+    if (count >= maxPerShop) continue;
+
+    counts.set(shopId, count + 1);
+    selected.push(reference);
+  }
+
+  return selected;
+}
+
+function filterPriceOutliers(values) {
+  const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (sorted.length < 8) return sorted;
+
+  const trim = sorted.length >= 10
+    ? Math.floor(sorted.length * 0.10)
+    : 0;
+
+  const trimmed =
+    trim > 0
+      ? sorted.slice(trim, sorted.length - trim)
+      : sorted;
+
+  if (trimmed.length < 6) return trimmed;
+
+  const q1 = percentile(trimmed, 0.25);
+  const q3 = percentile(trimmed, 0.75);
+  const iqr = q3 - q1;
+
+  if (!(Number.isFinite(iqr) && iqr > 0)) return trimmed;
+
+  const low = q1 - 1.5 * iqr;
+  const high = q3 + 1.5 * iqr;
+
+  return trimmed.filter((value) => value >= low && value <= high);
+}
+
+function confidenceDetails({
+  exactCount,
+  distinctShopCount,
+  shippingCoverage,
+  priceValues,
+  averageMatchQuality
+}) {
+  const exactScore = Math.min(40, exactCount * 2);
+  const shopScore = Math.min(25, distinctShopCount * 2.5);
+  const shippingScore = Math.min(15, Math.max(0, shippingCoverage) * 15);
+
+  const med = median(priceValues);
+  const q1 = percentile(priceValues, 0.25);
+  const q3 = percentile(priceValues, 0.75);
+  const dispersion =
+    Number.isFinite(med) && med > 0 && Number.isFinite(q1) && Number.isFinite(q3)
+      ? (q3 - q1) / med
+      : 1;
+
+  const dispersionScore =
+    dispersion <= 0.30
+      ? 15
+      : dispersion <= 0.45
+        ? 12
+        : dispersion <= 0.60
+          ? 8
+          : dispersion <= 0.80
+            ? 4
+            : 0;
+
+  const relevanceScore = Math.min(
+    5,
+    Math.max(0, Number(averageMatchQuality || 0)) * 5
+  );
+
+  const score = Math.round(
+    exactScore +
+    shopScore +
+    shippingScore +
+    dispersionScore +
+    relevanceScore
+  );
+
+  let level = 'LOW';
+
+  if (
+    exactCount >= 20 &&
+    distinctShopCount >= 10 &&
+    score >= 80
+  ) {
+    level = 'VERY_HIGH';
+  } else if (
+    exactCount >= 10 &&
+    distinctShopCount >= 6 &&
+    score >= 65
+  ) {
+    level = 'HIGH';
+  } else if (
+    exactCount >= 4 &&
+    distinctShopCount >= 3 &&
+    score >= 45
+  ) {
+    level = 'MEDIUM';
+  }
+
+  return {
+    score,
+    level,
+    dispersion_ratio: round2(dispersion),
+    components: {
+      exact_matches: round2(exactScore),
+      distinct_shops: round2(shopScore),
+      shipping_coverage: round2(shippingScore),
+      price_consistency: round2(dispersionScore),
+      product_relevance: round2(relevanceScore)
+    }
+  };
 }
 
 async function mapWithConcurrency(items, limit, worker) {
@@ -257,84 +613,175 @@ async function competitorReferences({
   variationKey,
   label,
   buyerCountry = 'US',
-  searchLimit = 20
+  searchLimit = 180
 }) {
   const target = targetFromInput(variationKey, label);
-  const keywords = buildKeywords(target);
+  const searchQueries = buildSearchQueries(target);
   const ownShopId = Number(await getShopId());
+  const overallLimit = Math.min(
+    Math.max(Number(searchLimit) || 180, 40),
+    300
+  );
+  const perQueryLimit = Math.min(
+    100,
+    Math.max(30, Math.ceil(overallLimit / Math.max(searchQueries.length, 1)))
+  );
 
-  const search = await etsyPublicRequest('/listings/active', {
-    params: {
-      keywords,
-      limit: Math.min(Math.max(Number(searchLimit) || 20, 5), 50),
-      sort_on: 'score',
-      currency: 'USD',
-      buyer_country: buyerCountry,
-      is_safe: true
-    }
-  });
-
-  const listings = (search?.results || [])
-    .filter((listing) => Number(listing?.shop_id) !== ownShopId)
-    .slice(0, Math.min(Math.max(Number(searchLimit) || 20, 5), 50));
-
-  const enriched = await mapWithConcurrency(
-    listings.slice(0, 12),
-    3,
-    async (listing) => {
-      let exactPrices = [];
-
-      try {
-        const inventory = await etsyRequest(
-          `/listings/${listing.listing_id}/inventory`
-        );
-        exactPrices = exactOfferingPrices(inventory, listing, target);
-      } catch {
-        exactPrices = [];
-      }
-
-      const exactPrice = exactPrices.length
-        ? median(exactPrices)
-        : null;
+  const searches = await mapWithConcurrency(
+    searchQueries,
+    2,
+    async (keywords) => {
+      const response = await etsyPublicRequest('/listings/active', {
+        params: {
+          keywords,
+          limit: perQueryLimit,
+          sort_on: 'score',
+          currency: 'USD',
+          buyer_country: buyerCountry,
+          is_safe: true
+        }
+      });
 
       return {
-        listing_id: Number(listing?.listing_id),
-        shop_id: Number(listing?.shop_id),
-        title: String(listing?.title || ''),
-        url: String(listing?.url || ''),
-        exact_price: round2(exactPrice),
-        visible_price: round2(moneyToNumber(listing?.price)),
-        source: Number.isFinite(exactPrice)
-          ? 'exact_variation'
-          : 'visible_listing'
+        keywords,
+        listings: Array.isArray(response?.results)
+          ? response.results
+          : []
       };
     }
   );
 
-  const remaining = listings.slice(12).map((listing) => ({
-    listing_id: Number(listing?.listing_id),
-    shop_id: Number(listing?.shop_id),
-    title: String(listing?.title || ''),
-    url: String(listing?.url || ''),
-    exact_price: null,
-    visible_price: round2(moneyToNumber(listing?.price)),
-    source: 'visible_listing'
-  }));
+  const candidateMap = new Map();
 
-  const references = [...enriched, ...remaining];
-  const exact = references
-    .map((reference) => reference.exact_price)
-    .filter((value) => Number.isFinite(value) && value > 0);
-  const visible = references
-    .map((reference) => reference.visible_price)
-    .filter((value) => Number.isFinite(value) && value > 0);
+  for (const search of searches) {
+    for (const listing of search.listings) {
+      const listingId = Number(listing?.listing_id || 0);
+      if (!listingId) continue;
+      if (Number(listing?.shop_id) === ownShopId) continue;
+      if (isObviouslyIrrelevant(listing)) continue;
+
+      if (!candidateMap.has(listingId)) {
+        candidateMap.set(listingId, {
+          ...listing,
+          matched_queries: [search.keywords]
+        });
+      } else {
+        candidateMap.get(listingId).matched_queries.push(search.keywords);
+      }
+    }
+  }
+
+  const candidates = [...candidateMap.values()]
+    .sort(
+      (a, b) =>
+        (b?.matched_queries?.length || 0) -
+        (a?.matched_queries?.length || 0)
+    )
+    .slice(0, overallLimit);
+
+  const listingIds = candidates.map((listing) => Number(listing.listing_id));
+  const [inventories, shippingProfiles] = await Promise.all([
+    fetchBatchInventories(listingIds),
+    fetchBatchShipping(listingIds)
+  ]);
+
+  const exactReferences = [];
+
+  for (const listing of candidates) {
+    const listingId = Number(listing?.listing_id || 0);
+    const inventory = inventories.get(listingId);
+    if (!inventory) continue;
+
+    const offerings = exactOfferingCandidates(inventory, listing, target);
+    if (!offerings.length) continue;
+
+    const exactPrice = median(offerings.map((item) => item.price));
+    const averageMatchQuality = average(
+      offerings.map((item) => item.match_quality)
+    );
+    const shippingCost = shippingCostUsd(
+      shippingProfiles.get(listingId),
+      buyerCountry
+    );
+
+    exactReferences.push({
+      listing_id: listingId,
+      shop_id: Number(listing?.shop_id || 0),
+      title: String(listing?.title || ''),
+      url: String(listing?.url || ''),
+      exact_price: round2(exactPrice),
+      shipping_usd: round2(shippingCost),
+      effective_price:
+        Number.isFinite(exactPrice) && Number.isFinite(shippingCost)
+          ? round2(exactPrice + shippingCost)
+          : null,
+      match_quality: round2(averageMatchQuality),
+      query_hits: listing?.matched_queries?.length || 0,
+      source: 'exact_variation'
+    });
+  }
+
+  const ranked = exactReferences.sort((a, b) => {
+    const qualityDiff =
+      Number(b.match_quality || 0) -
+      Number(a.match_quality || 0);
+    if (Math.abs(qualityDiff) > 0.001) return qualityDiff;
+    return Number(b.query_hits || 0) - Number(a.query_hits || 0);
+  });
+
+  const shopCapped = capPerShop(ranked, 2);
+  const distinctShopCount = new Set(
+    shopCapped.map((reference) => reference.shop_id)
+  ).size;
+
+  const shippingCovered = shopCapped.filter(
+    (reference) => Number.isFinite(reference.effective_price)
+  );
+  const shippingCoverage =
+    shopCapped.length
+      ? shippingCovered.length / shopCapped.length
+      : 0;
+
+  const useEffectivePrice =
+    shippingCoverage >= 0.70 &&
+    shippingCovered.length >= 6;
+
+  const sourceValues = (
+    useEffectivePrice
+      ? shippingCovered.map((reference) => reference.effective_price)
+      : shopCapped.map((reference) => reference.exact_price)
+  ).filter((value) => Number.isFinite(value) && value > 0);
+
+  const cleanValues = filterPriceOutliers(sourceValues);
+  const avgMatchQuality = average(
+    shopCapped.map((reference) => reference.match_quality)
+  );
+
+  const confidence = confidenceDetails({
+    exactCount: shopCapped.length,
+    distinctShopCount,
+    shippingCoverage,
+    priceValues: cleanValues,
+    averageMatchQuality: avgMatchQuality
+  });
 
   return {
     target,
-    keywords,
-    references,
-    exact,
-    visible
+    search_queries: searchQueries,
+    candidate_count: candidates.length,
+    exact_references_before_shop_cap: exactReferences.length,
+    references: shopCapped,
+    exact: cleanValues,
+    visible: candidates
+      .map((listing) => moneyToNumber(listing?.price))
+      .filter((value) => Number.isFinite(value) && value > 0),
+    distinct_shop_count: distinctShopCount,
+    shipping_coverage: shippingCoverage,
+    reference_mode:
+      useEffectivePrice
+        ? 'effective_delivered_price'
+        : 'exact_item_price',
+    confidence
   };
 }
 
@@ -348,8 +795,8 @@ export async function analyzeMarketPrice({
   maxStepPct = 5,
   etsyNetRatio = 200 / 249,
   buyerCountry = 'US',
-  minReferences = 4,
-  searchLimit = 20
+  minReferences = 10,
+  searchLimit = 180
 }) {
   const current = Number(currentPrice);
   const cost = Number(costUsd);
@@ -406,18 +853,25 @@ export async function analyzeMarketPrice({
   }
 
   const data = market.value;
-  const exactCount = data.exact.length;
+  const exactCount = data.references.length;
   const exactMedian = median(data.exact);
   const exactAverage = trimmedAverage(data.exact);
   const visibleMedian = median(data.visible);
   const visibleAverage = trimmedAverage(data.visible);
 
+  const confidence = data.confidence || {
+    score: 0,
+    level: 'LOW'
+  };
+
   const strongMarket =
-    exactCount >= Math.max(2, Number(minReferences) || 4);
+    (confidence.level === 'HIGH' || confidence.level === 'VERY_HIGH') &&
+    exactCount >= Math.max(10, Number(minReferences) || 10) &&
+    Number(data.distinct_shop_count || 0) >= 6;
 
   const marketReference = strongMarket
     ? exactMedian
-    : visibleMedian;
+    : null;
 
   const profitFloor = cost / (netRatio - minMargin);
   const marketTarget = Number.isFinite(marketReference)
@@ -492,7 +946,7 @@ export async function analyzeMarketPrice({
     variation_key: variationKey,
     label,
     target: data.target,
-    search_keywords: data.keywords,
+    search_keywords: data.search_queries,
     settings: {
       min_margin_pct: Number(minMarginPct),
       market_adjustment_pct: Number(marketAdjustmentPct),
@@ -506,17 +960,28 @@ export async function analyzeMarketPrice({
       cost_usd: round2(cost)
     },
     market: {
-      confidence: strongMarket ? 'HIGH' : exactCount >= 2 ? 'MEDIUM' : 'LOW',
+      confidence: confidence.level,
+      confidence_score: Number(confidence.score || 0),
+      confidence_components: confidence.components || {},
+      dispersion_ratio: confidence.dispersion_ratio,
+      candidate_count: Number(data.candidate_count || 0),
       exact_reference_count: exactCount,
-      visible_reference_count: data.visible.length,
+      exact_reference_count_before_shop_cap:
+        Number(data.exact_references_before_shop_cap || 0),
+      distinct_shop_count: Number(data.distinct_shop_count || 0),
+      shipping_coverage_pct: round2(
+        Number(data.shipping_coverage || 0) * 100
+      ),
+      reference_mode: data.reference_mode,
       exact_median: round2(exactMedian),
       exact_average: round2(exactAverage),
       visible_median: round2(visibleMedian),
       visible_average: round2(visibleAverage),
       reference_price: round2(marketReference),
-      p25: round2(percentile(strongMarket ? data.exact : data.visible, 0.25)),
-      p75: round2(percentile(strongMarket ? data.exact : data.visible, 0.75)),
-      references: data.references.slice(0, 12)
+      p25: round2(percentile(data.exact, 0.25)),
+      p50: round2(percentile(data.exact, 0.50)),
+      p75: round2(percentile(data.exact, 0.75)),
+      references: data.references.slice(0, 20)
     },
     recommendation: {
       profit_floor_price: round2(profitFloor),
