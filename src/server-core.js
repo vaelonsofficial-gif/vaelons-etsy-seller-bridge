@@ -32,6 +32,7 @@ import {
 import { analyzeMarketPrice } from './market-price-engine.js';
 import { scanSalesEngine } from './sales-engine.js';
 import seoRouter from './seo.js';
+import thumbnailRouter from './thumbnail.js';
 
 import {
   getVariationIntelligenceStatus,
@@ -189,7 +190,7 @@ app.get('/health', async (_req, res) => {
     service: 'vaelons-seo-manager',
     version: '4.0.0',
     mode: 'seo_only',
-    thumbnail_worker: false,
+    thumbnail_worker: 'source-lock-ready',
     backend_openai_required_for_seo: false,
     approval_required: 'ONAYLIYORUM',
     rollback_approval_required: 'GERI_AL ONAYLIYORUM',
@@ -467,6 +468,7 @@ app.post(
 // SEO Manager is isolated behind the same server-side bridge token as Price Manager.
 // This mount does not alter any existing price, OAuth, market-price, or sales-engine route.
 app.use('/ops/seo', renderPriceBridgeAuth, seoRouter);
+app.use('/ops/thumbnail', renderPriceBridgeAuth, thumbnailRouter);
 
 app.use('/api', bridgeAuth);
 
