@@ -31,6 +31,7 @@ import {
 
 import { analyzeMarketPrice } from './market-price-engine.js';
 import { scanSalesEngine } from './sales-engine.js';
+import seoRouter from './seo.js';
 
 import {
   getVariationIntelligenceStatus,
@@ -462,6 +463,10 @@ app.post(
     }
   }
 );
+
+// SEO Manager is isolated behind the same server-side bridge token as Price Manager.
+// This mount does not alter any existing price, OAuth, market-price, or sales-engine route.
+app.use('/ops/seo', renderPriceBridgeAuth, seoRouter);
 
 app.use('/api', bridgeAuth);
 
