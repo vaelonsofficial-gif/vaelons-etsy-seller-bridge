@@ -390,6 +390,7 @@ function auditListing(listing) {
     exact_title: title,
     current_tags: tags,
     description_present: Boolean(description),
+    current_description: description,
     title_length: title.length,
     title_word_count: titleWords,
     tag_count: tags.length,
