@@ -60,6 +60,7 @@ const ETSY_MAX_RETRIES = Math.max(
 
 let requestTail = Promise.resolve();
 let nextRequestAt = 0;
+let blockedUntil = 0;
 
 const readCache = new Map();
 const inFlightReads = new Map();
@@ -97,6 +98,21 @@ function updateRateState(res) {
     retryAfterSeconds: numericHeader(res, 'retry-after'),
     updatedAt: Date.now()
   };
+
+  if (res.status === 429) {
+    blockedUntil = Math.max(
+      blockedUntil,
+      Date.now() + retryDelayMs(res, 0)
+    );
+  } else if (
+    rateState.remainingThisSecond !== null &&
+    rateState.remainingThisSecond <= 0
+  ) {
+    blockedUntil = Math.max(
+      blockedUntil,
+      Date.now() + 1000
+    );
+  }
 }
 
 export function getEtsyRateLimitStatus() {
@@ -144,7 +160,10 @@ async function scheduleEtsyRequest(fn) {
 
     const waitMs = Math.max(
       0,
-      nextRequestAt - Date.now()
+      Math.max(
+        nextRequestAt,
+        blockedUntil
+      ) - Date.now()
     );
 
     if (waitMs > 0) {
