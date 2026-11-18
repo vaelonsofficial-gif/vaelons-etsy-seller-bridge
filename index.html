@@ -18,6 +18,20 @@ function customerResults(customers, query) {
   return matches.map(c => btn(c.name, 'customer/' + c.id)).join('')
     || (needle ? '<p>Eşleşen müşteri yok.</p>' : '<p>Henüz müşteri kaydı yok.</p>');
 }
+function downloadBackup(records) {
+  const timestamp = new Date();
+  const payload = { application: 'İş Bitti', formatVersion: 1, exportedAt: timestamp.toISOString(), records };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {type: 'application/json;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'is-bitti-yedek-' + timestamp.toISOString().replace(/[:.]/g, '-') + '.json';
+  document.body.appendChild(link);
+  try { link.click(); } finally {
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+}
 function render(){
 let db;try{db=JSON.parse(localStorage.getItem(key)||'{"customers":[],"jobs":[]}');if(!Array.isArray(db.jobs)||!Array.isArray(db.customers))throw Error()}catch{root.textContent='Cihazdaki kayıtlar okunamadı.';return}
 const [page,id]=location.hash.slice(1).split('/'), c=db.customers.find(x=>x.id===id),j=db.jobs.find(x=>x.id===id);
@@ -30,7 +44,7 @@ else if(page==='customer'&&c){h='<h2>'+esc(c.name)+'</h2>'+form('book',field('Ya
 else if(page==='maintenance'){let rows=db.jobs.filter(x=>x.maintenance&&x.completed).sort((a,b)=>a.completed.localeCompare(b.completed));h='<h2>Yıllık bakım hatırlatmaları</h2>'+ (rows.map(x=>btn((anniversary(x.completed)<=today()?'Bakım zamanı · ':'')+anniversary(x.completed)+' · '+name(x)+' · '+x.title,'job/'+x.id)).join('')||'<p>Bakım kaydı yok.</p>')}
 else if(page==='job'&&j){let phone=String(db.customers.find(x=>x.id===j.customer)?.phone||'').replace(/\D/g,'');if(/^0\d{10}$/.test(phone))phone='90'+phone.slice(1);if(/^\d{10}$/.test(phone))phone='90'+phone;
 h='<article><h2>'+esc(j.title)+'</h2><p>'+esc(name(j))+' · '+esc(labels[j.status])+'</p><p>Randevu '+esc(j.date.replace('T',' '))+'</p>'+(j.completed?'<p>Tamamlanma '+esc(j.completed)+'</p>':'')+'<section class="'+(j.printMaterials?'':'screen')+'"><h3>Malzemeler</h3>'+j.materials.map((m,i)=>'<div>'+esc(m.name)+' · '+m.qty+' × '+fmt(m.price)+' = '+fmt(m.qty*m.price)+' <button class="screen" data-edit="'+i+'">Düzenle</button></div>').join('')+'<p>Toplam '+fmt(j.materials.reduce((s,m)=>s+m.qty*m.price,0))+'</p></section></article><div class="screen">'+form('material',field('Malzeme adı','name')+field('Miktar','qty','number','1','required step="any" min="0.000001"')+field('Birim bedeli (₺)','price','number','','required step="0.01" min="0"'),'Malzemeyi kaydet')+'<label><input type="checkbox" id="include" '+(j.printMaterials?'checked':'')+'> PDF’de malzemeleri göster</label><button id="print">Yazdır / PDF kaydet</button> '+(phone?'<a class="button" target="_blank" rel="noopener" href="https://wa.me/'+phone+'?text='+encodeURIComponent('Merhaba '+name(j)+', '+j.title+' hakkında size ulaşıyorum.')+'">WhatsApp mesajı hazırla</a>':'')+(j.status==='active'?form('move',field('Yeni tarih ve saat','date','datetime-local',j.date),'Yeniden planla')+'<button id="done">İş yapıldı</button> <button id="cancel">Randevuyu iptal et</button>':'')+(j.status==='done'?'<label><input id="maint" type="checkbox" '+(j.maintenance?'checked':'')+'> Bir yıl sonra bakım hatırlat</label>':'')+'</div>'}
-else{h='<h2>İş takibi</h2><div class="cards">'+['all','active','done'].map(k=>btn((labels[k]||'Toplam iş')+' · '+jobsFor(db,k).length,'list/'+k)).join('')+'</div>'}
+else{h='<h2>İş takibi</h2><div class="cards">'+['all','active','done'].map(k=>btn((labels[k]||'Toplam iş')+' · '+jobsFor(db,k).length,'list/'+k)).join('')+'</div><button id="backup" type="button">Kayıtları yedekle</button>'}
 root.innerHTML=h;
 root.oninput = e => {
   if (e.target.id === 'customer-search') {
@@ -43,7 +57,7 @@ if(f.id==='customer'){let x={id:uid(),name:v('name'),phone:v('phone')};db.custom
 if(f.id==='book'){let x={id:uid(),customer:id,title:v('title'),date:v('date'),status:'active',materials:[],printMaterials:true};db.jobs.push(x);save('job/'+x.id)}
 if(f.id==='move'){j.date=v('date');save()}
 if(f.id==='material'){let m={name:v('name'),qty:Number(v('qty')),price:Number(v('price'))};if(editing===null)j.materials.push(m);else j.materials[editing]=m;save()}};
-root.onclick=e=>{let t=e.target;if(t.dataset.edit!==undefined){editing=Number(t.dataset.edit);let f=document.querySelector('#material');for(let [k,v] of Object.entries(j.materials[editing]))f.elements[k].value=v;f.elements.name.focus()}
+root.onclick=e=>{let t=e.target;if(t.id==='backup'){downloadBackup(db);return}if(t.dataset.edit!==undefined){editing=Number(t.dataset.edit);let f=document.querySelector('#material');for(let [k,v] of Object.entries(j.materials[editing]))f.elements[k].value=v;f.elements.name.focus()}
 if(t.id==='include'){j.printMaterials=t.checked;save()}if(t.id==='maint'){j.maintenance=t.checked;save()}if(t.id==='print')window.print();if(t.id==='done'){j.status='done';j.completed=today();j.maintenance=true;save()}if(t.id==='cancel'&&confirm('Bu randevu iptal edilsin mi?')){j.status='cancel';save()}}
 }
 window.addEventListener('hashchange',render);window.addEventListener('storage',render);render();
