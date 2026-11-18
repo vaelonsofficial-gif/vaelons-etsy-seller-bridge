@@ -1,0 +1,37 @@
+<!doctype html><html lang="tr"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>İş Bitti</title><style>*{box-sizing:border-box}body{font:17px/1.5 system-ui;color:#16352f;background:#f1f5ef;max-width:820px;margin:auto;padding:20px}header,main{background:white;padding:20px;border-radius:16px;margin:12px 0}h1,h2,h3{margin:0 0 12px}nav,.cards{display:flex;gap:10px;flex-wrap:wrap}.button,button,nav a{display:inline-block;padding:10px 14px;background:#16584c;border:0;border-radius:8px;color:white;text-decoration:none;font:inherit;margin:3px;cursor:pointer}label{display:block;margin:8px 0}input:not([type=checkbox]){display:block;width:100%;padding:10px;font:inherit}form{margin:16px 0;padding:12px;background:#f6f8f5}footer{font-size:14px}@media print{header,footer,.screen,button{display:none!important}body,main{background:white;padding:0}}</style><header><h1>İş Bitti</h1><nav><a href="#">Ana ekran</a><a href="#customers">Müşteriler</a><a href="#list/active">Randevular</a><a href="#maintenance">Bakım</a></nav></header><main></main><footer>Kayıtlar bu tarayıcıda saklanır.</footer><script>
+const key='is-bitti-yerel-v1', root=document.querySelector('main');
+const fmt=n=>new Intl.NumberFormat('tr-TR',{style:'currency',currency:'TRY'}).format(n);
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const uid=()=>crypto.getRandomValues(new Uint32Array(4)).join('-');
+const labels={active:'Devam eden',done:'Yapılan işler',cancel:'İptal edilen'};
+function jobsFor(db,type){return db.jobs.filter(j=>type==='all'||j.status===type).sort((a,b)=>a.date.localeCompare(b.date))}
+function anniversary(day){const [y,m,d]=day.slice(0,10).split('-').map(Number);return [y+1,String(m).padStart(2,'0'),String(Math.min(d,new Date(y+1,m,0).getDate())).padStart(2,'0')].join('-')}
+function today(){const d=new Date();return [d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-')}
+const btn=(label,path)=>'<a class="button" href="#'+path+'">'+esc(label)+'</a>';
+const field=(label,name,type='text',val='',extra='required')=>'<label>'+label+'<input name="'+name+'" type="'+type+'" value="'+esc(val)+'" '+extra+'></label>';
+const form=(id,body,label)=>'<form id="'+id+'">'+body+'<button>'+label+'</button></form>';
+function render(){
+let db;try{db=JSON.parse(localStorage.getItem(key)||'{"customers":[],"jobs":[]}');if(!Array.isArray(db.jobs)||!Array.isArray(db.customers))throw Error()}catch{root.textContent='Cihazdaki kayıtlar okunamadı.';return}
+const [page,id]=location.hash.slice(1).split('/'), c=db.customers.find(x=>x.id===id),j=db.jobs.find(x=>x.id===id);
+const name=j=>db.customers.find(c=>c.id===j.customer)?.name||'Müşteri';
+const list=rows=>rows.length?rows.map(x=>btn(name(x)+' · '+x.title+' · '+x.date.replace('T',' ')+' · '+labels[x.status],'job/'+x.id)).join(''):'<p>Kayıt yok.</p>';
+let h='';
+if(page==='list'){h='<h2>'+esc(labels[id]||'Toplam iş')+'</h2>'+list(jobsFor(db,id))}
+else if(page==='customers'){h='<h2>Müşteriler</h2>'+db.customers.map(c=>btn(c.name,'customer/'+c.id)).join('')+form('customer',field('Müşteri adı','name')+field('WhatsApp numarası (isteğe bağlı)','phone','tel','',''),'Müşteri ekle')}
+else if(page==='customer'&&c){h='<h2>'+esc(c.name)+'</h2>'+form('book',field('Yapılacak iş','title')+field('Randevu tarihi ve saati','date','datetime-local'),'Randevu oluştur')+'<h3>Müşteri geçmişi</h3>'+list(jobsFor(db,'all').filter(x=>x.customer===id))}
+else if(page==='maintenance'){let rows=db.jobs.filter(x=>x.maintenance&&x.completed).sort((a,b)=>a.completed.localeCompare(b.completed));h='<h2>Yıllık bakım hatırlatmaları</h2>'+ (rows.map(x=>btn((anniversary(x.completed)<=today()?'Bakım zamanı · ':'')+anniversary(x.completed)+' · '+name(x)+' · '+x.title,'job/'+x.id)).join('')||'<p>Bakım kaydı yok.</p>')}
+else if(page==='job'&&j){let phone=String(db.customers.find(x=>x.id===j.customer)?.phone||'').replace(/\D/g,'');if(/^0\d{10}$/.test(phone))phone='90'+phone.slice(1);if(/^\d{10}$/.test(phone))phone='90'+phone;
+h='<article><h2>'+esc(j.title)+'</h2><p>'+esc(name(j))+' · '+esc(labels[j.status])+'</p><p>Randevu '+esc(j.date.replace('T',' '))+'</p>'+(j.completed?'<p>Tamamlanma '+esc(j.completed)+'</p>':'')+'<section class="'+(j.printMaterials?'':'screen')+'"><h3>Malzemeler</h3>'+j.materials.map((m,i)=>'<div>'+esc(m.name)+' · '+m.qty+' × '+fmt(m.price)+' = '+fmt(m.qty*m.price)+' <button class="screen" data-edit="'+i+'">Düzenle</button></div>').join('')+'<p>Toplam '+fmt(j.materials.reduce((s,m)=>s+m.qty*m.price,0))+'</p></section></article><div class="screen">'+form('material',field('Malzeme adı','name')+field('Miktar','qty','number','1','required step="any" min="0.000001"')+field('Birim bedeli (₺)','price','number','','required step="0.01" min="0"'),'Malzemeyi kaydet')+'<label><input type="checkbox" id="include" '+(j.printMaterials?'checked':'')+'> PDF’de malzemeleri göster</label><button id="print">Yazdır / PDF kaydet</button> '+(phone?'<a class="button" target="_blank" rel="noopener" href="https://wa.me/'+phone+'?text='+encodeURIComponent('Merhaba '+name(j)+', '+j.title+' hakkında size ulaşıyorum.')+'">WhatsApp mesajı hazırla</a>':'')+(j.status==='active'?form('move',field('Yeni tarih ve saat','date','datetime-local',j.date),'Yeniden planla')+'<button id="done">İş yapıldı</button> <button id="cancel">Randevuyu iptal et</button>':'')+(j.status==='done'?'<label><input id="maint" type="checkbox" '+(j.maintenance?'checked':'')+'> Bir yıl sonra bakım hatırlat</label>':'')+'</div>'}
+else{h='<h2>İş takibi</h2><div class="cards">'+['all','active','done'].map(k=>btn((labels[k]||'Toplam iş')+' · '+jobsFor(db,k).length,'list/'+k)).join('')+'</div>'}
+root.innerHTML=h;
+let editing=null;function save(path){try{localStorage.setItem(key,JSON.stringify(db))}catch{alert('Kayıt bu cihaza kaydedilemedi.');render();return}if(path)location.hash=path;render()}
+root.onsubmit=e=>{e.preventDefault();let f=e.target,d=new FormData(f),v=n=>String(d.get(n)||'').trim();if(f.elements.name&&!v('name')||f.elements.title&&!v('title'))return;
+if(f.id==='customer'){let x={id:uid(),name:v('name'),phone:v('phone')};db.customers.push(x);save('customer/'+x.id)}
+if(f.id==='book'){let x={id:uid(),customer:id,title:v('title'),date:v('date'),status:'active',materials:[],printMaterials:true};db.jobs.push(x);save('job/'+x.id)}
+if(f.id==='move'){j.date=v('date');save()}
+if(f.id==='material'){let m={name:v('name'),qty:Number(v('qty')),price:Number(v('price'))};if(editing===null)j.materials.push(m);else j.materials[editing]=m;save()}};
+root.onclick=e=>{let t=e.target;if(t.dataset.edit!==undefined){editing=Number(t.dataset.edit);let f=document.querySelector('#material');for(let [k,v] of Object.entries(j.materials[editing]))f.elements[k].value=v;f.elements.name.focus()}
+if(t.id==='include'){j.printMaterials=t.checked;save()}if(t.id==='maint'){j.maintenance=t.checked;save()}if(t.id==='print')window.print();if(t.id==='done'){j.status='done';j.completed=today();j.maintenance=true;save()}if(t.id==='cancel'&&confirm('Bu randevu iptal edilsin mi?')){j.status='cancel';save()}}
+}
+window.addEventListener('hashchange',render);window.addEventListener('storage',render);render();
+</script></html>
