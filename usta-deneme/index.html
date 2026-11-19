@@ -44,7 +44,7 @@ nav{background:#19241e}nav a{color:#b6c2b9}nav a[aria-current]{background:#303e3
 .customer-delete{position:absolute;right:0;inset-block:0;width:72px;background:#873b3d;color:#fff;border-radius:0;margin:0}
 .customer-row.is-open .customer-front{transform:translateX(-72px)}
 @media(prefers-reduced-motion:reduce){.customer-front{transition:none}}
-}</style><header><h1>İş Bitti</h1><nav><a href="#"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10 12 3l9 7v11h-6v-7H9v7H3z"/></svg>Ana ekran</a><a href="#customers"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15 20H3v-2a6 6 0 0 1 12 0z M12 7a3 3 0 1 1-6 0 3 3 0 0 1 6 0z M16 5a3 3 0 0 1 0 6 M18 14q3 1 3 5"/></svg>Müşteriler</a><a href="#week"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16v15H4z M4 11h16 M8 3v5 M16 3v5"/></svg>Randevular</a><a href="#maintenance"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7a8 8 0 1 0 0 10 M20 3v5h-5"/></svg>Takip</a></nav></header><p class="demo-note">Usta denemesi · Kayıtlar yalnızca bu açık sayfada durur. Devam etmek için çıkmadan önce ana ekrandan yedek alın.</p><main></main><footer>İş Bitti · Usta denemesi</footer><script>
+}</style><header><h1>İş Bitti</h1><nav><a href="#"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10 12 3l9 7v11h-6v-7H9v7H3z"/></svg>Ana ekran</a><a href="#customers"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15 20H3v-2a6 6 0 0 1 12 0z M12 7a3 3 0 1 1-6 0 3 3 0 0 1 6 0z M16 5a3 3 0 0 1 0 6 M18 14q3 1 3 5"/></svg>Müşteriler</a><a href="#week"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16v15H4z M4 11h16 M8 3v5 M16 3v5"/></svg>Randevular</a><a href="#maintenance"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7a8 8 0 1 0 0 10 M20 3v5h-5"/></svg>Takip</a></nav></header><p class="demo-note">Uzun süreli usta denemesi · Tarayıcı verilerini silmeden veya cihaz değiştirmeden önce kayıtlarınızı yedekleyin.</p><main></main><footer><button type="button" hidden id="lock-account">Oturumu kapat</button> İş Bitti · Usta denemesi</footer><script>
 const key='is-bitti-tanitim-v1', root=document.querySelector('main');
 const fmt=n=>new Intl.NumberFormat('tr-TR',{style:'currency',currency:'TRY'}).format(n);
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -1012,7 +1012,8 @@ function confirmAppointmentTime(db, date, currentJobId) {
     '\n\nBu saati yine de kaydetmek istiyor musun?');
 }
 function render(){
-let db;try{db=JSON.parse(demoStore.getItem(key)||'{"customers":[],"jobs":[]}');if(!Array.isArray(db.jobs)||!Array.isArray(db.customers))throw Error()}catch{root.textContent='Cihazdaki kayıtlar okunamadı.';return}
+if(!session)return;
+const db=structuredClone(session.records);
 const [page,id]=location.hash.slice(1).split('/'), c=db.customers.find(x=>x.id===id && !x.removedFromList),j=db.jobs.find(x=>x.id===id);
 const name=j=>db.customers.find(c=>c.id===j.customer)?.name||'Müşteri';
 const list = rows => rows.length ? rows.map(x =>
@@ -1069,7 +1070,7 @@ root.onchange = async e => {
   if (!file) return;
   try {
     const backup = readBackup(await file.text());
-    const latest = JSON.parse(demoStore.getItem(key) || '{"customers":[],"jobs":[]}');
+    const latest = structuredClone(session.records);
     const customerIds = new Set(latest.customers.map(c => c.id));
     const jobIds = new Set(latest.jobs.map(j => j.id));
     const customers = backup.customers.filter(c => !customerIds.has(c.id));
@@ -1078,7 +1079,7 @@ root.onchange = async e => {
     if (!confirm(customers.length+' müşteri ve '+jobs.length+' iş eklensin mi? Mevcut kayıtlar korunur.')) return;
     latest.customers.push(...customers);
     latest.jobs.push(...jobs);
-    demoStore.setItem(key, JSON.stringify(latest));
+    if(!await persist(latest))return;
     render();
     alert('Kayıtlar eklendi.');
   } catch { alert('Yedek yüklenemedi. Dosyayı ve cihazdaki boş alanı kontrol edin.'); }
@@ -1097,7 +1098,7 @@ function changeCheckpoint(element, patch) {
   job.followups={...job.followups,[point.index]:{date:point.date,checked:point.checked,...patch(point)}};
   save();
 }
-let editing=null;function save(path){try{demoStore.setItem(key,JSON.stringify(db))}catch{alert('Kayıt bu cihaza kaydedilemedi.');render();return}if(path)location.hash=path;render()}
+let editing=null;async function save(path){if(await persist(db)){if(path)location.hash=path;render()}else render()}
 root.onsubmit=e=>{e.preventDefault();let f=e.target,d=new FormData(f),v=n=>String(d.get(n)||'').trim();if(f.elements.name&&!v('name')||f.elements.title&&!f.elements.title.disabled&&!v('title'))return;
 if(f.id==='work-hours'){
   const hours=workDays.map((_,i)=>({open:d.has('open'+i),start:f.elements['start'+i].value || '00:00',end:f.elements['end'+i].value || '23:59'}));
@@ -1146,10 +1147,93 @@ if(t.hasAttribute('data-remove')){
 if(t.dataset.check==='toggle'){changeCheckpoint(t,p=>({checked:p.checked?'':today()}));return}if(t.id==='backup'){downloadBackup(db);return}if(t.dataset.edit!==undefined){editing=Number(t.dataset.edit);let f=document.querySelector('#material');for(let [k,v] of ['name','qty','price'].map(k=>[k,j.materials[editing][k]]))f.elements[k].value=v;f.elements.name.focus()}
 if(t.id==='include'){j.printMaterials=t.checked;save()}if(t.id==='print')window.print();if(t.id==='done'){j.status='done';j.completed=today();j.maintenance=!j.serviceType || j.serviceType.toLocaleLowerCase('tr-TR').includes('bakım');save()}if(t.id==='cancel'&&confirm('Bu randevu iptal edilsin mi?')){j.status='cancel';save()}}
 }
-let demoRecords=JSON.stringify({customers:[],jobs:[]});
-const demoStore={getItem(){return demoRecords},setItem(_,value){demoRecords=value}};
-window.addEventListener('hashchange',render);window.addEventListener('storage',render);render();
+const trialPrefix='is-bitti-usta-deneme-v2/';
+const emptyRecords=()=>({customers:[],jobs:[]});
+let session=null;
+let busy=false;
+window.addEventListener('beforeunload',e=>{if(busy){e.preventDefault();e.returnValue=''}});
+const b64=bytes=>{
+  let text='';
+  for(let i=0;i<bytes.length;i+=4096)text+=String.fromCharCode(...bytes.subarray(i,i+4096));
+  return btoa(text);
+};
+const bytes=value=>Uint8Array.from(atob(value),c=>c.charCodeAt(0));
+async function deriveKey(password,salt){
+  const material=await crypto.subtle.importKey('raw',new TextEncoder().encode(password),'PBKDF2',false,['deriveKey']);
+  return crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:600000,hash:'SHA-256'},material,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+}
+async function seal(records,secret,salt){
+  const iv=crypto.getRandomValues(new Uint8Array(12));
+  const encrypted=await crypto.subtle.encrypt({name:'AES-GCM',iv},secret,new TextEncoder().encode(JSON.stringify(records)));
+  return JSON.stringify({salt:b64(salt),iv:b64(iv),data:b64(new Uint8Array(encrypted))});
+}
+async function openAccount(name,password,create){
+  const normalized=name.trim().normalize('NFKC').toLocaleLowerCase('tr-TR');
+  if(!normalized)throw Error('Kullanıcı adınızı yazın.');
+  const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(normalized));
+  const id=trialPrefix+b64(new Uint8Array(digest));
+  return navigator.locks.request(id,async()=>{
+    const raw=localStorage.getItem(id);
+    if(create && raw!==null)throw Error('Bu kullanıcı adı bu tarayıcıda kayıtlı. Giriş yap seçeneğini kullanın.');
+    if(!create && raw===null)throw Error('Bu kullanıcı bu tarayıcıda bulunamadı. İlk kez kullanıyorsanız hesap açın.');
+    if(create && password.length<8)throw Error('En az 8 karakterli bir şifre seçin.');
+    if(create){
+      const salt=crypto.getRandomValues(new Uint8Array(16)),secret=await deriveKey(password,salt),records=emptyRecords();
+      const snapshot=await seal(records,secret,salt);
+      localStorage.setItem(id,snapshot);
+      return {id,name,secret,salt,records,snapshot};
+    }
+    try{
+      const box=JSON.parse(raw),salt=bytes(box.salt),secret=await deriveKey(password,salt);
+      const plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:bytes(box.iv)},secret,bytes(box.data));
+      const records=JSON.parse(new TextDecoder().decode(plain));
+      return {id,name,secret,salt,records,snapshot:raw};
+    }catch{throw Error('Şifre veya kayıt açılamadı. Kullanıcı adınızı ve şifrenizi kontrol edin.')}
+  });
+}
+async function writeRecords(account,records){
+  return navigator.locks.request(account.id,async()=>{
+    if(localStorage.getItem(account.id)!==account.snapshot)throw Error('Bu hesap başka bir sekmede değişti. Güncel kayıtlar için yeniden giriş yapın.');
+    const snapshot=await seal(records,account.secret,account.salt);
+    localStorage.setItem(account.id,snapshot);
+    account.snapshot=snapshot;account.records=records;
+  });
+}
+async function persist(records){
+  if(busy)return false;
+  busy=true;root.inert=true;
+  try{await writeRecords(session,records);return true}
+  catch(error){alert(error.name==='QuotaExceededError'?'Tarayıcıda yer kalmadı. Kayıt eklenemedi.':error.message);return false}
+  finally{busy=false;root.inert=false}
+}
+function loginScreen(create=false){
+  document.querySelector('nav').hidden=true;
+  document.getElementById('lock-account').hidden=true;
+  root.onchange=null;root.oninput=null;root.onclick=null;
+  root.innerHTML='<section class="panel"><h2>'+(create?'Deneme hesabı aç':'Usta girişi')+'</h2><p>Hesap ve kayıtlar bu cihazın tarayıcısında saklanır. Yeniden açarken aynı tarayıcıyı kullanın.</p><form id="trial-account"><label>Kullanıcı adı<input name="user" required maxlength="80" autocomplete="username" autocapitalize="none" spellcheck="false"></label><label>Şifre<input type="password" name="password" required autocomplete="'+(create?'new-password':'current-password')+'"></label>'+(create?'<label>Şifre tekrar<input type="password" name="repeat" required autocomplete="new-password"></label><p>Şifrenizi saklayın. Şifre sıfırlama yoktur.</p>':'')+'<p role="alert" id="login-error"></p><button>'+(create?'Hesabı oluştur':'Giriş yap')+'</button></form><button type="button" id="switch-mode">'+(create?'Hesabım var · Giriş yap':'İlk kullanım · Hesap aç')+'</button></section>';
+  document.getElementById('switch-mode').onclick=()=>loginScreen(!create);
+  root.onsubmit=async e=>{
+    e.preventDefault();if(busy)return;
+    const f=e.target,d=new FormData(f),password=d.get('password');
+    const error=document.getElementById('login-error');
+    if(create && password!==d.get('repeat')){error.textContent='Şifreler eşleşmiyor.';return}
+    busy=true;root.inert=true;
+    try{
+      if(!crypto.subtle || !navigator.locks)throw Error('Bu deneme için bağlantıyı güncel Safari veya Chrome’da açın.');
+      session=await openAccount(d.get('user'),password,create);
+      document.querySelector('nav').hidden=false;
+      const lock=document.getElementById('lock-account');lock.hidden=false;lock.textContent=session.name+' · Oturumu kapat';
+      root.inert=false;render();
+    }catch(e){error.textContent=e.message || 'Tarayıcı depolamasına erişilemedi.'}
+    finally{busy=false;root.inert=false}
+  };
+}
+document.getElementById('lock-account').onclick=()=>{if(!busy){session=null;location.hash='';loginScreen()}};
+window.addEventListener('hashchange',()=>{if(session)render()});
+window.addEventListener('pageshow',e=>{if(e.persisted)location.reload()});
+loginScreen();
 </script></html>
+
 
 
 
