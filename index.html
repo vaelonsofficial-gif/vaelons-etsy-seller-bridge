@@ -87,6 +87,17 @@ function readBackup(text) {
   return records;
 }
 const statusIcons={"all":"<svg aria-hidden=\"true\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4 7h16v13H4z M9 7V4h6v3 M4 12q8 4 16 0\"/></svg>","active":"<svg aria-hidden=\"true\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 3a9 9 0 1 0 .01 0 M12 7v6l4 2\"/></svg>","done":"<svg aria-hidden=\"true\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4 12l5 5L20 6\"/></svg>","cancel":"<svg aria-hidden=\"true\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5 5l14 14 M19 5 5 19\"/></svg>"};
+function confirmAppointmentTime(db, date, currentJobId) {
+  const conflicts = db.jobs.filter(job => job.status === 'active' &&
+    job.id !== currentJobId && job.date.slice(0, 16) === date.slice(0, 16));
+  if (!conflicts.length) return true;
+  const appointments = conflicts.map(job => {
+    const customer = db.customers.find(person => person.id === job.customer);
+    return (customer?.name || 'Müşteri') + ' · ' + job.title;
+  });
+  return confirm('Aynı saatte kayıtlı randevu var.\n\n' + appointments.join('\n') +
+    '\n\nBu saati yine de kaydetmek istiyor musun?');
+}
 function render(){
 let db;try{db=JSON.parse(localStorage.getItem(key)||'{"customers":[],"jobs":[]}');if(!Array.isArray(db.jobs)||!Array.isArray(db.customers))throw Error()}catch{root.textContent='Cihazdaki kayıtlar okunamadı.';return}
 const [page,id]=location.hash.slice(1).split('/'), c=db.customers.find(x=>x.id===id),j=db.jobs.find(x=>x.id===id);
@@ -137,9 +148,9 @@ let editing=null;function save(path){try{localStorage.setItem(key,JSON.stringify
 root.onsubmit=e=>{e.preventDefault();let f=e.target,d=new FormData(f),v=n=>String(d.get(n)||'').trim();if(f.elements.name&&!v('name')||f.elements.title&&!v('title'))return;
 if(f.id==='edit-customer'){c.name=v('name');c.phone=v('phone');c.address=v('address');save();return}
 if(f.id==='customer'){let x={id:uid(),name:v('name'),phone:v('phone'),address:v('address')};db.customers.push(x);save('customer/'+x.id)}
-if(f.id==='book'){let x={id:uid(),customer:id,title:v('title'),date:v('date'),status:'active',materials:[],printMaterials:true};db.jobs.push(x);save('job/'+x.id)}
+if(f.id==='book'){if(!confirmAppointmentTime(db,v('date')))return;let x={id:uid(),customer:id,title:v('title'),date:v('date'),status:'active',materials:[],printMaterials:true};db.jobs.push(x);save('job/'+x.id)}
 if(f.id==='service-note'){j.note=v('note');save();return}
-if(f.id==='move'){j.date=v('date');save()}
+if(f.id==='move'){if(!confirmAppointmentTime(db,v('date'),j.id))return;j.date=v('date');save()}
 if(f.id==='material'){let m={name:v('name'),qty:Number(v('qty')),price:Number(v('price'))};if(editing===null)j.materials.push(m);else j.materials[editing]=m;save()}};
 root.onclick=e=>{let t=e.target;if(t.id==='backup'){downloadBackup(db);return}if(t.dataset.edit!==undefined){editing=Number(t.dataset.edit);let f=document.querySelector('#material');for(let [k,v] of ['name','qty','price'].map(k=>[k,j.materials[editing][k]]))f.elements[k].value=v;f.elements.name.focus()}
 if(t.id==='include'){j.printMaterials=t.checked;save()}if(t.id==='maint'){j.maintenance=t.checked;save()}if(t.id==='print')window.print();if(t.id==='done'){j.status='done';j.completed=today();j.maintenance=true;save()}if(t.id==='cancel'&&confirm('Bu randevu iptal edilsin mi?')){j.status='cancel';save()}}
