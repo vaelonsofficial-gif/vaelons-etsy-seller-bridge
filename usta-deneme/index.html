@@ -36,7 +36,15 @@ nav{background:#19241e}nav a{color:#b6c2b9}nav a[aria-current]{background:#303e3
     footer{padding-bottom:8px}
   }
 }
-</style><header><h1>İş Bitti</h1><nav><a href="#"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10 12 3l9 7v11h-6v-7H9v7H3z"/></svg>Ana ekran</a><a href="#customers"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15 20H3v-2a6 6 0 0 1 12 0z M12 7a3 3 0 1 1-6 0 3 3 0 0 1 6 0z M16 5a3 3 0 0 1 0 6 M18 14q3 1 3 5"/></svg>Müşteriler</a><a href="#week"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16v15H4z M4 11h16 M8 3v5 M16 3v5"/></svg>Randevular</a><a href="#maintenance"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7a8 8 0 1 0 0 10 M20 3v5h-5"/></svg>Takip</a></nav></header><p class="demo-note">Usta denemesi · Kayıtlar yalnızca bu açık sayfada durur. Devam etmek için çıkmadan önce ana ekrandan yedek alın.</p><main></main><footer>İş Bitti · Usta denemesi</footer><script>
+@media screen{
+.customer-row{position:relative;overflow:hidden;border-radius:12px;margin:8px 0;touch-action:pan-y}
+.customer-front{display:flex;align-items:stretch;position:relative;background:#1b2520;border:1px solid var(--line);border-radius:12px;transition:transform .18s ease}
+.customer-link{flex:1;min-width:0;padding:15px;overflow-wrap:anywhere}
+.row-actions{flex:0 0 46px;background:transparent;color:#b7e7c9;margin:0;padding:0;font-size:22px}
+.customer-delete{position:absolute;right:0;inset-block:0;width:72px;background:#873b3d;color:#fff;border-radius:0;margin:0}
+.customer-row.is-open .customer-front{transform:translateX(-72px)}
+@media(prefers-reduced-motion:reduce){.customer-front{transition:none}}
+}</style><header><h1>İş Bitti</h1><nav><a href="#"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10 12 3l9 7v11h-6v-7H9v7H3z"/></svg>Ana ekran</a><a href="#customers"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15 20H3v-2a6 6 0 0 1 12 0z M12 7a3 3 0 1 1-6 0 3 3 0 0 1 6 0z M16 5a3 3 0 0 1 0 6 M18 14q3 1 3 5"/></svg>Müşteriler</a><a href="#week"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16v15H4z M4 11h16 M8 3v5 M16 3v5"/></svg>Randevular</a><a href="#maintenance"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7a8 8 0 1 0 0 10 M20 3v5h-5"/></svg>Takip</a></nav></header><p class="demo-note">Usta denemesi · Kayıtlar yalnızca bu açık sayfada durur. Devam etmek için çıkmadan önce ana ekrandan yedek alın.</p><main></main><footer>İş Bitti · Usta denemesi</footer><script>
 const key='is-bitti-tanitim-v1', root=document.querySelector('main');
 const fmt=n=>new Intl.NumberFormat('tr-TR',{style:'currency',currency:'TRY'}).format(n);
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -51,10 +59,56 @@ const form=(id,body,label)=>'<form id="'+id+'">'+body+'<button>'+label+'</button
 function customerResults(customers, query) {
   const needle = query.trim().toLocaleLowerCase('tr-TR');
   const digits = /^[+\d\s()-]+$/.test(needle) ? needle.replace(/\D/g, '') : '';
-  const matches = customers.filter(c => c.name.toLocaleLowerCase('tr-TR').includes(needle)
+  const matches = customers.filter(c=>!c.removedFromList).filter(c => c.name.toLocaleLowerCase('tr-TR').includes(needle)
     || (digits && (c.phone || '').replace(/\D/g, '').includes(digits)));
-  return matches.map(c => btn(c.name, 'customer/' + c.id)).join('')
+  return matches.map(c=>'<div class="customer-row"><button type="button" class="customer-delete" data-remove="'+esc(c.id)+'" hidden>Sil</button><div class="customer-front"><a class="customer-link" href="#customer/'+encodeURIComponent(c.id)+'">'+esc(c.name)+'</a><button type="button" class="row-actions" aria-expanded="false" aria-label="'+esc(c.name)+' için işlemler">⋯</button></div></div>').join('')
     || (needle ? '<p>Eşleşen müşteri yok.</p>' : '<p>Henüz müşteri kaydı yok.</p>');
+}
+function showCustomerActions(row, open){
+  for(const other of root.querySelectorAll('.customer-row.is-open')){
+    other.classList.remove('is-open');
+    other.querySelector('.customer-delete').hidden=true;
+    other.querySelector('.row-actions').setAttribute('aria-expanded','false');
+  }
+  if(row && open){
+    row.classList.add('is-open');
+    row.querySelector('.customer-delete').hidden=false;
+    row.querySelector('.row-actions').setAttribute('aria-expanded','true');
+  }
+}
+function swipeDirection(dx,dy){
+  return Math.abs(dx)>=42 && Math.abs(dx)>Math.abs(dy)*1.5 ? Math.sign(dx) : 0;
+}
+let customerTouch=null, suppressCustomerClick=null;
+root.addEventListener('touchstart',e=>{
+  const row=e.target.closest('.customer-row'), touch=e.touches[0];
+  customerTouch=row && e.touches.length===1 ? {row,x:touch.clientX,y:touch.clientY} : null;
+  suppressCustomerClick=null;
+},{passive:true});
+root.addEventListener('touchcancel',()=>{customerTouch=null},{passive:true});
+root.addEventListener('touchend',e=>{
+  const start=customerTouch;
+  customerTouch=null;
+  if(!start || !e.changedTouches.length)return;
+  const end=e.changedTouches[0], direction=swipeDirection(end.clientX-start.x,end.clientY-start.y);
+  if(!direction)return;
+  showCustomerActions(start.row,direction<0);
+  suppressCustomerClick={row:start.row,until:Date.now()+600};
+},{passive:true});
+root.addEventListener('click',e=>{
+  if(suppressCustomerClick?.row.contains(e.target) && Date.now()<suppressCustomerClick.until){
+    e.preventDefault();e.stopImmediatePropagation();suppressCustomerClick=null;
+  }
+},true);
+function removeCustomer(db,id){
+  const index=db.customers.findIndex(customer=>customer.id===id && !customer.removedFromList);
+  if(index<0)return false;
+  const customer=db.customers[index], linked=db.jobs.some(job=>job.customer===id);
+  const message=linked ? customer.name+' müşteri listesinden kaldırılsın mı? Bağlı randevular ve geçmiş işler korunacak.' : customer.name+' silinsin mi?';
+  if(!confirm(message))return false;
+  if(linked)customer.removedFromList=true;
+  else db.customers.splice(index,1);
+  return true;
 }
 const addressField = value => field('Servis adresi (isteğe bağlı)', 'address', 'text', value || '', '');
 function addressCard(customer) {
@@ -929,7 +983,7 @@ function weekPlanner(db, rawDay, list){
   const booked=new Set(daily.map(job=>job.date.slice(11,16)));
   const choices=Array.from({length:24},(_,h)=>String(h).padStart(2,'0')+':00')
     .filter(time=>duringHours(range,time) && !booked.has(time)).map(time=>'<option value="'+time+'"></option>').join('');
-  const people=db.customers.slice().sort((a,b)=>a.name.localeCompare(b.name,'tr'))
+  const people=db.customers.filter(person=>!person.removedFromList).sort((a,b)=>a.name.localeCompare(b.name,'tr'))
     .map(c=>'<option value="'+esc(c.id)+'">'+esc(c.name)+'</option>').join('');
   const booking=people ? serviceForm(false,{day,people,choices}) : btn('İlk müşteriyi ekle','new-for-day/'+day);
   return '<h2>Haftalık randevular</h2>'+workHoursForm(db)+'<div class="week-heading"><a href="#week/'+dayKey(shiftDay(selected,-7))+'" aria-label="Önceki hafta">‹</a><strong>'+shortDate.format(monday)+' – '+shortDate.format(days[6])+' '+days[6].getFullYear()+'</strong><a href="#week/'+dayKey(shiftDay(selected,7))+'" aria-label="Sonraki hafta">›</a></div>'+
@@ -959,7 +1013,7 @@ function confirmAppointmentTime(db, date, currentJobId) {
 }
 function render(){
 let db;try{db=JSON.parse(demoStore.getItem(key)||'{"customers":[],"jobs":[]}');if(!Array.isArray(db.jobs)||!Array.isArray(db.customers))throw Error()}catch{root.textContent='Cihazdaki kayıtlar okunamadı.';return}
-const [page,id]=location.hash.slice(1).split('/'), c=db.customers.find(x=>x.id===id),j=db.jobs.find(x=>x.id===id);
+const [page,id]=location.hash.slice(1).split('/'), c=db.customers.find(x=>x.id===id && !x.removedFromList),j=db.jobs.find(x=>x.id===id);
 const name=j=>db.customers.find(c=>c.id===j.customer)?.name||'Müşteri';
 const list = rows => rows.length ? rows.map(x =>
   '<a class="job-row" href="#job/'+esc(x.id)+'"><span class="job-time">'+esc(x.date.slice(11,16))+'<small>'+esc(x.date.slice(8,10)+'.'+x.date.slice(5,7))+'</small></span><span class="job-label"><b>'+esc(name(x))+'</b><small>'+esc(x.title)+'</small></span><span class="pill '+x.status+'">'+esc(labels[x.status])+'</span></a>').join('') : '<p>Kayıt yok.</p>';
@@ -1078,12 +1132,24 @@ if(f.id==='book' || f.id==='record-service'){
 if(f.id==='service-note'){j.note=v('note');save();return}
 if(f.id==='move'){if(!confirmAppointmentTime(db,v('date'),j.id))return;j.date=v('date');save()}
 if(f.id==='material'){let m={name:v('name'),qty:Number(v('qty')),price:Number(v('price'))};if(editing===null)j.materials.push(m);else j.materials[editing]=m;save()}};
-root.onclick=e=>{let t=e.target;if(t.dataset.check==='toggle'){changeCheckpoint(t,p=>({checked:p.checked?'':today()}));return}if(t.id==='backup'){downloadBackup(db);return}if(t.dataset.edit!==undefined){editing=Number(t.dataset.edit);let f=document.querySelector('#material');for(let [k,v] of ['name','qty','price'].map(k=>[k,j.materials[editing][k]]))f.elements[k].value=v;f.elements.name.focus()}
+root.onclick=e=>{let t=e.target;
+if(t.closest('.row-actions')){
+ const row=t.closest('.customer-row'),open=!row.classList.contains('is-open');
+ showCustomerActions(row,open);
+ if(open)row.querySelector('.customer-delete').focus({preventScroll:true});
+ return;
+}
+if(t.hasAttribute('data-remove')){
+ if(removeCustomer(db,t.dataset.remove))save();
+ return;
+}
+if(t.dataset.check==='toggle'){changeCheckpoint(t,p=>({checked:p.checked?'':today()}));return}if(t.id==='backup'){downloadBackup(db);return}if(t.dataset.edit!==undefined){editing=Number(t.dataset.edit);let f=document.querySelector('#material');for(let [k,v] of ['name','qty','price'].map(k=>[k,j.materials[editing][k]]))f.elements[k].value=v;f.elements.name.focus()}
 if(t.id==='include'){j.printMaterials=t.checked;save()}if(t.id==='print')window.print();if(t.id==='done'){j.status='done';j.completed=today();j.maintenance=!j.serviceType || j.serviceType.toLocaleLowerCase('tr-TR').includes('bakım');save()}if(t.id==='cancel'&&confirm('Bu randevu iptal edilsin mi?')){j.status='cancel';save()}}
 }
 let demoRecords=JSON.stringify({customers:[],jobs:[]});
 const demoStore={getItem(){return demoRecords},setItem(_,value){demoRecords=value}};
 window.addEventListener('hashchange',render);window.addEventListener('storage',render);render();
 </script></html>
+
 
 
