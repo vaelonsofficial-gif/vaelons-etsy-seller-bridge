@@ -51,6 +51,20 @@ function whatsAppMessage(job, customerName, phone) {
   return '<details><summary>WhatsApp randevu hatırlatması</summary><p>' + esc(message) +
     '</p>' + link + 'WhatsApp’ta aç</a></details>';
 }
+const serviceTypes = ['Periyodik bakım','Arıza tespiti','Onarım','Kurulum ve montaj','Keşif ve ölçüm','Kontrol ve test','Parça değişimi','Temizlik ve bakım','Diğer hizmet'];
+function serviceForm(completed) {
+  const now = today() + 'T' + new Date().toTimeString().slice(0,5);
+  const fields = field('Hizmet türü (seç veya yaz)','serviceType','text','','list="service-types"') +
+    field('İşin kısa adı','title') +
+    field('Cihaz, sistem veya çalışma alanı (isteğe bağlı)','subject','text','','') +
+    field(completed ? 'Servis tarihi ve saati' : 'Randevu tarihi ve saati','date','datetime-local',completed ? now : '',completed ? 'required max="'+now+'"' : 'required') +
+    '<label>Müşteri talebi veya şikâyeti (isteğe bağlı)<textarea name="request" rows="2"></textarea></label>';
+  return form(completed ? 'record-service' : 'book', fields, completed ? 'Yapılan servisi kaydet' : 'Randevu oluştur');
+}
+function serviceDescription(job) {
+  return [['Hizmet türü',job.serviceType],['Cihaz / çalışma alanı',job.subject],['Müşteri talebi',job.request]]
+    .filter(([,value]) => value).map(([label,value]) => '<p><b>'+label+'</b><br>'+esc(value)+'</p>').join('');
+}
 function serviceNote(job) {
   const note = job.note || '';
   const label = note ? 'Servis notunu düzenle' : 'Servis notu ekle';
@@ -91,7 +105,7 @@ function readBackup(text) {
   for (const j of records.jobs) {
     if (!j || !validId(j.id) || jobs.has(j.id) || !customers.has(j.customer) ||
         !nonempty(j.title) || !nonempty(j.date) || !/^\d{4,}-\d\d-\d\dT\d\d:\d\d/.test(j.date) ||
-        !Object.hasOwn(labels,j.status) || !Array.isArray(j.materials) || (j.note != null && typeof j.note !== 'string') ||
+        !Object.hasOwn(labels,j.status) || !Array.isArray(j.materials) || ['serviceType','subject','request'].some(k => j[k] != null && typeof j[k] !== 'string') || (j.note != null && typeof j.note !== 'string') ||
         (j.completed != null && (typeof j.completed !== 'string' || !/^\d{4}-\d\d-\d\d$/.test(j.completed))) ||
         j.materials.some(m => !m || !nonempty(m.name) || !Number.isFinite(m.qty) || m.qty <= 0 ||
           !Number.isFinite(m.price) || m.price < 0)) reject();
@@ -120,10 +134,10 @@ const list = rows => rows.length ? rows.map(x =>
 let h='';
 if(page==='list'){h='<h2>'+esc(labels[id]||'Toplam iş')+'</h2>'+list(jobsFor(db,id))}
 else if(page==='customers'){h='<h2>Müşteriler</h2><label>Müşteri ara<input id="customer-search" type="search" placeholder="Ad veya telefon numarası"></label><div id="customer-results">'+customerResults(db.customers,'')+'</div>'+form('customer',field('Müşteri adı','name')+field('WhatsApp numarası (isteğe bağlı)','phone','tel','','')+addressField(''),'Müşteri ekle')}
-else if(page==='customer'&&c){h='<h2>'+esc(c.name)+'</h2>'+addressCard(c)+'<details><summary>Müşteri bilgilerini düzenle</summary>'+form('edit-customer',field('Müşteri adı','name','text',c.name)+field('Telefon','phone','tel',c.phone,'')+addressField(c.address),'Değişiklikleri kaydet')+'</details>'+form('book',field('Yapılacak iş','title')+field('Randevu tarihi ve saati','date','datetime-local'),'Randevu oluştur')+'<h3>Müşteri geçmişi</h3>'+list(jobsFor(db,'all').filter(x=>x.customer===id))}
+else if(page==='customer'&&c){h='<h2>'+esc(c.name)+'</h2>'+addressCard(c)+'<details><summary>Müşteri bilgilerini düzenle</summary>'+form('edit-customer',field('Müşteri adı','name','text',c.name)+field('Telefon','phone','tel',c.phone,'')+addressField(c.address),'Değişiklikleri kaydet')+'</details>'+'<datalist id="service-types">'+serviceTypes.map(t=>'<option value="'+esc(t)+'"></option>').join('')+'</datalist><h3>Randevu oluştur</h3>'+serviceForm(false)+'<details><summary>Yapılmış servis kaydı ekle</summary>'+serviceForm(true)+'</details>'+'<h3>Müşteri geçmişi</h3>'+list(jobsFor(db,'all').filter(x=>x.customer===id))}
 else if(page==='maintenance'){let rows=db.jobs.filter(x=>x.maintenance&&x.completed).sort((a,b)=>a.completed.localeCompare(b.completed));h='<h2>Yıllık bakım hatırlatmaları</h2>'+ (rows.map(x=>btn((anniversary(x.completed)<=today()?'Bakım zamanı · ':'')+anniversary(x.completed)+' · '+name(x)+' · '+x.title,'job/'+x.id)).join('')||'<p>Bakım kaydı yok.</p>')}
 else if(page==='job'&&j){let phone=String(db.customers.find(x=>x.id===j.customer)?.phone||'').replace(/\D/g,'');if(/^0\d{10}$/.test(phone))phone='90'+phone.slice(1);if(/^\d{10}$/.test(phone))phone='90'+phone;
-h='<article><h2>'+esc(j.title)+'</h2><p>'+esc(name(j))+' · '+esc(labels[j.status])+'</p><p>Randevu '+esc(j.date.replace('T',' '))+'</p>'+addressCard(db.customers.find(customer => customer.id === j.customer))+(j.completed?'<p>Tamamlanma '+esc(j.completed)+'</p>':'')+'<section class="'+(j.printMaterials?'':'screen')+'"><h3>Malzemeler</h3>'+j.materials.map((m,i)=>'<div>'+esc(m.name)+' · '+m.qty+' × '+fmt(m.price)+' = '+fmt(m.qty*m.price)+' <button class="screen" data-edit="'+i+'">Düzenle</button></div>').join('')+'<p>Toplam '+fmt(j.materials.reduce((s,m)=>s+m.qty*m.price,0))+'</p></section></article>'+serviceNote(j)+'<div class="screen">'+form('material',field('Malzeme adı','name')+field('Miktar','qty','number','1','required step="any" min="0.000001"')+field('Birim bedeli (₺)','price','number','','required step="0.01" min="0"'),'Malzemeyi kaydet')+'<label><input type="checkbox" id="include" '+(j.printMaterials?'checked':'')+'> PDF’de malzemeleri göster</label><button id="print">Yazdır / PDF kaydet</button> '+whatsAppMessage(j,name(j),phone)+(j.status==='active'?form('move',field('Yeni tarih ve saat','date','datetime-local',j.date),'Yeniden planla')+'<button id="done">İş yapıldı</button> <button id="cancel">Randevuyu iptal et</button>':'')+(j.status==='done'?'<label><input id="maint" type="checkbox" '+(j.maintenance?'checked':'')+'> Bir yıl sonra bakım hatırlat</label>':'')+'</div>'}
+h='<article><h2>'+esc(j.title)+'</h2><p>'+esc(name(j))+' · '+esc(labels[j.status])+'</p><p>'+(j.directService===true?'Servis':'Randevu')+' '+esc(j.date.replace('T',' '))+'</p>'+serviceDescription(j)+addressCard(db.customers.find(customer => customer.id === j.customer))+(j.completed?'<p>Tamamlanma '+esc(j.completed)+'</p>':'')+'<section class="'+(j.printMaterials?'':'screen')+'"><h3>Malzemeler</h3>'+j.materials.map((m,i)=>'<div>'+esc(m.name)+' · '+m.qty+' × '+fmt(m.price)+' = '+fmt(m.qty*m.price)+' <button class="screen" data-edit="'+i+'">Düzenle</button></div>').join('')+'<p>Toplam '+fmt(j.materials.reduce((s,m)=>s+m.qty*m.price,0))+'</p></section></article>'+serviceNote(j)+'<div class="screen">'+form('material',field('Malzeme adı','name')+field('Miktar','qty','number','1','required step="any" min="0.000001"')+field('Birim bedeli (₺)','price','number','','required step="0.01" min="0"'),'Malzemeyi kaydet')+'<label><input type="checkbox" id="include" '+(j.printMaterials?'checked':'')+'> PDF’de malzemeleri göster</label><button id="print">Yazdır / PDF kaydet</button> '+whatsAppMessage(j,name(j),phone)+(j.status==='active'?form('move',field('Yeni tarih ve saat','date','datetime-local',j.date),'Yeniden planla')+'<button id="done">İş yapıldı</button> <button id="cancel">Randevuyu iptal et</button>':'')+(j.status==='done'?'<label><input id="maint" type="checkbox" '+(j.maintenance?'checked':'')+'> Bir yıl sonra bakım hatırlat</label>':'')+'</div>'}
 else{
 const upcoming = jobsFor(db,'active').filter(x=>x.date>=today()+'T'+new Date().toTimeString().slice(0,5)).slice(0,3);
 h='<section class="hero"><time>'+esc(new Intl.DateTimeFormat('tr-TR',{weekday:'long',day:'numeric',month:'long'}).format(new Date()))+'</time><h2>İş takibi</h2>'+btn('Randevu oluştur','customers')+'</section><div class="cards">'+
@@ -161,12 +175,20 @@ let editing=null;function save(path){try{localStorage.setItem(key,JSON.stringify
 root.onsubmit=e=>{e.preventDefault();let f=e.target,d=new FormData(f),v=n=>String(d.get(n)||'').trim();if(f.elements.name&&!v('name')||f.elements.title&&!v('title'))return;
 if(f.id==='edit-customer'){c.name=v('name');c.phone=v('phone');c.address=v('address');save();return}
 if(f.id==='customer'){let x={id:uid(),name:v('name'),phone:v('phone'),address:v('address')};db.customers.push(x);save('customer/'+x.id)}
-if(f.id==='book'){if(!confirmAppointmentTime(db,v('date')))return;let x={id:uid(),customer:id,title:v('title'),date:v('date'),status:'active',materials:[],printMaterials:true};db.jobs.push(x);save('job/'+x.id)}
+if(f.id==='book' || f.id==='record-service'){
+  const completed = f.id==='record-service';
+  const date = v('date');
+  if(completed && date > today()+'T'+new Date().toTimeString().slice(0,5)){alert('Yapılan servis için geçmiş bir saat seçin.');return}
+  if(!completed && !confirmAppointmentTime(db,date))return;
+  const x={id:uid(),customer:id,title:v('title'),date,status:completed?'done':'active',serviceType:v('serviceType'),subject:v('subject'),request:v('request'),materials:[],printMaterials:true};
+  if(completed){x.directService=true;x.completed=date.slice(0,10);x.maintenance=x.serviceType.toLocaleLowerCase('tr-TR').includes('bakım')}
+  db.jobs.push(x);save('job/'+x.id)
+}
 if(f.id==='service-note'){j.note=v('note');save();return}
 if(f.id==='move'){if(!confirmAppointmentTime(db,v('date'),j.id))return;j.date=v('date');save()}
 if(f.id==='material'){let m={name:v('name'),qty:Number(v('qty')),price:Number(v('price'))};if(editing===null)j.materials.push(m);else j.materials[editing]=m;save()}};
 root.onclick=e=>{let t=e.target;if(t.id==='backup'){downloadBackup(db);return}if(t.dataset.edit!==undefined){editing=Number(t.dataset.edit);let f=document.querySelector('#material');for(let [k,v] of ['name','qty','price'].map(k=>[k,j.materials[editing][k]]))f.elements[k].value=v;f.elements.name.focus()}
-if(t.id==='include'){j.printMaterials=t.checked;save()}if(t.id==='maint'){j.maintenance=t.checked;save()}if(t.id==='print')window.print();if(t.id==='done'){j.status='done';j.completed=today();j.maintenance=true;save()}if(t.id==='cancel'&&confirm('Bu randevu iptal edilsin mi?')){j.status='cancel';save()}}
+if(t.id==='include'){j.printMaterials=t.checked;save()}if(t.id==='maint'){j.maintenance=t.checked;save()}if(t.id==='print')window.print();if(t.id==='done'){j.status='done';j.completed=today();j.maintenance=!j.serviceType || j.serviceType.toLocaleLowerCase('tr-TR').includes('bakım');save()}if(t.id==='cancel'&&confirm('Bu randevu iptal edilsin mi?')){j.status='cancel';save()}}
 }
 window.addEventListener('hashchange',render);window.addEventListener('storage',render);render();
 </script></html>
